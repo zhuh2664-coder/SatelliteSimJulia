@@ -7,9 +7,6 @@
 __pycache__/
 *.pyc
 
-# Backup of old git history during cleanup
-.git-old/
-
 # Build artifacts
 *.aux *.bbl *.blg *.log *.out *.pdf
 build/
