@@ -9,6 +9,9 @@ using Reexport
 @reexport using SatelliteSimLab
 @reexport using SatelliteSimTraffic
 @reexport using SatelliteSimDistributed
-@reexport using SatelliteSimViz
+
+# Visualization is intentionally not loaded by default. Use `using SatelliteSimViz`
+# explicitly when plotting is needed so the core package can stay usable in
+# headless CI and lightweight simulation workflows.
 
 end # module
