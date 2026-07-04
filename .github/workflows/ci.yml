@@ -1,13 +1,14 @@
 name: CI
 
 on:
+  pull_request:
   push:
     branches:
       - main
-  pull_request:
 
 jobs:
-  test:
+  smoke:
+    name: smoke
     runs-on: ubuntu-latest
 
     steps:
@@ -22,13 +23,8 @@ jobs:
       - name: Cache Julia artifacts
         uses: julia-actions/cache@v2
 
-      - name: Install headless OpenGL support
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y xvfb libgl1-mesa-dri libegl1 mesa-utils
-
       - name: Instantiate
         run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
 
-      - name: Test
-        run: xvfb-run -s "-screen 0 1024x768x24" julia --project=. -e 'using Pkg; Pkg.test()'
+      - name: Smoke test
+        run: julia --project=. test/smoke.jl
