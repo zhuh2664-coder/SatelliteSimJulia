@@ -28,11 +28,13 @@ class_name SandboxWorld
 @export var sat_color: Color = Color(1.0, 0.85, 0.3)
 @export var sat_emission: Color = Color(1.0, 0.9, 0.4)
 @export var isl_color: Color = Color(0.3, 0.9, 1.0, 0.6)
+@export var isl_unavailable_color: Color = Color(0.4, 0.4, 0.45, 0.3)
 
 var _earth: MeshInstance3D
 var _satellites: Array[MeshInstance3D] = []
 var _isl_lines: Array[MeshInstance3D] = []
 var _isl_meshes: Array[ImmediateMesh] = []
+var _isl_materials: Array[StandardMaterial3D] = []   # M4.1: per-line mat
 var _isl_a: PackedInt32Array
 var _isl_b: PackedInt32Array
 var _initialised: bool = false
@@ -80,20 +82,22 @@ func _build_satellites(n_sat: int) -> void:
 func _build_isl_lines(isl_a: PackedInt32Array, isl_b: PackedInt32Array) -> void:
 	_isl_a = isl_a
 	_isl_b = isl_b
-	var line_mat = StandardMaterial3D.new()
-	line_mat.albedo_color = isl_color
-	line_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-	line_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	# M4.1: 每条 ISL 自己一个材质（颜色独立可变）
 	for k in isl_a.size():
 		var im = ImmediateMesh.new()
 		var line = MeshInstance3D.new()
 		line.name = "Isl%d" % (k + 1)
 		line.mesh = im
-		line.material_override = line_mat
-		line.visible = false
+		var mat = StandardMaterial3D.new()
+		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.albedo_color = isl_unavailable_color
+		line.material_override = mat
+		line.visible = true   # M4.1: 所有候选都画，颜色区分
 		add_child(line)
 		_isl_lines.append(line)
 		_isl_meshes.append(im)
+		_isl_materials.append(mat)
 
 func update_frame(positions: PackedFloat32Array, isl_avail: PackedByteArray) -> void:
 	if not _initialised:
@@ -103,14 +107,11 @@ func update_frame(positions: PackedFloat32Array, isl_avail: PackedByteArray) -> 
 		var p = i * 3
 		_satellites[i].position = ecef_km_to_unity(positions[p], positions[p + 1], positions[p + 2])
 
-	# ISL 可见性 + 端点
+	# ISL 颜色 + 端点（M4.1: 用颜色区分，不切 visibility）
 	for k in _isl_lines.size():
 		var avail = k < isl_avail.size() and isl_avail[k] != 0
-		if not avail:
-			if _isl_lines[k].visible:
-				_isl_lines[k].visible = false
-			continue
-		_isl_lines[k].visible = true
+		var mat = _isl_materials[k]
+		mat.albedo_color = isl_color if avail else isl_unavailable_color
 		var a = _isl_a[k] - 1
 		var b = _isl_b[k] - 1
 		var pa = _satellites[a].position
