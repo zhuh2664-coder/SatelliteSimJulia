@@ -4,11 +4,13 @@ version = "0.1.0"
 
 [deps]
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
+DataStructures = "864edb3b-99cc-5e75-8d2d-829cb0a9cfe8"
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
 Distributed = "8ba89e20-285c-5b6f-9357-94700520ee1b"
 Flux = "587475ba-b771-5e3f-ad9e-33799f191a9c"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
 GMAT = "53933a63-3655-4fc7-9fa8-e7ba59d387db"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 Lux = "b2108857-7c20-44ae-9111-449ecde12c47"
 Optimisers = "3bd65402-5787-11e9-1adc-39752487f4e2"
 OrdinaryDiffEq = "1dea7af3-3e70-54e6-95c3-0bf5283fa5ed"
@@ -43,6 +45,12 @@ SatelliteSimTraffic = {path = "src/traffic"}
 
 [extensions]
 SatelliteSimVizGLMakieExt = "SatelliteSimViz"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test", "SatelliteSimCore", "SatelliteSimNet", "SatelliteSimOpt", "SatelliteSimSecurity"]
 
 [compat]
 BenchmarkTools = "1.8.0"

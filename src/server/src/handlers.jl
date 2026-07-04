@@ -128,7 +128,7 @@ end
 推流期间不再接受新请求（沙盒场景：一连接一会话）。
 """
 function ws_handler(ws)
-    @info "WebSocket connected" target=WebSockets.target(ws)
+    @info "WebSocket connected" uri=string(ws)
     try
         while !eof(ws)
             data, ok = WebSockets.readguarded(ws)

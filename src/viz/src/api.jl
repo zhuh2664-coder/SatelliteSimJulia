@@ -43,6 +43,11 @@ function plot_orbit_snapshot(positions::Array{Float64,3};
     pos_now = @view positions[:, time_index, :]
 
     figure = Figure(size = (960, 720))
+
+    if config.dark_theme
+        figure.scene.backgroundcolor[] = RGBf(0.0, 0.0, 0.05)
+    end
+
     axis = Axis3(
         figure[1, 1],
         title = config.title,
@@ -52,10 +57,22 @@ function plot_orbit_snapshot(positions::Array{Float64,3};
         zlabel = "ECEF z (km)",
     )
 
+    if config.dark_theme
+        axis.backgroundcolor = RGBf(0.0, 0.0, 0.05)
+        axis.titlecolor = :white
+        axis.xlabelcolor = :white
+        axis.ylabelcolor = :white
+        axis.zlabelcolor = :white
+        axis.xticklabelcolor = :white
+        axis.yticklabelcolor = :white
+        axis.zticklabelcolor = :white
+    end
+
     # 1. 地球
     draw_earth!(axis;
         show_coastlines = true,
         show_grid = false,
+        dark_theme = config.dark_theme,
     )
 
     # 2. 轨迹线
@@ -98,7 +115,15 @@ function plot_orbit_snapshot(positions::Array{Float64,3};
         )
     end
 
-    # 7. 卫星散点（最后画，在最上层）
+    # 7. 波束足迹
+    if config.show_beams
+        draw_beam_footprints!(axis, pos_now;
+            beam_angle_deg = config.beam_angle_deg,
+            color = config.dark_theme ? (:cyan, 0.35) : (:cyan, 0.5),
+        )
+    end
+
+    # 8. 卫星散点（最后画，在最上层）
     draw_satellites!(axis, pos_now;
         markersize = config.satellite_markersize,
         color = :orange,

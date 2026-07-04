@@ -50,6 +50,7 @@ import SatelliteToolboxSgp4
 export AbstractPropagator
 export Sgp4PropagatorAdapter
 export propagate_sample, propagate_constellation
+export supports_orbit_elements
 
 """
     AbstractPropagator

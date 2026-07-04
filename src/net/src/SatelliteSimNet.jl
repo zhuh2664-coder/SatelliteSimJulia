@@ -22,5 +22,6 @@ include("layers/04_routing/core_routing.jl")
 include("layers/04_routing/dijkstra.jl")
 include("layers/04_routing/advanced_routing.jl")
 include("layers/04_routing/pinn_routing.jl")
+include("layers/04_routing/cgr.jl")
 
 end # module

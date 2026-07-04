@@ -6,19 +6,22 @@ export DijkstraRouting, build_adjacency, all_pairs_shortest_paths,
 struct DijkstraRouting <: AbstractRoutingAlgorithm end
 
 function route(::DijkstraRouting, input::RoutingInput)::RoutingOutput
-    g = input.graph.g
+    g = input.graph
     src = input.source
     dst = input.destination
 
-    state = Graphs.dijkstra_shortest_paths(g, src, Graphs.weights(g))
-    # Graphs.jl 用 has_path 判可达（is_reachable 不存在，pre-existing bug 修复）
-    if isfinite(state.dists[dst]) && state.dists[dst] < Inf
-        # 用 enumerate_paths 从 parents 重建路径
-        path = Graphs.enumerate_paths(state, dst)
-        return RoutingOutput(path, state.dists[dst], "Dijkstra")
-    else
-        return RoutingOutput(Int[], Inf, "Dijkstra-unreachable")
+    # 使用 RoutingGraph 中的实际权重，而非 Graphs.jl 默认单位权重
+    A = fill(Inf, g.n_nodes, g.n_nodes)
+    for i in 1:g.n_nodes; A[i, i] = 0.0; end
+    for (u, nbrs) in g.adj
+        for (v, w) in nbrs
+            A[u, v] = w
+        end
     end
+
+    path, cost = shortest_path_from_adjacency(A, src, dst)
+    isempty(path) && return RoutingOutput(Int[], Inf, "Dijkstra-unreachable")
+    return RoutingOutput(path, cost, "Dijkstra")
 end
 
 function build_adjacency(N::Int, edges::Vector{Tuple{Int,Int}}, weights::Vector{Float64})

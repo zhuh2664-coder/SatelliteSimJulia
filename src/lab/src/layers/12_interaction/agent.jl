@@ -9,8 +9,8 @@ using Printf
 using Dates
 using JSON
 
-export SimAgent, run_agent, agent_repl, execute_tool,
-       SYSTEM_PROMPT_STABLE, SYSTEM_PROMPT_DYNAMIC_BOUNDARY, system_prompt
+export SimAgent, run_agent, agent_repl, voice_agent_repl, execute_tool,
+       SYSTEM_PROMPT_STABLE, VOICE_SYSTEM_PROMPT_STABLE, SYSTEM_PROMPT_DYNAMIC_BOUNDARY, system_prompt
 
 # ─── Prompt 缓存边界（借鉴 Claude Code 的 SYSTEM_PROMPT_DYNAMIC_BOUNDARY）───
 #
@@ -39,6 +39,14 @@ const SYSTEM_PROMPT_STABLE = """你是 SatelliteSim，一个 LEO 卫星星座网
 使用提供的工具完成用户请求。调用工具时把参数填满。
 收到结果后用中文简洁解读关键数字。"""
 
+const VOICE_SYSTEM_PROMPT_STABLE = """你是 SatelliteSim 的语音助手。
+
+你优先用短句回答，每次尽量不超过 3 句。
+如果用户在讨论方案，就先给结论和下一步，不要展开长篇原理。
+如果用户在执行任务，就直接给出可执行动作或明确的确认。
+不要输出代码块、长列表或多余的铺垫。
+需要继续时，只问一个最关键的问题。"""
+
 # 动态边界标记：稳定区与动态区的硬分界。
 const SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "\n\n--- 会话上下文（动态，不进缓存）---\n"
 
@@ -52,6 +60,7 @@ mutable struct SimAgent
     messages::Vector{Dict{String,Any}}
     tools::Vector{Dict}
     max_iterations::Int
+    reply_style::Symbol            # :standard | :voice
     # 动态后缀数据（进入 System Prompt 的动态区，支持 prompt cache）：
     session_goal::String              # 本次会话目标（一句话）
     scanned_params::Vector{String}    # 已扫描过的参数组合（避免重复扫描，内存态）
@@ -72,16 +81,21 @@ reply = run_agent(agent, "帮我跑一个 Iridium 星座的覆盖分析")
 function SimAgent(provider::LLMProvider;
                   session_goal::String = "",
                   scanned_params::Vector{String} = String[],
-                  session_id::String = DEFAULT_SESSION_ID)
+                  session_id::String = DEFAULT_SESSION_ID,
+                  reply_style::Symbol = :standard)
     # 注册默认 post_tool 截断钩子（幂等），等价原写死 [1:4000] 行为
     ensure_default_hooks!()
-    sp = SYSTEM_PROMPT_STABLE * SYSTEM_PROMPT_DYNAMIC_BOUNDARY
+    sp = system_prompt_stable(reply_style) * SYSTEM_PROMPT_DYNAMIC_BOUNDARY
     # 首次构建时动态区可能为空（无 session_goal），仍拼上以保持稳定前缀字节不变。
     messages = [Dict{String,Any}("role" => "system", "content" => sp)]
     tools = build_tool_schemas()
     mem = SessionMemory(session_id = session_id)
-    return SimAgent(provider, messages, tools, 10, session_goal, copy(scanned_params), mem)
+    max_iterations = reply_style === :voice ? 6 : 10
+    return SimAgent(provider, messages, tools, max_iterations, reply_style, session_goal, copy(scanned_params), mem)
 end
+
+system_prompt_stable(reply_style::Symbol) =
+    reply_style === :voice ? VOICE_SYSTEM_PROMPT_STABLE : SYSTEM_PROMPT_STABLE
 
 """
     system_prompt_dynamic(agent) -> String
@@ -114,7 +128,7 @@ end
 拼装完整 System Prompt = 稳定前缀 + 动态边界 + 动态后缀。
 """
 system_prompt(agent::SimAgent) =
-    SYSTEM_PROMPT_STABLE * SYSTEM_PROMPT_DYNAMIC_BOUNDARY * system_prompt_dynamic(agent)
+    system_prompt_stable(agent.reply_style) * SYSTEM_PROMPT_DYNAMIC_BOUNDARY * system_prompt_dynamic(agent)
 
 """
     run_agent(agent, user_input) -> String
@@ -546,6 +560,38 @@ function agent_repl(provider::LLMProvider; greeting::Bool = true)
         isempty(input) && continue
         startswith(input, "/exit") && break
         startswith(input, "/clear") && (agent = SimAgent(provider); println("（已重置）"); continue)
+
+        try
+            reply = run_agent(agent, input)
+            println("\n🤖 $reply")
+        catch e
+            println("\n❌ 错误: $e")
+        end
+    end
+    println("再见！")
+end
+
+"""
+    voice_agent_repl(provider; greeting)
+
+语音友好的 REPL：默认用更短的回复风格，适合搭配 TTS / 语音桥。
+"""
+function voice_agent_repl(provider::LLMProvider; greeting::Bool = true)
+    agent = SimAgent(provider; reply_style = :voice)
+    greeting && println("""
+    ╔══════════════════════════════════════╗
+    ║   SatelliteSim 语音模式              ║
+    ║   短句回复 / 适合 TTS                ║
+    ║   输入 /exit 退出                    ║
+    ╚══════════════════════════════════════╝
+    """)
+
+    while true
+        print("\n🎙️ > ")
+        input = readline()
+        isempty(input) && continue
+        startswith(input, "/exit") && break
+        startswith(input, "/clear") && (agent = SimAgent(provider; reply_style = :voice); println("（已重置）"); continue)
 
         try
             reply = run_agent(agent, input)

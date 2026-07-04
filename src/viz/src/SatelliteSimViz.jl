@@ -17,7 +17,11 @@ include("earth.jl")
 include("bridge.jl")
 include("satellite.jl")
 include("links.jl")
+include("beam_footprints.jl")
 include("ground_track.jl")
+include("coverage_heatmap.jl")
+include("animation.jl")
+include("dashboard.jl")
 include("api.jl")
 
 end # module
