@@ -16,11 +16,19 @@ signal start_clicked(constellation: String)
 signal stop_clicked
 signal speed_changed(speed: float)
 
+# M5.1: 状态主题色（顶部面板背景）
+@export var theme_idle: Color = Color(0.0, 0.0, 0.0, 0.55)
+@export var theme_connecting: Color = Color(0.15, 0.20, 0.40, 0.65)
+@export var theme_connected: Color = Color(0.0, 0.30, 0.10, 0.55)
+@export var theme_streaming: Color = Color(0.10, 0.45, 0.10, 0.65)
+@export var theme_error: Color = Color(0.55, 0.10, 0.10, 0.65)
+
 var _constellation_dropdown: OptionButton
 var _start_button: Button
 var _speed_slider: HSlider
 var _status_label: Label
 var _hud_label: Label
+var _panel_stylebox: StyleBoxFlat    # M5.1: 实例字段，用于换色
 
 var _names: PackedStringArray = []
 var _running: bool = false
@@ -39,6 +47,12 @@ func _build_ui() -> void:
 	# 顶部面板
 	var panel = PanelContainer.new()
 	panel.name = "TopPanel"
+	# M5.1: 用 StyleBoxFlat 让背景色可变
+	_panel_stylebox = StyleBoxFlat.new()
+	_panel_stylebox.bg_color = theme_idle
+	_panel_stylebox.content_margin_top = 6
+	_panel_stylebox.content_margin_bottom = 6
+	panel.add_theme_stylebox_override("panel", _panel_stylebox)
 	var hbox = HBoxContainer.new()
 	hbox.add_theme_constant_override("separation", 12)
 	panel.add_child(hbox)
@@ -120,6 +134,17 @@ func _set_running(running: bool) -> void:
 
 func set_status(s: String) -> void:
 	_status_label.text = s
+	# M5.1: 根据状态文本切换主题色
+	if s.begins_with("Error") or s.find("Error:") >= 0:
+		_panel_stylebox.bg_color = theme_error
+	elif s.begins_with("Connecting"):
+		_panel_stylebox.bg_color = theme_connecting
+	elif s.begins_with("Connected"):
+		_panel_stylebox.bg_color = theme_connected
+	elif s.begins_with("Streaming") or s.begins_with("Starting"):
+		_panel_stylebox.bg_color = theme_streaming
+	else:
+		_panel_stylebox.bg_color = theme_idle
 
 func set_hud(sats: int, frame: int, total: int, isl_avail: int, isl_total: int) -> void:
 	_hud_label.text = "sats: %d    frame: %d/%d    ISL: %d/%d" % [sats, frame, total, isl_avail, isl_total]
