@@ -1,0 +1,11 @@
+name = "SatelliteSimNet"
+uuid = "e40ae7a9-b545-48ee-92d2-18cbe9a7d82b"
+version = "0.1.0"
+
+[deps]
+Graphs = "86223c79-3864-5bf0-83f7-82e725a168b6"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+SatelliteSimCore = "99f6b6c7-c40f-4eb3-8423-ddc96d839c0b"
+
+[sources]
+SatelliteSimCore = {path = "../core"}

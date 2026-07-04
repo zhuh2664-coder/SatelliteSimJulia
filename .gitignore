@@ -1,0 +1,67 @@
+# Julia
+/Manifest.toml
+*.jls
+
+# System
+.DS_Store
+__pycache__/
+*.pyc
+
+# Backup of old git history during cleanup
+.git-old/
+
+# Build artifacts
+*.aux *.bbl *.blg *.log *.out *.pdf
+build/
+artifacts/
+*.dylib
+src/*/Manifest.toml
+
+# Visualization temp
+/frames*/
+/frame_*.png
+
+# IDE
+.vscode/
+.codegraph/
+.codex/
+.aider*
+
+# Research/large generated docs (not source code)
+project_docs/
+competitive/
+ip/
+
+# Experiment outputs & runtime artifacts
+experiments/
+outputs/
+notebooks/
+benchmark_suite/
+
+# Data (not source code)
+data/
+
+# AI tool configs & docs (not source code)
+.claude/
+AGENTS.md
+CLAUDE.md
+LAYERS.md
+REFACTOR_STATUS.md
+
+# Top-level docs and papers (not source code)
+docs/
+paper/
+*.md
+!/README.md
+实施手册.md
+调研.md
+重复代码清理报告.md
+
+# Misc local
+scripts/.kimi_env
+SatelliteSimCore_combined.md
+_索引/
+REPO_MAP.md
+REPO_MAP.txt
+temp-wolaiyongde
+texput.log

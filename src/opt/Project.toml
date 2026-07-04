@@ -1,0 +1,20 @@
+name = "SatelliteSimOpt"
+uuid = "6ed3806a-63e5-4264-b3e5-1647cc02f284"
+version = "0.1.0"
+
+[deps]
+Enzyme = "7da242da-08ed-463a-9acd-ee780be4f1d9"
+ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Lux = "b2108857-7c20-44ae-9111-449ecde12c47"
+Optimisers = "3bd65402-5787-11e9-1adc-39752487f4e2"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+SatelliteSimCore = "99f6b6c7-c40f-4eb3-8423-ddc96d839c0b"
+SatelliteToolbox = "6ac157d9-b43d-51bb-8fab-48bf53814f4a"
+SatelliteToolboxSgp4 = "ba14ac17-bfc9-4710-a76f-b32930ef2339"
+StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
+Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
+
+[sources]
+SatelliteSimCore = {path = "../core"}

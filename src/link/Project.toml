@@ -1,0 +1,18 @@
+name = "SatelliteSimLink"
+uuid = "c3d4e5f6-a7b8-9012-cdef-345678901234"
+version = "0.1.0"
+
+[deps]
+SatelliteSimFoundation = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+SatelliteSimOrbit = "b2c3d4e5-f6a7-8901-bcde-f23456789012"
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+SatelliteAnalysis = "101040f3-2a13-4d8c-b9b0-4a720fa906ce"
+SatelliteToolbox = "6ac157d9-b43d-51bb-8fab-48bf53814f4a"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+
+[sources]
+SatelliteSimFoundation = {path = "../foundation"}
+SatelliteSimOrbit = {path = "../orbit"}
+
+[compat]
+julia = "1.12"

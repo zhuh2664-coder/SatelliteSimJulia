@@ -1,0 +1,250 @@
+# ===== 流量桥接：裸数组路径 → 嵌套类型 AON =====
+#
+# 桥接 lab 层(裸数组:positions 矩阵 + 距离矩阵 D)和 traffic 层(嵌套类型:
+# ISLPhysicalLinkSeries + AccessDecisionTable)。
+#
+# 背景:lab 的 full_constellation_assessment 走裸数组路径(evaluate_isl_batch/
+# evaluate_gsl_batch 返回 NamedTuple/矩阵),但完整的 evaluate_traffic 消费嵌套
+# 类型。本文件提供桥接构造器,从裸数组评估结果构造嵌套类型,再调 evaluate_traffic。
+#
+# 新增于 2026-07-04(Phase 1 - A1)。
+
+using SatelliteSimFoundation
+using SatelliteSimLink
+using SatelliteSimCore
+using SatelliteSimNet
+
+using SatelliteSimLink:
+    LinkAvailable, LinkUnavailable, InterSatelliteLink,
+    ISLPhysicalLinkSample, GSLPhysicalLinkSample,
+    ISLPhysicalLinkSeries, ConstellationTopology, SatelliteLink, LinkEndpoint
+
+export evaluate_traffic_from_bare_arrays
+
+# ────────────────────────────────────────────────────────────
+# 辅助：构造 ConstellationTopology（从 ISL 边列表）
+# ────────────────────────────────────────────────────────────
+
+"""
+    _build_topology_from_edges(constellation_name, isl_pairs, n_satellites) -> ConstellationTopology
+
+从 ISL 边列表构造一个 ConstellationTopology。
+每条边 (i,j) 构造一个 SatelliteLink（id 从 1 递增）。
+"""
+function _build_topology_from_edges(
+    constellation_name::String,
+    isl_pairs::Vector{Tuple{Int,Int}},
+)::ConstellationTopology
+    links = SatelliteLink[]
+    for (link_id, (i, j)) in enumerate(isl_pairs)
+        push!(links, SatelliteLink(;
+            id = link_id,
+            endpoint_a = LinkEndpoint(i),
+            endpoint_b = LinkEndpoint(j),
+            link_type = InterSatelliteLink(),
+            state = LinkAvailable(),
+        ))
+    end
+    return ConstellationTopology(constellation_name, links)
+end
+
+# ────────────────────────────────────────────────────────────
+# 辅助：构造 ISLPhysicalLinkSeries（从裸数组位置 + 边列表 + 时间网格）
+# ────────────────────────────────────────────────────────────
+
+"""
+    _build_isl_series(positions, isl_pairs, isl_results_by_time, time_grid, topology; capacity_mbps)
+
+从裸数组位置矩阵序列 + evaluate_isl_batch 结果构造 ISLPhysicalLinkSeries。
+
+# 参数
+- `positions::Array{Float64,3}`: (N_sat × N_time × 3) ECEF 位置 km
+- `isl_pairs::Vector{Tuple{Int,Int}}`: ISL 边列表（卫星索引，1-based）
+- `isl_results_by_time::Vector{Vector{NamedTuple}}`: 每个时间步的 evaluate_isl_batch 结果
+- `time_grid::SimulationTimeGrid`: 时间网格
+- `topology::ConstellationTopology`: 拓扑（链路 id 顺序必须和 isl_pairs 一致）
+- `capacity_mbps::Float64`: ISL 容量（可用时）
+"""
+function _build_isl_series(
+    positions::Array{Float64,3},
+    isl_pairs::Vector{Tuple{Int,Int}},
+    isl_results_by_time::Vector,
+    time_grid::SimulationTimeGrid,
+    topology::ConstellationTopology;
+    capacity_mbps::Float64 = 1000.0,
+)::ISLPhysicalLinkSeries
+    n_time = size(positions, 2)
+    n_links = length(isl_pairs)
+    samples_by_time = Vector{Vector{ISLPhysicalLinkSample{Float64}}}()
+
+    for time_index in 1:n_time
+        elapsed_s = Int(timeslot_offsets(time_grid)[time_index])
+        samples = ISLPhysicalLinkSample{Float64}[]
+        results = isl_results_by_time[time_index]
+        for link_id in 1:n_links
+            r = results[link_id]
+            push!(samples, ISLPhysicalLinkSample{Float64}(;
+                link_id = link_id,
+                time_index = time_index,
+                elapsed_s = elapsed_s,
+                endpoint_a_id = isl_pairs[link_id][1],
+                endpoint_b_id = isl_pairs[link_id][2],
+                distance_km = r.distance_km,
+                propagation_delay_s = r.distance_km / 299792.458,  # 光速 km/s
+                capacity_mbps = r.available ? capacity_mbps : 0.0,
+                state = r.available ? LinkAvailable() : LinkUnavailable(),
+                line_of_sight = r.line_of_sight,
+            ))
+        end
+        push!(samples_by_time, samples)
+    end
+
+    return ISLPhysicalLinkSeries(topology, time_grid, samples_by_time)
+end
+
+# ────────────────────────────────────────────────────────────
+# 辅助：构造 AccessDecisionTable（从 GSL 矩阵 + 地面站列表）
+# ────────────────────────────────────────────────────────────
+
+"""
+    _build_access_table(gsl_avail_by_time, gsl_dist_by_time, gsl_elev_by_time, ground_ids, time_grid; capacity_mbps)
+
+从 GSL 评估矩阵序列构造 AccessDecisionTable。
+每时间步为每个地面站选可见卫星中仰角最高的（max-elevation 策略）。
+
+# 参数
+- `gsl_avail_by_time[t][i,j]`: 时间步 t、卫星 i、地面站 j 的可用性
+- `gsl_dist_by_time[t][i,j]`: 距离 km
+- `gsl_elev_by_time[t][i,j]`: 仰角度
+- `ground_ids::Vector{Int}`: 地面端 id 列表（1-based）
+- `time_grid`: 时间网格
+- `capacity_mbps`: GSL 容量
+"""
+function _build_access_table(
+    gsl_avail_by_time::Vector{Matrix{Bool}},
+    gsl_dist_by_time::Vector{Matrix{Float64}},
+    gsl_elev_by_time::Vector{Matrix{Float64}},
+    ground_ids::Vector{Int},
+    time_grid::SimulationTimeGrid;
+    capacity_mbps::Float64 = 500.0,
+)::AccessDecisionTable
+    n_time = length(gsl_avail_by_time)
+    decisions_by_ground = Dict{Int,Vector{AccessDecision}}()
+
+    for ground_local in eachindex(ground_ids)
+        ground_id = ground_ids[ground_local]
+        decisions = AccessDecision[]
+        for time_index in 1:n_time
+            elapsed_s = Int(timeslot_offsets(time_grid)[time_index])
+            avail = gsl_avail_by_time[time_index][:, ground_local]  # 所有卫星对这地面站
+            # 选可见卫星中仰角最高的
+            best_sat = nothing
+            best_elev = -Inf
+            for sat_id in eachindex(avail)
+                if avail[sat_id]
+                    elev = gsl_elev_by_time[time_index][sat_id, ground_local]
+                    if elev > best_elev
+                        best_elev = elev
+                        best_sat = sat_id
+                    end
+                end
+            end
+
+            if best_sat === nothing
+                push!(decisions, AccessDecision(;
+                    ground_id = ground_id,
+                    time_index = time_index,
+                    selected_satellite_id = nothing,
+                    selected_sample = nothing,
+                ))
+            else
+                dist = gsl_dist_by_time[time_index][best_sat, ground_local]
+                sample = GSLPhysicalLinkSample{Float64}(;
+                    ground_id = ground_id,
+                    satellite_id = best_sat,
+                    time_index = time_index,
+                    elapsed_s = elapsed_s,
+                    distance_km = dist,
+                    propagation_delay_s = dist / 299792.458,
+                    elevation_deg = best_elev,
+                    capacity_mbps = capacity_mbps,
+                    state = LinkAvailable(),
+                )
+                push!(decisions, AccessDecision(;
+                    ground_id = ground_id,
+                    time_index = time_index,
+                    selected_satellite_id = best_sat,
+                    selected_sample = sample,
+                ))
+            end
+        end
+        decisions_by_ground[ground_id] = decisions
+    end
+
+    return AccessDecisionTable(time_grid, decisions_by_ground)
+end
+
+# ────────────────────────────────────────────────────────────
+# 主接口：从裸数组评估结果跑完整 AON 流量分配
+# ────────────────────────────────────────────────────────────
+
+"""
+    evaluate_traffic_from_bare_arrays(
+        positions, isl_pairs, isl_results_by_time,
+        gsl_avail_by_time, gsl_dist_by_time, gsl_elev_by_time,
+        ground_ids, time_grid, demands;
+        isl_capacity_mbps, gsl_capacity_mbps, constellation_name
+    ) -> TrafficEvaluation
+
+桥接入口：从裸数组路径的评估结果构造嵌套类型，调用完整 AON 流量分配。
+
+这是 lab 层（裸数组）接入 traffic 层（嵌套类型 AON）的桥梁。
+不再需要降级到 _assign_demands_to_isls 占位函数。
+
+# 参数
+- `positions::Array{Float64,3}`: (N_sat × N_time × 3) 卫星 ECEF 位置
+- `isl_pairs`: ISL 边列表
+- `isl_results_by_time`: 每时间步的 evaluate_isl_batch 结果（NamedTuple 向量）
+- `gsl_avail/dist/elev_by_time`: 每时间步的 GSL 评估矩阵
+- `ground_ids`: 地面端 id 列表
+- `time_grid`: 时间网格
+- `demands::Vector{TrafficDemand}`: 流量需求
+- `isl_capacity_mbps`: ISL 容量（默认 1000）
+- `gsl_capacity_mbps`: GSL 容量（默认 500）
+
+# 返回
+- `TrafficEvaluation`: 完整流量评估（含 assignments、link_loads、拥塞、dropped）
+"""
+function evaluate_traffic_from_bare_arrays(
+    positions::Array{Float64,3},
+    isl_pairs::Vector{Tuple{Int,Int}},
+    isl_results_by_time::Vector,
+    gsl_avail_by_time::Vector{Matrix{Bool}},
+    gsl_dist_by_time::Vector{Matrix{Float64}},
+    gsl_elev_by_time::Vector{Matrix{Float64}},
+    ground_ids::Vector{Int},
+    time_grid::SimulationTimeGrid,
+    demands::Vector{TrafficDemand};
+    isl_capacity_mbps::Float64 = 1000.0,
+    gsl_capacity_mbps::Float64 = 500.0,
+    constellation_name::String = "bridge",
+)::TrafficEvaluation
+    # 1. 构造拓扑
+    topology = _build_topology_from_edges(constellation_name, isl_pairs)
+
+    # 2. 构造 ISL 物理链路序列
+    isl_series = _build_isl_series(
+        positions, isl_pairs, isl_results_by_time, time_grid, topology;
+        capacity_mbps = isl_capacity_mbps,
+    )
+
+    # 3. 构造接入决策表（max-elevation 策略）
+    access_table = _build_access_table(
+        gsl_avail_by_time, gsl_dist_by_time, gsl_elev_by_time,
+        ground_ids, time_grid;
+        capacity_mbps = gsl_capacity_mbps,
+    )
+
+    # 4. 调用完整 AON
+    return evaluate_traffic(demands, isl_series, access_table)
+end

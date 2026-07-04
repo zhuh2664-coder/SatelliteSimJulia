@@ -1,0 +1,53 @@
+# SatelliteSimJulia — 自治卫星仿真平台
+#
+# 启动 10 颗卫星 + 控制平面：
+#   docker compose up -d --scale sat=10
+#
+# 停止所有：
+#   docker compose down
+
+services:
+  # === 卫星 Agent 容器 ===
+  sat:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: satellite-agent:latest
+    command: --sat-id 0 --control-plane control-plane:9090
+    environment:
+      - SIM_MODE=docker
+      - LOG_LEVEL=info
+    networks:
+      - satnet
+    # 每颗卫星需要独立的 sat-id，通过 --scale 启动后再手动设置
+    profiles: ["simulation"]
+
+  # === 控制平面（实验管理器）===
+  control-plane:
+    image: satellite-agent:latest
+    command: --sat-id 0 --control-plane self
+    environment:
+      - SIM_MODE=control
+      - LOG_LEVEL=debug
+    ports:
+      - "9090:9090"
+    networks:
+      - satnet
+    profiles: ["simulation"]
+
+  # === 轨道引擎（可选：运行 PINN/SGP4 计算）===
+  orbit-engine:
+    image: satellite-agent:latest
+    command: --sat-id -1
+    environment:
+      - SIM_MODE=orbit
+    networks:
+      - satnet
+    profiles: ["simulation"]
+
+networks:
+  satnet:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.42.0.0/16
