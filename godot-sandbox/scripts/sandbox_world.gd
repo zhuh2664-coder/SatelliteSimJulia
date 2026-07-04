@@ -36,6 +36,15 @@ func is_initialised() -> bool:
 	return _initialised
 
 func init(n_sat: int, isl_a: PackedInt32Array, isl_b: PackedInt32Array) -> void:
+	_build_earth()
+	_build_satellites(n_sat)
+	_build_isl_lines(isl_a, isl_b)
+	_initialised = true
+
+
+# ── 子方法：建场景对象 ─────────────────────────────────
+
+func _build_earth() -> void:
 	_earth = MeshInstance3D.new()
 	_earth.name = "Earth"
 	_earth.mesh = SphereMesh.new()
@@ -46,7 +55,8 @@ func init(n_sat: int, isl_a: PackedInt32Array, isl_b: PackedInt32Array) -> void:
 	_earth.material_override = earth_mat
 	add_child(_earth)
 
-	# 卫星（共享材质）
+func _build_satellites(n_sat: int) -> void:
+	# 共享材质（避免 N 个 Material 实例）
 	var sat_mat = StandardMaterial3D.new()
 	sat_mat.albedo_color = Color(1.0, 0.85, 0.3)
 	sat_mat.emission_enabled = true
@@ -62,7 +72,7 @@ func init(n_sat: int, isl_a: PackedInt32Array, isl_b: PackedInt32Array) -> void:
 		add_child(s)
 		_satellites.append(s)
 
-	# ISL 线
+func _build_isl_lines(isl_a: PackedInt32Array, isl_b: PackedInt32Array) -> void:
 	_isl_a = isl_a
 	_isl_b = isl_b
 	var line_mat = StandardMaterial3D.new()
@@ -79,8 +89,6 @@ func init(n_sat: int, isl_a: PackedInt32Array, isl_b: PackedInt32Array) -> void:
 		add_child(line)
 		_isl_lines.append(line)
 		_isl_meshes.append(im)
-
-	_initialised = true
 
 func update_frame(positions: PackedFloat32Array, isl_avail: PackedByteArray) -> void:
 	if not _initialised:
