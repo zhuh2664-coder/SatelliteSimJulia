@@ -88,14 +88,7 @@ func update_frame(positions: PackedFloat32Array, isl_avail: PackedByteArray) -> 
 	# 卫星位置
 	for i in _satellites.size():
 		var p = i * 3
-		var xkm = positions[p]
-		var ykm = positions[p + 1]
-		var zkm = positions[p + 2]
-		_satellites[i].position = Vector3(
-			xkm / SCALE_KM_PER_UNIT,
-			zkm / SCALE_KM_PER_UNIT,    # 北极 → Godot Y
-			-ykm / SCALE_KM_PER_UNIT    # 90°E → Godot -Z
-		)
+		_satellites[i].position = ecef_km_to_unity(positions[p], positions[p + 1], positions[p + 2])
 
 	# ISL 可见性 + 端点
 	for k in _isl_lines.size():
@@ -115,3 +108,29 @@ func update_frame(positions: PackedFloat32Array, isl_avail: PackedByteArray) -> 
 		im.surface_add_vertex(pa)
 		im.surface_add_vertex(pb)
 		im.surface_end()
+
+
+# ── 坐标变换（ECEF km → Godot 左手系） ─────────────────
+#
+# ECEF（地心地固）：
+#   X → 赤道面 0 经度
+#   Y → 90°E
+#   Z → 北极
+#
+# Godot 4 左手系：
+#   X → 右
+#   Y → 上
+#   Z → 前
+#
+# 映射（地球观测自然朝向）：
+#   Godot.X =  ECEF.X
+#   Godot.Y =  ECEF.Z（北极朝上）
+#   Godot.Z = -ECEF.Y
+#
+# 单位：1 unit = SCALE_KM_PER_UNIT km
+static func ecef_km_to_unity(x_km: float, y_km: float, z_km: float) -> Vector3:
+	return Vector3(
+		x_km / SCALE_KM_PER_UNIT,
+		z_km / SCALE_KM_PER_UNIT,
+		-y_km / SCALE_KM_PER_UNIT
+	)
