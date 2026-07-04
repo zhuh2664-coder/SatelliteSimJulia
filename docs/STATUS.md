@@ -10,10 +10,10 @@
 | M1   | 项目骨架 + 5 GDScript            | ✅ done       | `da7cb75`, `7818be2` |
 | M2   | WS 端到端（list+start+frames）   | ✅ done       | headless 测试 |
 | M3   | 3D 地球 + 卫星散点               | ✅ done       | `28572c9`, `5716614`, `356d5fe` |
-| M4   | ISL 实时连线                     | ⏳ in progress | -           |
-| M5   | UI 控制面板                      | ⏳ pending    | -           |
-| M6   | 摄像机控制                       | ⏳ pending    | -           |
-| M7   | 14 星座回归 + 性能               | ⏳ pending    | -           |
+| M4   | ISL 实时连线                     | ✅ done       | `b4d0449`, `1ec265e` |
+| M5   | UI 控制面板                      | ✅ done       | `b59828c` |
+| M6   | 摄像机控制                       | ✅ done       | `223a8b6`, `e730fc5`, `7572959`, `2bdd814` |
+| M7   | 14 星座回归 + 性能               | ⏳ in progress | `e5d1a8e` (M7.1 done) |
 
 ## 工作纪律
 
