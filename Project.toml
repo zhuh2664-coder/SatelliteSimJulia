@@ -40,11 +40,13 @@ SatelliteSimOpt = {path = "src/opt"}
 SatelliteSimOrbit = {path = "src/orbit"}
 SatelliteSimSecurity = {path = "src/security"}
 SatelliteSimTraffic = {path = "src/traffic"}
+SatelliteSimViz = {path = "src/viz"}
 
 [extensions]
 SatelliteSimVizGLMakieExt = "SatelliteSimViz"
 
 [compat]
+julia = "1.12"
 BenchmarkTools = "1.8.0"
 Flux = "0.16.10"
 ForwardDiff = "1.4.1"
