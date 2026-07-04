@@ -1,0 +1,38 @@
+name = "Starlink"
+source = "design"
+
+[[shells]]
+id = 1
+name = "Gen1 550km 53deg"
+altitude_km = 550.0
+inclination_deg = 53.0
+phase_shift = 1
+orbit_count = 72
+satellites_per_orbit = 22
+
+[[shells]]
+id = 2
+name = "Gen1 540km 53.2deg"
+altitude_km = 540.0
+inclination_deg = 53.2
+phase_shift = 1
+orbit_count = 72
+satellites_per_orbit = 22
+
+[[shells]]
+id = 3
+name = "Polar 560km 97.6deg"
+altitude_km = 560.0
+inclination_deg = 97.6
+phase_shift = 1
+orbit_count = 10
+satellites_per_orbit = 52
+
+[[shells]]
+id = 4
+name = "Inclined 570km 70deg"
+altitude_km = 570.0
+inclination_deg = 70.0
+phase_shift = 1
+orbit_count = 36
+satellites_per_orbit = 20
