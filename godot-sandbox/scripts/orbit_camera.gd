@@ -64,6 +64,14 @@ func _unhandled_input(event: InputEvent) -> void:
 				MOUSE_BUTTON_WHEEL_DOWN:
 					_distance = min(max_distance, _distance + zoom_speed)
 					_update_transform()
+				MOUSE_BUTTON_LEFT:
+					# M6.3: 双击重置视角
+					if event.double_click:
+						_target = Vector3.ZERO
+						_yaw_deg = initial_yaw_deg
+						_pitch_deg = initial_pitch_deg
+						_distance = initial_distance
+						_update_transform()
 
 func _update_transform() -> void:
 	# M6.2: target_node 仍然每帧同步，但 pan 优先改 Vector3 _target
