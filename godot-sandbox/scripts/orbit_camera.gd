@@ -21,6 +21,7 @@ class_name OrbitCamera
 @export var max_distance: float = 500.0
 @export var rotate_speed: float = 0.4     # 度 / 像素
 @export var zoom_speed: float = 8.0       # 单位 / 滚轮
+@export var smoothing: float = 0.18        # M6.4: lerp 系数（0=瞬变, 1=不变）
 @export var initial_distance: float = 150.0
 @export var initial_yaw_deg: float = 0.0
 @export var initial_pitch_deg: float = 30.0   # 略斜视，露出 3D 感
@@ -30,6 +31,10 @@ var _target_node: Node3D
 var _yaw_deg: float
 var _pitch_deg: float
 var _distance: float
+# M6.4: 平滑插值用的"期望"值（输入设这些，每帧 lerp 实际值）
+var _desired_yaw_deg: float
+var _desired_pitch_deg: float
+var _desired_distance: float
 
 func _ready() -> void:
 	if not target_path.is_empty():
@@ -39,16 +44,19 @@ func _ready() -> void:
 	_yaw_deg = initial_yaw_deg
 	_pitch_deg = initial_pitch_deg
 	_distance = initial_distance
+	_desired_yaw_deg = initial_yaw_deg
+	_desired_pitch_deg = initial_pitch_deg
+	_desired_distance = initial_distance
 	_update_transform()
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseMotion:
 		if event.button_mask & MOUSE_BUTTON_MASK_LEFT:
-			_yaw_deg -= event.relative.x * rotate_speed
-			_pitch_deg = clamp(_pitch_deg - event.relative.y * rotate_speed, -89.0, 89.0)
-			_update_transform()
+			# M6.4: 输入改 _desired_*, _process 平滑到 _yaw_deg / _pitch_deg
+			_desired_yaw_deg -= event.relative.x * rotate_speed
+			_desired_pitch_deg = clamp(_desired_pitch_deg - event.relative.y * rotate_speed, -89.0, 89.0)
 		elif event.button_mask & MOUSE_BUTTON_MASK_RIGHT:
-			# M6.2: 右键拖动 → 平移 target（沿相机 right/up 平面）
+			# M6.2: 右键拖动 → 平移 target（沿相机 right/up 平面，不平滑）
 			var right := -global_transform.basis.x
 			var up := global_transform.basis.y
 			var pan_factor: float = _distance * 0.0015
@@ -59,19 +67,26 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.pressed:
 			match event.button_index:
 				MOUSE_BUTTON_WHEEL_UP:
-					_distance = max(min_distance, _distance - zoom_speed)
-					_update_transform()
+					_desired_distance = max(min_distance, _desired_distance - zoom_speed)
 				MOUSE_BUTTON_WHEEL_DOWN:
-					_distance = min(max_distance, _distance + zoom_speed)
-					_update_transform()
+					_desired_distance = min(max_distance, _desired_distance + zoom_speed)
 				MOUSE_BUTTON_LEFT:
 					# M6.3: 双击重置视角
 					if event.double_click:
 						_target = Vector3.ZERO
-						_yaw_deg = initial_yaw_deg
-						_pitch_deg = initial_pitch_deg
-						_distance = initial_distance
-						_update_transform()
+						_desired_yaw_deg = initial_yaw_deg
+						_desired_pitch_deg = initial_pitch_deg
+						_desired_distance = initial_distance
+
+
+# M6.4: 平滑插值到期望 yaw/pitch/distance
+func _process(_delta: float) -> void:
+	var k: float = clamp(smoothing, 0.0, 1.0)
+	if k > 0.0:
+		_yaw_deg = lerp(_yaw_deg, _desired_yaw_deg, k)
+		_pitch_deg = lerp(_pitch_deg, _desired_pitch_deg, k)
+		_distance = lerp(_distance, _desired_distance, k)
+		_update_transform()
 
 func _update_transform() -> void:
 	# M6.2: target_node 仍然每帧同步，但 pan 优先改 Vector3 _target
