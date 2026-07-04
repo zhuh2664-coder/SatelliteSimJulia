@@ -3,24 +3,12 @@ uuid = "456db33b-f2e9-44a1-91e6-796f5949196b"
 version = "0.1.0"
 
 [deps]
+SatelliteSimFoundation = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
-Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
-SatelliteSimNet = "e40ae7a9-b545-48ee-92d2-18cbe9a7d82b"
-SatelliteSimCore = "99f6b6c7-c40f-4eb3-8423-ddc96d839c0b"
-SatelliteSimTraffic = "e5f6a7b8-c9d0-1234-5678-9abcdef01234"
-SatelliteSimFoundation = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 HTTP = "cd3eb016-35fb-5094-929b-558a96fad6f3"
-
-[sources.SatelliteSimNet]
-path = "../net"
-
-[sources.SatelliteSimCore]
-path = "../core"
-
-[sources.SatelliteSimTraffic]
-path = "../traffic"
-
-[sources.SatelliteSimFoundation]
-path = "../foundation"
+SatelliteSimNet = "e40ae7a9-b545-48ee-92d2-18cbe9a7d82b"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+SatelliteSimCore = "99f6b6c7-c40f-4eb3-8423-ddc96d839c0b"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+SatelliteSimTraffic = "e5f6a7b8-c9d0-1234-5678-9abcdef01234"
