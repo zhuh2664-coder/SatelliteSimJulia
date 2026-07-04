@@ -20,9 +20,14 @@ class_name SandboxWorld
 #   单位 1 unit = 100 km
 # ============================================================
 
-const EARTH_RADIUS_UNITS := 63.78137   # 6378.137 km / 100
-const SAT_SCALE := 0.4                 # radius in units
-const SCALE_KM_PER_UNIT := 100.0
+# ── 可调参数（Inspector）────────────────────────────────
+@export var scale_km_per_unit: float = 100.0   # 1 unit = ? km
+@export var earth_radius_units: float = 63.78137   # 6378.137 / 100
+@export var sat_scale: float = 0.4             # radius in units
+@export var earth_color: Color = Color(0.20, 0.40, 0.85)
+@export var sat_color: Color = Color(1.0, 0.85, 0.3)
+@export var sat_emission: Color = Color(1.0, 0.9, 0.4)
+@export var isl_color: Color = Color(0.3, 0.9, 1.0, 0.6)
 
 var _earth: MeshInstance3D
 var _satellites: Array[MeshInstance3D] = []
@@ -48,26 +53,26 @@ func _build_earth() -> void:
 	_earth = MeshInstance3D.new()
 	_earth.name = "Earth"
 	_earth.mesh = SphereMesh.new()
-	_earth.mesh.radius = EARTH_RADIUS_UNITS
-	_earth.mesh.height = EARTH_RADIUS_UNITS * 2.0
+	_earth.mesh.radius = earth_radius_units
+	_earth.mesh.height = earth_radius_units * 2.0
 	var earth_mat = StandardMaterial3D.new()
-	earth_mat.albedo_color = Color(0.20, 0.40, 0.85)
+	earth_mat.albedo_color = earth_color
 	_earth.material_override = earth_mat
 	add_child(_earth)
 
 func _build_satellites(n_sat: int) -> void:
 	# 共享材质（避免 N 个 Material 实例）
 	var sat_mat = StandardMaterial3D.new()
-	sat_mat.albedo_color = Color(1.0, 0.85, 0.3)
+	sat_mat.albedo_color = sat_color
 	sat_mat.emission_enabled = true
-	sat_mat.emission = Color(1.0, 0.9, 0.4)
+	sat_mat.emission = sat_emission
 	sat_mat.emission_energy_multiplier = 1.2
 	for i in n_sat:
 		var s = MeshInstance3D.new()
 		s.name = "Sat%d" % (i + 1)
 		s.mesh = SphereMesh.new()
-		s.mesh.radius = SAT_SCALE
-		s.mesh.height = SAT_SCALE * 2.0
+		s.mesh.radius = sat_scale
+		s.mesh.height = sat_scale * 2.0
 		s.material_override = sat_mat
 		add_child(s)
 		_satellites.append(s)
@@ -76,7 +81,7 @@ func _build_isl_lines(isl_a: PackedInt32Array, isl_b: PackedInt32Array) -> void:
 	_isl_a = isl_a
 	_isl_b = isl_b
 	var line_mat = StandardMaterial3D.new()
-	line_mat.albedo_color = Color(0.3, 0.9, 1.0, 0.6)
+	line_mat.albedo_color = isl_color
 	line_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	line_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
 	for k in isl_a.size():
@@ -135,10 +140,12 @@ func update_frame(positions: PackedFloat32Array, isl_avail: PackedByteArray) -> 
 #   Godot.Y =  ECEF.Z（北极朝上）
 #   Godot.Z = -ECEF.Y
 #
-# 单位：1 unit = SCALE_KM_PER_UNIT km
-static func ecef_km_to_unity(x_km: float, y_km: float, z_km: float) -> Vector3:
+# 单位：1 unit = scale_km_per_unit km
+#
+# 非 static（要访问实例变量 scale_km_per_unit）。
+func ecef_km_to_unity(x_km: float, y_km: float, z_km: float) -> Vector3:
 	return Vector3(
-		x_km / SCALE_KM_PER_UNIT,
-		z_km / SCALE_KM_PER_UNIT,
-		-y_km / SCALE_KM_PER_UNIT
+		x_km / scale_km_per_unit,
+		z_km / scale_km_per_unit,
+		-y_km / scale_km_per_unit
 	)
