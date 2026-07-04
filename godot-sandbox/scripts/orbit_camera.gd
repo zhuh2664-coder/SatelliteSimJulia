@@ -25,16 +25,17 @@ class_name OrbitCamera
 @export var initial_yaw_deg: float = 0.0
 @export var initial_pitch_deg: float = 30.0   # 略斜视，露出 3D 感
 
-var _target: Node3D
+var _target: Vector3 = Vector3.ZERO
+var _target_node: Node3D
 var _yaw_deg: float
 var _pitch_deg: float
 var _distance: float
 
 func _ready() -> void:
-	if target_path.is_empty():
-		_target = get_parent() as Node3D
-	else:
-		_target = get_node_or_null(target_path) as Node3D
+	if not target_path.is_empty():
+		_target_node = get_node_or_null(target_path) as Node3D
+		if _target_node != null:
+			_target = _target_node.global_position
 	_yaw_deg = initial_yaw_deg
 	_pitch_deg = initial_pitch_deg
 	_distance = initial_distance
@@ -45,6 +46,14 @@ func _unhandled_input(event: InputEvent) -> void:
 		if event.button_mask & MOUSE_BUTTON_MASK_LEFT:
 			_yaw_deg -= event.relative.x * rotate_speed
 			_pitch_deg = clamp(_pitch_deg - event.relative.y * rotate_speed, -89.0, 89.0)
+			_update_transform()
+		elif event.button_mask & MOUSE_BUTTON_MASK_RIGHT:
+			# M6.2: 右键拖动 → 平移 target（沿相机 right/up 平面）
+			var right := -global_transform.basis.x
+			var up := global_transform.basis.y
+			var pan_factor: float = _distance * 0.0015
+			_target += right * event.relative.x * pan_factor
+			_target += up * event.relative.y * pan_factor
 			_update_transform()
 	elif event is InputEventMouseButton:
 		if event.pressed:
@@ -57,12 +66,13 @@ func _unhandled_input(event: InputEvent) -> void:
 					_update_transform()
 
 func _update_transform() -> void:
-	if _target == null:
-		return
+	# M6.2: target_node 仍然每帧同步，但 pan 优先改 Vector3 _target
+	if _target_node != null:
+		_target_node.global_position = _target
 	var yaw = deg_to_rad(_yaw_deg)
 	var pitch = deg_to_rad(_pitch_deg)
 	var x = _distance * cos(pitch) * sin(yaw)
 	var y = _distance * sin(pitch)
 	var z = _distance * cos(pitch) * cos(yaw)
-	global_position = _target.global_position + Vector3(x, y, z)
-	look_at(_target.global_position, Vector3.UP)
+	global_position = _target + Vector3(x, y, z)
+	look_at(_target, Vector3.UP)
