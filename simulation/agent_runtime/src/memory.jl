@@ -1,6 +1,19 @@
 # ===== 记忆系统 =====
 
 """
+    Pattern
+
+学习到的网络行为模式。
+"""
+Base.@kwdef struct Pattern
+    description::String
+    confidence::Float64    # 0.0 - 1.0
+    first_seen::Int
+    last_seen::Int
+    occurrences::Int
+end
+
+"""
     MemoryStore
 
 卫星 Agent 的记忆系统。
@@ -32,19 +45,6 @@
     # === 持久化（预留）===
     persistence_path::String = ""
     auto_save_interval::Int = 3600  # 每 3600 tick 自动保存
-end
-
-"""
-    Pattern
-
-学习到的网络行为模式。
-"""
-@kwdef struct Pattern
-    description::String
-    confidence::Float64    # 0.0 - 1.0
-    first_seen::Int
-    last_seen::Int
-    occurrences::Int
 end
 
 """

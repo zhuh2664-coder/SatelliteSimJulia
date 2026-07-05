@@ -1,16 +1,6 @@
 # ===== 调度系统 =====
 
 """
-    Scheduler
-
-任务调度器，管理定时任务和延迟执行。
-"""
-@kwdef mutable struct Scheduler
-    tasks::Vector{ScheduledTask} = ScheduledTask[]
-    tick::Int = 0
-end
-
-"""
     ScheduledTask
 
 被调度的一次性任务。
@@ -21,6 +11,16 @@ end
     callback::Function
     description::String = ""
     executed::Bool = false
+end
+
+"""
+    Scheduler
+
+任务调度器，管理定时任务和延迟执行。
+"""
+@kwdef mutable struct Scheduler
+    tasks::Vector{ScheduledTask} = ScheduledTask[]
+    tick::Int = 0
 end
 
 """

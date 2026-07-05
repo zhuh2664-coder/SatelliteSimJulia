@@ -109,7 +109,8 @@ func _init() -> void:
 					stats["frames"] = frames.size()
 					results.append(stats)
 					_print_stats(stats)
-				current_world = null
+					current_world = null
+
 				current_index += 1
 				if current_index >= test_names.size():
 					_report_and_quit(results)
@@ -121,6 +122,8 @@ func _init() -> void:
 				results.append({"name": current_name, "pass": false, "error": str(msg.get("message", ""))})
 				_report_and_quit(results)
 				return
+
+
 
 		if current_index >= 0 and capture_start_ms > 0:
 			var elapsed_ms = Time.get_ticks_msec() - capture_start_ms
