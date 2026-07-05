@@ -58,7 +58,7 @@ function build_targets()
     end
 
     push!(targets, target("viz", `julia --project=. -e "using Pkg; Pkg.test(\"SatelliteSimViz\")"`; enabled=!SKIP_VIZ, reason="SATSIM_SKIP_VIZ=1"))
-    push!(targets, target("server", `julia --project=. -e "using Pkg; Pkg.test(\"SatelliteSimServer\")"`; enabled=RUN_SERVER, reason="set SATSIM_RUN_SERVER=1"))
+    push!(targets, target("server", `julia --project=src/server -e "using Pkg; Pkg.test()"`; enabled=RUN_SERVER, reason="set SATSIM_RUN_SERVER=1"))
 
     # Build helper package; not a regular test target yet.
     push!(targets, target("sysimage", `true`; enabled=false, reason="no independent [extras]/[targets] test configured yet"))
