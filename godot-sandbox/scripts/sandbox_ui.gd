@@ -147,4 +147,4 @@ func set_status(s: String) -> void:
 		_panel_stylebox.bg_color = theme_idle
 
 func set_hud(sats: int, frame: int, total: int, isl_avail: int, isl_total: int) -> void:
-	_hud_label.text = "sats: %d    frame: %d/%d    ISL: %d/%d" % [sats, frame, total, isl_avail, isl_total]
+	_hud_label.text = "sats: %d    frame: %d/%d    ISL: %d/%d    fps: %d" % [sats, frame, total, isl_avail, isl_total, int(Engine.get_frames_per_second())]
