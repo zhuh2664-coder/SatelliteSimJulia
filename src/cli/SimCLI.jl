@@ -545,6 +545,25 @@ query: 自然语言问题，例如 "walker24 和 walker48 的时延对比"
     println(reply)
 end
 
+"""
+多智能体团队单轮查询。
+
+query: 自然语言任务，例如 "帮我规划并执行一个 walker48 覆盖分析"
+"""
+@cast function team(query::String;
+    model::String = "deepseek-chat",
+    key::String = "",
+    url::String = "https://api.deepseek.com/v1",
+    session_id::String = "team_default",
+)
+    api_key = isempty(key) ? get(ENV, "DEEPSEEK_API_KEY", "") : key
+    isempty(api_key) && error("DEEPSEEK_API_KEY not set; pass --key or set env var")
+
+    provider = SatelliteSimLab.LLMProvider(; key = api_key, model = model, url = url)
+    result = SatelliteSimLab.run_team(provider, query; session_id = session_id)
+    println(result.final_answer)
+end
+
 # ────────────────────────────────────────────────────────────
 # 入口
 # ────────────────────────────────────────────────────────────
