@@ -48,6 +48,9 @@ function handle_start_simulation(req::StartSimulationReq)
         step_s = req.step_s,
         propagator = req.propagator,
         fps = req.fps,
+        ground_stations = req.ground_stations,
+        include_gsl = req.include_gsl,
+        include_coverage = req.include_coverage,
     )
     return session, StartSimulationResp(
         session_id = session.id,
@@ -56,6 +59,9 @@ function handle_start_simulation(req::StartSimulationReq)
         fps = session.fps,
         step_s = session.step_s,
         tspan = session.tspan,
+        n_ground_stations = length(session.ground_stations),
+        gsl_enabled = session.include_gsl && !isempty(session.ground_stations),
+        coverage_enabled = session.include_coverage && !isempty(session.ground_stations),
     )
 end
 

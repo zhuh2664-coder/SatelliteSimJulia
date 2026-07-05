@@ -5,30 +5,30 @@ using JSON
 using UUIDs
 using Storage
 
-function _owner_id(req)::UUID
-    return req.context[:owner_id]
-end
-
 function get_result_json(req::HTTP.Request)
     owner_id = _owner_id(req)
-    id = UUID(req.params["id"])
+    id = UUID(req.context[:id])
     job = Storage.get_job(owner_id, id)
     job === nothing && return HTTP.Response(404, JSON.json(Dict("error" => "not found")))
     job.status != "succeeded" && return HTTP.Response(400, JSON.json(Dict("error" => "job not succeeded")))
 
-    key = "results/$(id)/result.json"
+    prefix = (job.result_key === nothing || isempty(job.result_key)) ?
+             "s3://results/$(id)/" : job.result_key
+    key = rstrip(prefix, '/') * "/result.json"
     data = Storage.download_result(key)
-    return HTTP.Response(200, data; headers = ["Content-Type" => "application/json"])
+    return HTTP.Response(200, ["Content-Type" => "application/json"], data)
 end
 
 function download_file(req::HTTP.Request)
     owner_id = _owner_id(req)
-    id = UUID(req.params["id"])
+    id = UUID(req.context[:id])
     job = Storage.get_job(owner_id, id)
     job === nothing && return HTTP.Response(404, JSON.json(Dict("error" => "not found")))
 
     filename = HTTP.URIs.queryparams(req.target)["file"]
-    key = "results/$(id)/$(filename)"
+    prefix = (job.result_key === nothing || isempty(job.result_key)) ?
+             "s3://results/$(id)/" : job.result_key
+    key = rstrip(prefix, '/') * "/$(filename)"
     data = Storage.download_result(key)
-    return HTTP.Response(200, data; headers = ["Content-Type" => "application/octet-stream"])
+    return HTTP.Response(200, ["Content-Type" => "application/octet-stream"], data)
 end

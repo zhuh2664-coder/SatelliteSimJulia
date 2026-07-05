@@ -7,6 +7,9 @@ using Base64
 
 include("middleware/auth.jl")
 include("middleware/tenant.jl")
+
+_owner_id(req)::UUID = req.context[:owner_id]
+
 include("routes/auth.jl")
 include("routes/experiments.jl")
 include("routes/jobs.jl")
@@ -31,7 +34,9 @@ function router(req::HTTP.Request)
 
     try
         # ── 无需认证 ──
-        if path == "/api/register" && req.method == "POST"
+        if path == "/api/health" && req.method == "GET"
+            return HTTP.Response(200, JSON.json(Dict("status" => "ok")))
+        elseif path == "/api/register" && req.method == "POST"
             return register(req)
         elseif path == "/api/login" && req.method == "POST"
             return login(req)
@@ -46,31 +51,31 @@ function router(req::HTTP.Request)
         elseif path == "/api/experiments" && req.method == "GET"
             return _wrap(list_experiments)(req)
         elseif startswith(path, "/api/experiments/") && req.method == "GET"
-            id = split(path, "/")[3]
-            req.params["id"] = id
+            id = split(path, "/")[4]
+            req.context[:id] = id
             return _wrap(get_experiment)(req)
         elseif startswith(path, "/api/experiments/") && endswith(path, "/jobs") && req.method == "POST"
-            id = split(path, "/")[3]
-            req.params["id"] = id
+            id = split(path, "/")[4]
+            req.context[:id] = id
             return _wrap(create_job)(req)
 
         elseif path == "/api/jobs" && req.method == "GET"
             return _wrap(list_jobs)(req)
         elseif startswith(path, "/api/jobs/") && endswith(path, "/status") && req.method == "GET"
-            id = split(path, "/")[3]
-            req.params["id"] = id
+            id = split(path, "/")[4]
+            req.context[:id] = id
             return _wrap(get_job_status)(req)
         elseif startswith(path, "/api/jobs/") && endswith(path, "/result.json") && req.method == "GET"
-            id = split(path, "/")[3]
-            req.params["id"] = id
+            id = split(path, "/")[4]
+            req.context[:id] = id
             return _wrap(get_result_json)(req)
         elseif startswith(path, "/api/jobs/") && contains(path, "/download") && req.method == "GET"
-            id = split(path, "/")[3]
-            req.params["id"] = id
+            id = split(path, "/")[4]
+            req.context[:id] = id
             return _wrap(download_file)(req)
         elseif startswith(path, "/api/jobs/") && req.method == "GET"
-            id = split(path, "/")[3]
-            req.params["id"] = id
+            id = split(path, "/")[4]
+            req.context[:id] = id
             return _wrap(get_job)(req)
 
         else

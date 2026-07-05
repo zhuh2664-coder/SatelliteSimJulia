@@ -60,7 +60,7 @@ function frame_payload(session::SimulationSession, frame_index::Integer)
     # isl_pairs 输出为 [[i,j], ...]（JSON-friendly）
     isl_pairs_json = [[Int(a), Int(b)] for (a, b) in session.isl_edges]
 
-    return Dict{String,Any}(
+    payload = Dict{String,Any}(
         "type"        => "frame",
         "session_id"  => session.id,
         "t"           => t,
@@ -70,6 +70,57 @@ function frame_payload(session::SimulationSession, frame_index::Integer)
         "isl_pairs"   => isl_pairs_json,
         "isl_avail"   => isl_avail,
     )
+
+    if session.include_gsl && !isempty(session.ground_station_tuples)
+        _append_gsl_payload!(payload, session, pos_frame)
+    end
+
+    return payload
+end
+
+function _append_gsl_payload!(payload::Dict{String,Any}, session::SimulationSession, pos_frame)
+    avail, _, _, _ = evaluate_gsl_batch(pos_frame, session.ground_station_tuples; constraints = session.constraints)
+    n_sat, n_ground = size(avail)
+
+    gsl_avail = Bool[]
+    sizehint!(gsl_avail, n_sat * n_ground)
+    gsl_pairs = Vector{Vector{Int}}()
+    for i in 1:n_sat, g in 1:n_ground
+        v = Bool(avail[i, g])
+        push!(gsl_avail, v)
+        v && push!(gsl_pairs, [Int(i), Int(g)])
+    end
+
+    covered = count(g -> any(@view avail[:, g]), 1:n_ground)
+    payload["ground_stations"] = _ground_station_payload(session.ground_stations)
+    payload["gsl_shape"] = [Int(n_sat), Int(n_ground)]
+    payload["gsl_avail"] = gsl_avail
+    payload["gsl_pairs"] = gsl_pairs
+    if session.include_coverage
+        payload["coverage_summary"] = Dict{String,Any}(
+            "ratio" => n_ground == 0 ? 0.0 : covered / n_ground,
+            "covered" => Int(covered),
+            "total" => Int(n_ground),
+        )
+    end
+    return payload
+end
+
+function _ground_station_payload(stations::Vector{GroundStationSpec})
+    return [
+        begin
+            x, y, z = geodetic_to_ecef_km(gs.lat_deg, gs.lon_deg, gs.alt_km)
+            Dict{String,Any}(
+                "id" => gs.id,
+                "name" => gs.name,
+                "lat_deg" => gs.lat_deg,
+                "lon_deg" => gs.lon_deg,
+                "alt_km" => gs.alt_km,
+                "ecef_km" => [x, y, z],
+            )
+        end
+        for gs in stations
+    ]
 end
 
 """

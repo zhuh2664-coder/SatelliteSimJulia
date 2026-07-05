@@ -1,56 +1,50 @@
 #!/bin/bash
-# smoke_local.sh — 本地 Docker Compose 全链路冒烟
-# 启动 PostgreSQL + MinIO + API，跑 curl 链路验证
+# smoke_local.sh — 本地 Docker Compose 冒烟
+# 启动 PostgreSQL + MinIO + API，验证 API 注册/认证/实验配置上传链路。
 
-set -e
+set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 COMPOSE_FILE="$SCRIPT_DIR/docker-compose.local.yml"
+KEEP_PLATFORM_SMOKE="${KEEP_PLATFORM_SMOKE:-0}"
 
-# 1. 启动依赖
-docker compose -f "$COMPOSE_FILE" up -d postgres minio api
+for cmd in docker curl jq; do
+    command -v "$cmd" >/dev/null 2>&1 || {
+        echo "ERROR: required command not found: $cmd" >&2
+        exit 1
+    }
+done
 
-# 2. 等待就绪
-echo "waiting for services..."
-sleep 8
+cleanup() {
+    if [[ "$KEEP_PLATFORM_SMOKE" != "1" ]]; then
+        docker compose -f "$COMPOSE_FILE" down -v >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
 
-# 3. 初始化数据库
-PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d satnet \
-    -f "$PROJECT_ROOT/storage/migrations/001_initial.sql"
+echo "starting local platform services..."
+docker compose -f "$COMPOSE_FILE" up -d --build postgres minio api
 
-# 4. 创建 MinIO buckets
-docker run --rm --network host minio/mc:latest \
-    alias set local http://localhost:9000 minioadmin minioadmin
-docker run --rm --network host minio/mc:latest \
-    mb local/configs local/results
+echo "waiting for api health..."
+for _ in $(seq 1 60); do
+    if curl -fsS http://localhost:8080/api/health >/dev/null 2>&1; then
+        break
+    fi
+    sleep 2
+done
+curl -fsS http://localhost:8080/api/health >/dev/null
 
-# 5. curl 链路
-API=http://localhost:8080
-EMAIL=alice@example.com
+echo "applying database migration..."
+docker compose -f "$COMPOSE_FILE" exec -T postgres \
+    psql -U postgres -d satnet -v ON_ERROR_STOP=1 \
+    < "$PROJECT_ROOT/storage/migrations/001_initial.sql"
 
-echo "register..."
-TOKEN=$(curl -sS -X POST "$API/api/register" \
-    -H "Content-Type: application/json" \
-    -d "{\"email\":\"$EMAIL\"}" | jq -r .token)
-echo "token: $TOKEN"
+echo "creating MinIO buckets..."
+docker compose -f "$COMPOSE_FILE" run --rm mc \
+    'mc alias set local http://minio:9000 minioadmin minioadmin && mc mb --ignore-existing local/configs local/results'
 
-echo "me..."
-curl -sS "$API/api/me" -H "Authorization: Bearer $TOKEN"
+echo "running API smoke..."
+API=http://localhost:8080 SUBMIT_JOB=0 "$SCRIPT_DIR/smoke_api.sh"
 
-echo "create experiment..."
-EXP_ID=$(curl -sS -X POST "$API/api/experiments" \
-    -H "Authorization: Bearer $TOKEN" \
-    -H "Content-Type: application/json" \
-    -d '{"name":"walker48-test","config":{"constellation":"walker48"}}' | jq -r .id)
-echo "experiment: $EXP_ID"
-
-echo "submit job..."
-JOB_ID=$(curl -sS -X POST "$API/api/experiments/$EXP_ID/jobs" \
-    -H "Authorization: Bearer $TOKEN" | jq -r .id)
-echo "job: $JOB_ID"
-
-echo "job status..."
-curl -sS "$API/api/jobs/$JOB_ID/status" -H "Authorization: Bearer $TOKEN"
-
-echo "done."
+echo "SMOKE LOCAL: ALL PASS"

@@ -5,13 +5,17 @@ version = "0.1.0"
 [deps]
 SatelliteSimJulia = "e31c032d-6d32-4f65-b334-1daae2022f3d"
 Storage = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-JLD2 = "0397bae8-6c5e-53e8-a0b9-ffb2b6d7d6ab"
+JLD2 = "033835bb-8acc-5ee8-8aae-3f567f8a3819"
 JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+
+[sources]
+SatelliteSimJulia = {path = "../.."}
+Storage = {path = "../storage"}
 
 [compat]
 SatelliteSimJulia = "0.1.0"
 Storage = "0.1.0"
-JLD2 = "0.4"
+JLD2 = "0.6"
 JSON = "1"
 Dates = "1"

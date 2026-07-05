@@ -80,13 +80,15 @@ function build_config(d::Dict)
 end
 
 # ── ExperimentResult → JSON Dict（只取可序列化的摘要字段） ──
+_json_number(x) = isfinite(Float64(x)) ? Float64(x) : 0.0
+
 function result_to_dict(r::SatelliteSimLab.ExperimentResult)
     return Dict(
-        "coverage_ratio"     => Float64(r.coverage.coverage_ratio),
-        "avg_latency_ms"     => Float64(r.latency.avg_latency_ms),
-        "connectivity"       => Float64(r.network.connectivity_ratio),
-        "fitness"            => Float64(r.fitness),
-        "duration_s"         => Float64(r.duration_s),
+        "coverage_ratio"     => _json_number(r.coverage.coverage_ratio),
+        "avg_latency_ms"     => _json_number(r.latency.avg_latency_ms),
+        "connectivity"       => _json_number(r.network.connectivity_ratio),
+        "fitness"            => _json_number(r.fitness),
+        "duration_s"         => _json_number(r.duration_s),
     )
 end
 
@@ -94,23 +96,20 @@ end
 function main()
     args = parse_args(ARGS)
 
-    println("[runner] connecting to storage...")
-    Storage.connect()
-
     println("[runner] downloading config: $(args.config_s3)")
     cfg_dict = Storage.download_config(args.config_s3)
 
     println("[runner] building ExperimentConfig...")
-    try
-        config = build_config(cfg_dict)
+    config = try
+        build_config(cfg_dict)
     catch e
         println(stderr, "[runner] config build failed: ", e)
         exit(1)
     end
 
     println("[runner] running simulation...")
-    try
-        result = SatelliteSimLab.run_experiment(config)
+    result = try
+        SatelliteSimLab.run_experiment(config)
     catch e
         println(stderr, "[runner] simulation failed: ", e)
         exit(2)

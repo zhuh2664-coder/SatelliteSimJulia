@@ -5,10 +5,6 @@ using JSON
 using UUIDs
 using Storage
 
-function _owner_id(req)::UUID
-    return req.context[:owner_id]
-end
-
 function create_experiment(req::HTTP.Request)
     body = JSON.parse(String(req.body))
     name = get(body, "name", "")
@@ -17,9 +13,9 @@ function create_experiment(req::HTTP.Request)
 
     owner_id = _owner_id(req)
     exp_id = uuid4()
-    config_key = "configs/$(exp_id)/config.json"
+    config_key = "$(exp_id)/config.json"
 
-    # 上传配置到 MinIO
+    # 上传配置到 MinIO；DB 存 bucket-relative key，跨组件传输时再补 s3:// URL
     Storage.upload_config(config_key, Vector{UInt8}(JSON.json(config, 2)))
 
     exp = Storage.create_experiment(owner_id, name, config_key)
@@ -46,7 +42,7 @@ end
 
 function get_experiment(req::HTTP.Request)
     owner_id = _owner_id(req)
-    id = UUID(req.params["id"])
+    id = UUID(req.context[:id])
     exp = Storage.get_experiment(owner_id, id)
     exp === nothing && return HTTP.Response(404, JSON.json(Dict("error" => "not found")))
     return HTTP.Response(200, JSON.json(Dict(

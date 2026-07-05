@@ -27,6 +27,13 @@ using Test
         @test r.propagator == "j4"
         @test r.fps == 20.0
 
+        r = parse_request("""{"type":"start_simulation","name":"iridium","ground_stations":[{"id":"beijing","name":"Beijing","lat_deg":39.9042,"lon_deg":116.4074,"alt_km":0.0}],"include_gsl":true,"include_coverage":true}""")
+        @test length(r.ground_stations) == 1
+        @test r.ground_stations[1].id == "beijing"
+        @test r.ground_stations[1].lat_deg ≈ 39.9042
+        @test r.include_gsl
+        @test r.include_coverage
+
         r = parse_request("""{"type":"stop_simulation","session_id":"abc"}""")
         @test r isa StopSimulationReq
         @test r.session_id == "abc"
@@ -133,6 +140,21 @@ using Test
             # 第二帧 t != 0
             payload2 = frame_payload(session, 2)
             @test payload2["t"] ≈ 10.0
+
+            gs_session = start_session(;
+                name = "iridium", tspan = [0.0, 10.0], step_s = 10.0,
+                ground_stations = [GroundStationSpec(id = "beijing", name = "Beijing", lat_deg = 39.9042, lon_deg = 116.4074, alt_km = 0.0)],
+            )
+            try
+                gsl_payload = frame_payload(gs_session, 1)
+                @test gsl_payload["gsl_shape"] == [66, 1]
+                @test length(gsl_payload["gsl_avail"]) == 66
+                @test haskey(gsl_payload, "gsl_pairs")
+                @test haskey(gsl_payload, "ground_stations")
+                @test gsl_payload["coverage_summary"]["total"] == 1
+            finally
+                stop_session!(gs_session.id)
+            end
 
             # 越界
             @test_throws BoundsError frame_payload(session, 99)

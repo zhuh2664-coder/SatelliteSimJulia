@@ -7,10 +7,6 @@ using Base64
 using UUIDs
 using Storage
 
-function _hash_token(token::String)::String
-    return base64encode(sha256(token))
-end
-
 function _json_response(data; status = 200)
     return HTTP.Response(status, JSON.json(data))
 end
@@ -50,7 +46,7 @@ function login(req::HTTP.Request)
 end
 
 function me(req::HTTP.Request)
-    user = Storage.current_user(req)
+    user = current_user(req)
     return _json_response(Dict(
         "id" => string(user.id),
         "email" => user.email,

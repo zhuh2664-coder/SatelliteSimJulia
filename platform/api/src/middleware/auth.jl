@@ -6,7 +6,7 @@ using SHA
 using Base64
 using Storage
 
-function _hash_token(token::String)::String
+function _hash_token(token::AbstractString)::String
     return base64encode(sha256(token))
 end
 
@@ -20,8 +20,9 @@ function auth_middleware(handler)
         isempty(auth) && return _unauthorized("missing Authorization header")
 
         parts = split(auth)
-        length(parts) != 2 || lowercase(parts[1]) != "bearer" &&
+        if length(parts) != 2 || lowercase(parts[1]) != "bearer"
             return _unauthorized("invalid Authorization format")
+        end
 
         token = parts[2]
         token_hash = _hash_token(token)

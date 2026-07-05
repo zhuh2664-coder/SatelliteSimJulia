@@ -15,11 +15,14 @@ spec:
       containers:
       - name: api
         image: satnet-api:latest
+        imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
         env:
         - name: PORT
           value: "8080"
+        - name: K8S_NAMESPACE
+          value: "satnet"
         - name: DATABASE_URL
           valueFrom:
             secretKeyRef: {name: satnet-db, key: url}

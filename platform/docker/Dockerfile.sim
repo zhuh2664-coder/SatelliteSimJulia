@@ -1,16 +1,17 @@
 # Dockerfile.sim — SatelliteSimJulia 批处理仿真 runner 镜像
 # 构建：docker build -f platform/docker/Dockerfile.sim -t satnet-sim:latest .
 
-FROM julia:1.11-ubuntu
+FROM julia:1.12-bookworm
 
 LABEL description="SatelliteSimJulia batch simulation runner"
 LABEL maintainer="SatelliteSimJulia"
 
-# 安装系统依赖：git（部分 Julia 包需要）、curl（健康检查/调试）、ca-certificates
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
+# 安装系统依赖：curl（健康检查/调试）、ca-certificates、PROJ 运行时所需 sqlite
+RUN apt-get -o Acquire::Retries=5 update && \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
     curl \
     ca-certificates \
+    libsqlite3-0 \
     && rm -rf /var/lib/apt/lists/*
 
 # 工作目录

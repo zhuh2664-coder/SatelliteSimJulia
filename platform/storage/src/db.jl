@@ -27,7 +27,7 @@ end
 
 function _conn()
     c = _CONN[]
-    (c === nothing || LibPQ.status(c) != LibPQ.CONNECTION_OK) && connect()
+    (c === nothing || LibPQ.status(c) != LibPQ.libpq_c.CONNECTION_OK) && connect()
     return _CONN[]
 end
 

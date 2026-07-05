@@ -39,6 +39,14 @@ Base.@kwdef struct DescribeConstellationReq <: Request
     name::String
 end
 
+Base.@kwdef struct GroundStationSpec
+    id::String
+    name::String
+    lat_deg::Float64
+    lon_deg::Float64
+    alt_km::Float64 = 0.0
+end
+
 Base.@kwdef struct StartSimulationReq <: Request
     type::String = "start_simulation"
     name::String                      # catalog 符号，如 "iridium"
@@ -46,6 +54,9 @@ Base.@kwdef struct StartSimulationReq <: Request
     step_s::Float64 = 10.0
     propagator::String = "j2"         # "two_body" | "j2" | "j4"
     fps::Float64 = 10.0               # 推流目标帧率
+    ground_stations::Vector{GroundStationSpec} = GroundStationSpec[]
+    include_gsl::Bool = true
+    include_coverage::Bool = true
 end
 
 Base.@kwdef struct StopSimulationReq <: Request
@@ -92,6 +103,9 @@ Base.@kwdef struct StartSimulationResp
     fps::Float64
     step_s::Float64
     tspan::Vector{Float64}
+    n_ground_stations::Int = 0
+    gsl_enabled::Bool = false
+    coverage_enabled::Bool = false
 end
 
 Base.@kwdef struct StopSimulationResp
@@ -127,6 +141,7 @@ end
 
 StructTypes.StructType(::Type{ListConstellationsReq}) = StructTypes.Struct()
 StructTypes.StructType(::Type{DescribeConstellationReq}) = StructTypes.Struct()
+StructTypes.StructType(::Type{GroundStationSpec}) = StructTypes.Struct()
 StructTypes.StructType(::Type{StartSimulationReq}) = StructTypes.Struct()
 StructTypes.StructType(::Type{StopSimulationReq}) = StructTypes.Struct()
 StructTypes.StructType(::Type{AITraceReq}) = StructTypes.Struct()
@@ -141,6 +156,23 @@ StructTypes.StructType(::Type{AICheckpointResp}) = StructTypes.Struct()
 StructTypes.StructType(::Type{ErrorResponse}) = StructTypes.Struct()
 
 # ── 解析入口：按 type 字段分发到对应 Request 构造器 ──────────
+
+function _parse_ground_station_specs(items)
+    specs = GroundStationSpec[]
+    for (idx, gs) in enumerate(items)
+        id = haskey(gs, :id) ? String(gs.id) : string(idx)
+        name = haskey(gs, :name) ? String(gs.name) : id
+        alt_km = haskey(gs, :alt_km) ? Float64(gs.alt_km) : 0.0
+        push!(specs, GroundStationSpec(
+            id = id,
+            name = name,
+            lat_deg = Float64(gs.lat_deg),
+            lon_deg = Float64(gs.lon_deg),
+            alt_km = alt_km,
+        ))
+    end
+    return specs
+end
 
 """
     parse_request(json_str) -> Request
@@ -162,6 +194,9 @@ function parse_request(s::AbstractString)
         haskey(obj, :step_s) && (kwargs[:step_s] = Float64(obj.step_s))
         haskey(obj, :propagator) && (kwargs[:propagator] = String(obj.propagator))
         haskey(obj, :fps) && (kwargs[:fps] = Float64(obj.fps))
+        haskey(obj, :ground_stations) && (kwargs[:ground_stations] = _parse_ground_station_specs(obj.ground_stations))
+        haskey(obj, :include_gsl) && (kwargs[:include_gsl] = Bool(obj.include_gsl))
+        haskey(obj, :include_coverage) && (kwargs[:include_coverage] = Bool(obj.include_coverage))
         return StartSimulationReq(; kwargs...)
     elseif t == "stop_simulation"
         return StopSimulationReq(session_id = String(obj.session_id))

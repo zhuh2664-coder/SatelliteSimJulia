@@ -31,7 +31,11 @@ using SatelliteSimNet
 - `isl_edges::Vector{Tuple{Int,Int}}`  候选 ISL 边（1-based 卫星索引对）
 - `step_s::Float64`          每帧间隔秒
 - `tspan::Vector{Float64}`   仿真时间区间
-- `constraints`              ISL 物理约束（LEO_DEFAULTS）
+- `constraints`              ISL/GSL 物理约束（LEO_DEFAULTS）
+- `ground_stations`          Godot 请求传入的地面站元数据
+- `ground_station_tuples`    GSL 评估使用的 (lat_deg, lon_deg, alt_km)
+- `include_gsl`              是否在 frame 中输出 GSL
+- `include_coverage`         是否在 frame 中输出覆盖摘要
 - `active::Ref{Bool}`        是否仍活跃（推流循环检查）
 - `frame_index::Ref{Int}`    下一个要推的帧序号（1-based）
 - `fps::Float64`             目标推流帧率
@@ -44,6 +48,10 @@ mutable struct SimulationSession
     step_s::Float64
     tspan::Vector{Float64}
     constraints
+    ground_stations::Vector{GroundStationSpec}
+    ground_station_tuples::Vector{NTuple{3,Float64}}
+    include_gsl::Bool
+    include_coverage::Bool
     active::Base.RefValue{Bool}
     frame_index::Base.RefValue{Int}
     fps::Float64
@@ -87,6 +95,9 @@ function start_session(;
     step_s::Real = 10.0,
     propagator::AbstractString = "j2",
     fps::Real = 10.0,
+    ground_stations::Vector{GroundStationSpec} = GroundStationSpec[],
+    include_gsl::Bool = true,
+    include_coverage::Bool = true,
 )
     # 1. 解析 catalog 配置
     sym = Symbol(name)
@@ -113,6 +124,7 @@ function start_session(;
 
     # 5. 建会话
     session_id = randstring(8)
+    gs_tuples = [(gs.lat_deg, gs.lon_deg, gs.alt_km) for gs in ground_stations]
     session = SimulationSession(
         session_id,
         String(name),
@@ -121,6 +133,10 @@ function start_session(;
         Float64(step_s),
         Float64.(tspan),
         LEO_DEFAULTS,
+        ground_stations,
+        gs_tuples,
+        include_gsl,
+        include_coverage,
         Ref(true),
         Ref(1),
         Float64(fps),
