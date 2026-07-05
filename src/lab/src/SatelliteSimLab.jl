@@ -19,6 +19,7 @@ include("layers/12_interaction/memory.jl")
 include("layers/12_interaction/ledger.jl")
 include("layers/12_interaction/agent.jl")
 include("layers/12_interaction/multiagent.jl")
+include("layers/12_interaction/team_graph.jl")
 include("layers/12_interaction/demo.jl")
 
 include("layers/11_experiment/intent.jl")
