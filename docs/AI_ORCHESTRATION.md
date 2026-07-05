@@ -19,6 +19,7 @@ A real product is not just an LLM loop that calls a simulator. For satellite sim
 | Security/resource guards | `ToolBudget`, `guard_tool_call`, pre-tool hooks | Implemented |
 | HITL permissions | `ToolPermissionPolicy`, `approve_tool_call!` | Implemented |
 | Audit ledger | `record_ledger_event!`, `record_tool_ledger!` | Implemented |
+| Event runtime | `AIEvent`, `AIRuntime`, `subscribe!`, `publish!`, `run_event_loop!` | Implemented |
 | Trace inspection | `AgentTrace`, `TraceEvent`, `trace_timeline` | Implemented |
 | Deterministic replay | `ReplayStep`, `ReplayResult`, `replay_tools` | Implemented |
 | Durable checkpoint | `save_team_graph_checkpoint!`, `load_team_graph_checkpoint` | Implemented |
@@ -80,6 +81,26 @@ state.artifacts["plan"]
 ```
 
 Artifacts are included in checkpoints and injected into later node prompts. This keeps planner-executor handoff explicit instead of relying only on natural language transcript text.
+
+## Event runtime
+
+Inspired by AutoGen's event-driven programming model, SatelliteSimJulia now has an internal Julia-native event runtime. It does not depend on AutoGen or Python.
+
+```julia
+runtime = AIRuntime(session_id = "mission_events")
+subscribe!(runtime, "satellite.run.*") do event, rt
+    println(event.type)
+end
+emit_event!(runtime;
+    source = "planner",
+    type = "satellite.run.started",
+    subject = "run_001",
+    data = Dict("constellation" => "walker24"),
+)
+run_event_loop!(runtime)
+```
+
+This gives the AI layer a product path toward async AIRun execution, worker backends, human approval events, and simulation lifecycle events without importing AutoGen into the Julia core.
 
 ## Durable execution
 

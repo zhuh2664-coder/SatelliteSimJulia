@@ -6,6 +6,7 @@ using Test
     include("test_tool_guards.jl")
     include("test_tool_validation_permissions.jl")
     include("test_ledger.jl")
+    include("test_event_runtime.jl")
     include("test_trace.jl")
     include("test_mock_provider.jl")
     include("test_multiagent.jl")

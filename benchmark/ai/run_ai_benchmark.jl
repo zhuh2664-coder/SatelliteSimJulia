@@ -91,6 +91,32 @@ function _schema_permission_checks!()
     end
 end
 
+function _event_runtime_checks!()
+    session_id = "bench_event_runtime_$(rand(UInt))"
+    runtime = AIRuntime(session_id = session_id)
+    try
+        seen = String[]
+        subscribe!(runtime, "satellite.benchmark.*") do event, rt
+            push!(seen, event.type)
+            return nothing
+        end
+        emit_event!(runtime;
+            source = "benchmark",
+            type = "satellite.benchmark.started",
+            subject = "ai",
+            data = Dict{String,Any}("ok" => true),
+        )
+        processed = run_event_loop!(runtime)
+        processed == 1 || error("event runtime did not process one event")
+        seen == ["satellite.benchmark.started"] || error("event runtime wildcard subscription failed")
+        state = runtime_state(runtime)
+        state["handled"] == 1 || error("event runtime state did not persist handled count")
+        return true
+    finally
+        _cleanup_session(session_id)
+    end
+end
+
 function _ai_run_lifecycle_checks!()
     session_id = "bench_ai_run_$(rand(UInt))"
     run_id = "bench_run_$(rand(UInt))"
@@ -161,10 +187,12 @@ function main()
     report = eval_report(suite)
     report["schema_permission_checks"] = _schema_permission_checks!()
     report["checkpoint_replay_checks"] = _checkpoint_replay_checks!()
+    report["event_runtime_checks"] = _event_runtime_checks!()
     report["ai_run_lifecycle_checks"] = _ai_run_lifecycle_checks!()
     report["product_gate_passed"] = report["passed"] == report["total"] &&
                                      report["schema_permission_checks"] &&
                                      report["checkpoint_replay_checks"] &&
+                                     report["event_runtime_checks"] &&
                                      report["ai_run_lifecycle_checks"]
 
     println(JSON.json(report))
