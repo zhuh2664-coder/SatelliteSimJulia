@@ -15,3 +15,10 @@ SatelliteToolboxSgp4 = "ba14ac17-bfc9-4710-a76f-b32930ef2339"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 Zygote = "e88e6eb3-aa80-5325-afca-941959d7151f"
 SatelliteToolbox = "6ac157d9-b43d-51bb-8fab-48bf53814f4a"
+
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

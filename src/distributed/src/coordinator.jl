@@ -106,15 +106,14 @@ end
 
 # 协调进程用全局位置集中评估所有 ISL（MVP：和单进程等价）
 function _evaluate_all_isls_global(positions::Matrix{Float64}, links, constraints)
+    link_pairs = Tuple{Int,Int}[Tuple(link) for link in links]
+    evals = evaluate_isl_batch(positions, link_pairs; constraints=constraints)
     available = Tuple{Int,Int}[]
     weights = Float64[]
-    for (i, j) in links
-        pos_a = (positions[i,1], positions[i,2], positions[i,3])
-        pos_b = (positions[j,1], positions[j,2], positions[j,3])
-        avail, _d, _los, delay, _det = evaluate_isl(pos_a, pos_b; constraints=constraints)
-        if avail
-            push!(available, (i, j))
-            push!(weights, delay)
+    for (link, ev) in zip(link_pairs, evals)
+        if ev.available
+            push!(available, link)
+            push!(weights, ev.latency_ms)
         end
     end
     return available, weights
