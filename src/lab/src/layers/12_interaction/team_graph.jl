@@ -4,7 +4,7 @@
 # 只增强编排能力，不引入新的仿真逻辑。
 
 export TeamNode, TeamState, TeamGraph, TeamGraphResult,
-       default_team_graph, run_team_graph
+       default_team_graph, run_team_graph, resume_team_graph
 
 struct TeamNode
     id::String
@@ -78,8 +78,10 @@ function _team_graph_input(spec::AgentSpec, state::TeamState)::String
     end
     if !isempty(state.artifacts)
         println(io, "\n共享 artifacts keys: ", join(sort(collect(keys(state.artifacts))), ", "))
+        println(io, "共享 artifacts: ", JSON.json(state.artifacts))
     end
-    println(io, "\n请按你的角色完成当前节点任务。")
+    println(io, "\n如需给后续节点传递结构化产物，可单独输出一行：ARTIFACT <key> <json>。")
+    println(io, "请按你的角色完成当前节点任务。")
     return String(take!(io))
 end
 
@@ -99,17 +101,11 @@ function _maybe_checkpoint_team_graph!(team::AgentTeam, state::TeamState, checkp
     return nothing
 end
 
-function run_team_graph(team::AgentTeam, graph::TeamGraph, user_input::String;
-                        checkpoint::Bool = false,
-                        checkpoint_path::Union{String,Nothing} = nothing)::TeamGraphResult
-    state = TeamState(user_input, TeamMessage[], Dict{String,Any}(), graph.start, 0, :running)
-    record_ledger_event!(team.shared_memory, Dict{String,Any}(
-        "event_type" => "team_graph_started",
-        "start" => graph.start,
-        "max_steps" => graph.max_steps,
-    ))
-
-    while state.current_node !== nothing && state.step < graph.max_steps
+function _run_team_graph_loop!(team::AgentTeam, graph::TeamGraph, state::TeamState;
+                               checkpoint::Bool = false,
+                               checkpoint_path::Union{String,Nothing} = nothing)::TeamGraphResult
+    state.status = :running
+    while state.current_node !== nothing && state.current_node != "" && state.step < graph.max_steps
         state.step += 1
         node = graph.nodes[state.current_node]
         spec = first(s for s in team.specs if s.id == node.agent_id)
@@ -118,6 +114,10 @@ function run_team_graph(team::AgentTeam, graph::TeamGraph, user_input::String;
         _record_team_step!(team, state, node.id, "team_step_started"; agent = node.agent_id)
         input = _team_graph_input(spec, state)
         reply = run_agent(agent, input)
+        artifact_keys = isdefined(@__MODULE__, :extract_team_artifacts!) ?
+                        extract_team_artifacts!(state, reply) : String[]
+        isempty(artifact_keys) || _record_team_step!(team, state, node.id, "team_artifacts_updated";
+            keys = artifact_keys)
 
         next_node = _route_next(node, reply, state)
         to = next_node === nothing ? "user" : graph.nodes[next_node].agent_id
@@ -143,6 +143,46 @@ function run_team_graph(team::AgentTeam, graph::TeamGraph, user_input::String;
 
     final_answer = isempty(state.transcript) ? "" : last(state.transcript).content
     return TeamGraphResult(final_answer, state, state.transcript)
+end
+
+function run_team_graph(team::AgentTeam, graph::TeamGraph, user_input::String;
+                        checkpoint::Bool = false,
+                        checkpoint_path::Union{String,Nothing} = nothing)::TeamGraphResult
+    state = TeamState(user_input, TeamMessage[], Dict{String,Any}(), graph.start, 0, :running)
+    record_ledger_event!(team.shared_memory, Dict{String,Any}(
+        "event_type" => "team_graph_started",
+        "start" => graph.start,
+        "max_steps" => graph.max_steps,
+    ))
+    return _run_team_graph_loop!(team, graph, state;
+        checkpoint = checkpoint,
+        checkpoint_path = checkpoint_path,
+    )
+end
+
+function resume_team_graph(team::AgentTeam, graph::TeamGraph, state::TeamState;
+                           checkpoint::Bool = false,
+                           checkpoint_path::Union{String,Nothing} = nothing)::TeamGraphResult
+    record_ledger_event!(team.shared_memory, Dict{String,Any}(
+        "event_type" => "team_graph_resumed",
+        "current_node" => state.current_node,
+        "step" => state.step,
+        "max_steps" => graph.max_steps,
+    ))
+    return _run_team_graph_loop!(team, graph, state;
+        checkpoint = checkpoint,
+        checkpoint_path = checkpoint_path,
+    )
+end
+
+function resume_team_graph(team::AgentTeam, graph::TeamGraph, checkpoint_path::AbstractString;
+                           checkpoint::Bool = false)::TeamGraphResult
+    isdefined(@__MODULE__, :load_team_graph_checkpoint) || error("team graph checkpoint support is not loaded")
+    state = load_team_graph_checkpoint(checkpoint_path)
+    return resume_team_graph(team, graph, state;
+        checkpoint = checkpoint,
+        checkpoint_path = String(checkpoint_path),
+    )
 end
 
 function run_team_graph(provider::AbstractLLMProvider, user_input::String;

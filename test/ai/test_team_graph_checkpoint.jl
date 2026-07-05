@@ -66,4 +66,33 @@ end
         @test restored.transcript[1].from == "planner"
         @test restored.transcript[1].role == :planner
     end
+
+    @testset "resume from checkpoint continues current node" begin
+        session_id = "test_team_resume_$(rand(UInt))"
+        try
+            provider = SatelliteSimLab.MockProvider([
+                SatelliteSimLab.AssistantMessage("计划完成", SatelliteSimLab.ToolCall[]),
+                SatelliteSimLab.AssistantMessage("执行完成", SatelliteSimLab.ToolCall[]),
+                SatelliteSimLab.AssistantMessage("最终结论：恢复成功", SatelliteSimLab.ToolCall[]),
+            ])
+            team = SatelliteSimLab.AgentTeam(provider; session_id = session_id)
+            first_graph = SatelliteSimLab.default_team_graph(; max_steps = 1)
+            first = SatelliteSimLab.run_team_graph(team, first_graph, "跑一个可恢复测试"; checkpoint = true)
+            @test first.state.status == :max_steps_reached
+            @test first.state.current_node == "runner"
+
+            path = SatelliteSimLab.team_graph_checkpoint_path(team)
+            resumed_graph = SatelliteSimLab.default_team_graph(; max_steps = 3)
+            resumed = SatelliteSimLab.resume_team_graph(team, resumed_graph, path; checkpoint = true)
+            @test resumed.state.status == :completed
+            @test resumed.final_answer == "最终结论：恢复成功"
+            @test [m.from for m in resumed.transcript] == ["planner", "runner", "reviewer"]
+
+            ledger = SatelliteSimLab.ledger_path(team.shared_memory)
+            @test any(occursin("team_graph_resumed", line) for line in readlines(ledger))
+        finally
+            _cleanup_team_checkpoint_sessions(session_id)
+            SatelliteSimLab.clear_hooks!()
+        end
+    end
 end

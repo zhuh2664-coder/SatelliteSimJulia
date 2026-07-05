@@ -13,6 +13,7 @@
 using JSON3
 using WebSockets
 using SatelliteSimCore
+using SatelliteSimLab
 using Base.Threads
 
 # ── 单条请求的处理逻辑：返回响应对象 + 可选副作用（启动/停止会话） ──
@@ -65,6 +66,26 @@ function handle_stop_simulation(req::StopSimulationReq)
     return StopSimulationResp(session_id = req.session_id)
 end
 
+"""处理 ai_trace：返回 AI ledger timeline 或 replay plan。"""
+function handle_ai_trace(req::AITraceReq)
+    trace = SatelliteSimLab.load_agent_trace(req.session_id)
+    items = if req.mode == "timeline"
+        SatelliteSimLab.trace_timeline(trace)
+    elseif req.mode == "replay_plan"
+        [JSON3.write(item) for item in SatelliteSimLab.tool_replay_plan(trace)]
+    else
+        throw(ArgumentError("unknown ai_trace mode: $(req.mode)"))
+    end
+    return AITraceResp(session_id = req.session_id, mode = req.mode, items = String.(items))
+end
+
+"""处理 ai_checkpoint：返回 TeamGraph checkpoint 摘要 JSON。"""
+function handle_ai_checkpoint(req::AICheckpointReq)
+    path = joinpath("data", "sessions", req.session_id, "team_graph_checkpoint.json")
+    summary = SatelliteSimLab.checkpoint_summary(path)
+    return AICheckpointResp(session_id = req.session_id, summary_json = JSON3.write(summary))
+end
+
 # ── 主分发：把 Request 路由到 handler ────────────────────────
 
 """
@@ -82,6 +103,10 @@ function dispatch_request(req::Request)
         return resp, session
     elseif req isa StopSimulationReq
         return handle_stop_simulation(req), nothing
+    elseif req isa AITraceReq
+        return handle_ai_trace(req), nothing
+    elseif req isa AICheckpointReq
+        return handle_ai_checkpoint(req), nothing
     else
         throw(ArgumentError("unhandled request type: $(typeof(req))"))
     end

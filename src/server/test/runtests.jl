@@ -1,5 +1,6 @@
 using SatelliteSimServer
 using SatelliteSimCore
+using SatelliteSimLab
 using JSON3
 using Test
 
@@ -28,6 +29,15 @@ using Test
 
         r = parse_request("""{"type":"stop_simulation","session_id":"abc"}""")
         @test r isa StopSimulationReq
+        @test r.session_id == "abc"
+
+        r = parse_request("""{"type":"ai_trace","session_id":"abc","mode":"replay_plan"}""")
+        @test r isa AITraceReq
+        @test r.session_id == "abc"
+        @test r.mode == "replay_plan"
+
+        r = parse_request("""{"type":"ai_checkpoint","session_id":"abc"}""")
+        @test r isa AICheckpointReq
         @test r.session_id == "abc"
 
         # 未知 type 报错
@@ -162,6 +172,36 @@ using Test
             finally
                 stop_session!(session.id)
             end
+        end
+    end
+
+    @testset "AI trace/checkpoint endpoints" begin
+        session_id = "server_ai_$(rand(UInt))"
+        mem = SatelliteSimLab.SessionMemory(session_id = session_id)
+        session_dir = dirname(mem.transcript_path)
+        try
+            SatelliteSimLab.record_ledger_event!(mem, Dict{String,Any}(
+                "event_type" => "tool_call",
+                "tool" => "list_available",
+                "args" => Dict("what" => "all"),
+                "status" => "succeeded",
+            ))
+            trace_resp, sess = dispatch_request(AITraceReq(session_id = session_id))
+            @test sess === nothing
+            @test trace_resp.ok
+            @test trace_resp.mode == "timeline"
+            @test any(occursin("tool_call", item) for item in trace_resp.items)
+
+            state = SatelliteSimLab.TeamState("req", SatelliteSimLab.TeamMessage[], Dict{String,Any}(), "", 0, :completed)
+            team = SatelliteSimLab.AgentTeam(SatelliteSimLab.MockProvider(SatelliteSimLab.AssistantMessage[]); session_id = session_id)
+            SatelliteSimLab.save_team_graph_checkpoint!(team, state)
+            chk_resp, sess2 = dispatch_request(AICheckpointReq(session_id = session_id))
+            @test sess2 === nothing
+            @test chk_resp.ok
+            @test JSON3.read(chk_resp.summary_json).status == "completed"
+        finally
+            isdir(session_dir) && rm(session_dir; recursive = true, force = true)
+            SatelliteSimLab.clear_hooks!()
         end
     end
 end

@@ -18,15 +18,15 @@ include("streamer.jl")
 include("handlers.jl")
 
 export parse_request, ListConstellationsReq, DescribeConstellationReq,
-       StartSimulationReq, StopSimulationReq,
+       StartSimulationReq, StopSimulationReq, AITraceReq, AICheckpointReq,
        ListConstellationsResp, DescribeConstellationResp,
-       StartSimulationResp, StopSimulationResp, ErrorResponse,
+       StartSimulationResp, StopSimulationResp, AITraceResp, AICheckpointResp, ErrorResponse,
        start_session, stop_session!, get_session,
        SimulationSession, SESSIONS,
        frame_payload, stream_end_payload,
        ws_handler, http_handler, serve,
        dispatch_request, handle_list_constellations,
        handle_describe_constellation, handle_start_simulation,
-       handle_stop_simulation
+       handle_stop_simulation, handle_ai_trace, handle_ai_checkpoint
 
 end # module

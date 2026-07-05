@@ -53,6 +53,17 @@ Base.@kwdef struct StopSimulationReq <: Request
     session_id::String
 end
 
+Base.@kwdef struct AITraceReq <: Request
+    type::String = "ai_trace"
+    session_id::String
+    mode::String = "timeline"          # "timeline" | "replay_plan"
+end
+
+Base.@kwdef struct AICheckpointReq <: Request
+    type::String = "ai_checkpoint"
+    session_id::String
+end
+
 # ── 响应消息 ────────────────────────────────────────────────
 
 Base.@kwdef struct ListConstellationsResp
@@ -89,6 +100,21 @@ Base.@kwdef struct StopSimulationResp
     session_id::String
 end
 
+Base.@kwdef struct AITraceResp
+    type::String = "ai_trace_response"
+    ok::Bool = true
+    session_id::String
+    mode::String
+    items::Vector{String}
+end
+
+Base.@kwdef struct AICheckpointResp
+    type::String = "ai_checkpoint_response"
+    ok::Bool = true
+    session_id::String
+    summary_json::String
+end
+
 Base.@kwdef struct ErrorResponse
     type::String = "error"
     message::String
@@ -103,11 +129,15 @@ StructTypes.StructType(::Type{ListConstellationsReq}) = StructTypes.Struct()
 StructTypes.StructType(::Type{DescribeConstellationReq}) = StructTypes.Struct()
 StructTypes.StructType(::Type{StartSimulationReq}) = StructTypes.Struct()
 StructTypes.StructType(::Type{StopSimulationReq}) = StructTypes.Struct()
+StructTypes.StructType(::Type{AITraceReq}) = StructTypes.Struct()
+StructTypes.StructType(::Type{AICheckpointReq}) = StructTypes.Struct()
 
 StructTypes.StructType(::Type{ListConstellationsResp}) = StructTypes.Struct()
 StructTypes.StructType(::Type{DescribeConstellationResp}) = StructTypes.Struct()
 StructTypes.StructType(::Type{StartSimulationResp}) = StructTypes.Struct()
 StructTypes.StructType(::Type{StopSimulationResp}) = StructTypes.Struct()
+StructTypes.StructType(::Type{AITraceResp}) = StructTypes.Struct()
+StructTypes.StructType(::Type{AICheckpointResp}) = StructTypes.Struct()
 StructTypes.StructType(::Type{ErrorResponse}) = StructTypes.Struct()
 
 # ── 解析入口：按 type 字段分发到对应 Request 构造器 ──────────
@@ -135,6 +165,12 @@ function parse_request(s::AbstractString)
         return StartSimulationReq(; kwargs...)
     elseif t == "stop_simulation"
         return StopSimulationReq(session_id = String(obj.session_id))
+    elseif t == "ai_trace"
+        kwargs = Dict{Symbol,Any}(:session_id => String(obj.session_id))
+        haskey(obj, :mode) && (kwargs[:mode] = String(obj.mode))
+        return AITraceReq(; kwargs...)
+    elseif t == "ai_checkpoint"
+        return AICheckpointReq(session_id = String(obj.session_id))
     else
         throw(ArgumentError("unknown request type: $(repr(t))"))
     end
