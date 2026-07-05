@@ -13,7 +13,7 @@
 | M4   | ISL 实时连线                     | ✅ done       | `b4d0449`, `1ec265e` |
 | M5   | UI 控制面板                      | ✅ done       | `b59828c` |
 | M6   | 摄像机控制                       | ✅ done       | `223a8b6`, `e730fc5`, `7572959`, `2bdd814` |
-| M7   | 14 星座回归 + 性能               | ⏳ in progress | `e5d1a8e`, `f5baeac`, `d43c9e2`, `407ce27` (M7.2 done) |
+| M7   | 14 星座回归 + 性能               | ⏳ in progress | `e5d1a8e`, `f5baeac`, `d43c9e2`, `407ce27`, `c9a3741`, `8a209bb` (M7.3 done; M7.4 pending) |
 
 ## 工作纪律
 
