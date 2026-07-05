@@ -84,6 +84,8 @@ register_hook!(fn::Function, event::Symbol) = register_hook!(event, fn)
 function clear_hooks!()
     for k in keys(HOOKS); empty!(HOOKS[k]); end
     _DEFAULT_HOOKS_REGISTERED[] = false
+    isdefined(@__MODULE__, :_DEFAULT_TOOL_GUARDS_REGISTERED) && (_DEFAULT_TOOL_GUARDS_REGISTERED[] = false)
+    isdefined(@__MODULE__, :_DEFAULT_LEDGER_HOOKS_REGISTERED) && (_DEFAULT_LEDGER_HOOKS_REGISTERED[] = false)
     return nothing
 end
 
@@ -110,6 +112,11 @@ function run_hooks!(event::Symbol, ctx::HookContext)
         if !is_post
             if ret === :block
                 proceed = false
+                value = "blocked by hook"
+                break
+            elseif ret isa Tuple && length(ret) >= 1 && ret[1] === :block
+                proceed = false
+                value = length(ret) >= 2 ? string(ret[2]) : "blocked by hook"
                 break
             end
         else  # post 类：返回值替换 value（nothing 表示不改）

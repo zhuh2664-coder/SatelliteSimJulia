@@ -7,15 +7,17 @@
 using HTTP
 using JSON
 
-export LLMProvider, ToolCall, AssistantMessage,
+export AbstractLLMProvider, LLMProvider, ToolCall, AssistantMessage,
        chat, build_tool_schemas, llm_tool_schema
+
+abstract type AbstractLLMProvider end
 
 """
     LLMProvider
 
 LLM 提供者配置。兼容 OpenAI 格式的 API（DeepSeek/GPT/任何 OpenAI 兼容端点）。
 """
-struct LLMProvider
+struct LLMProvider <: AbstractLLMProvider
     api_key::String
     model::String
     base_url::String
