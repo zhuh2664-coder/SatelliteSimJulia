@@ -82,18 +82,25 @@ function SimAgent(provider::AbstractLLMProvider;
                   session_goal::String = "",
                   scanned_params::Vector{String} = String[],
                   session_id::String = DEFAULT_SESSION_ID,
-                  reply_style::Symbol = :standard)
-    # 注册默认 hooks（幂等）：截断、资源守卫、ledger 审计。
+                  reply_style::Symbol = :standard,
+                  permission_policy = nothing)
+    # 注册默认 hooks（幂等）：截断、schema 校验、资源守卫、ledger 审计、权限/HITL。
     ensure_default_hooks!()
+    isdefined(@__MODULE__, :register_default_schema_validation!) && register_default_schema_validation!()
     isdefined(@__MODULE__, :register_default_tool_guards!) && register_default_tool_guards!()
     isdefined(@__MODULE__, :register_default_ledger_hooks!) && register_default_ledger_hooks!()
+    isdefined(@__MODULE__, :register_default_tool_permissions!) && register_default_tool_permissions!()
     sp = system_prompt_stable(reply_style) * SYSTEM_PROMPT_DYNAMIC_BOUNDARY
     # 首次构建时动态区可能为空（无 session_goal），仍拼上以保持稳定前缀字节不变。
     messages = [Dict{String,Any}("role" => "system", "content" => sp)]
     tools = build_tool_schemas()
     mem = SessionMemory(session_id = session_id)
     max_iterations = reply_style === :voice ? 6 : 10
-    return SimAgent(provider, messages, tools, max_iterations, reply_style, session_goal, copy(scanned_params), mem)
+    agent = SimAgent(provider, messages, tools, max_iterations, reply_style, session_goal, copy(scanned_params), mem)
+    if permission_policy !== nothing && isdefined(@__MODULE__, :_set_tool_permission_policy!)
+        _set_tool_permission_policy!(agent, permission_policy)
+    end
+    return agent
 end
 
 system_prompt_stable(reply_style::Symbol) =

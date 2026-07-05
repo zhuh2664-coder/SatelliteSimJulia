@@ -39,6 +39,10 @@ build_registered_tool_schemas() = [llm_tool_schema(AI_TOOL_REGISTRY[name]) for n
 function execute_registered_tool(name::String, args::AbstractDict)
     spec = get_ai_tool(name)
     spec === nothing && return nothing
+    if isdefined(@__MODULE__, :validate_tool_args)
+        validation = validate_tool_args(name, args)
+        validation.ok || return Dict("error" => "schema validation failed: $(join(validation.errors, "; "))")
+    end
     return spec.handler(args)
 end
 
