@@ -23,6 +23,7 @@ include("layers/12_interaction/tool_permissions.jl")
 include("layers/12_interaction/agent.jl")
 include("layers/12_interaction/multiagent.jl")
 include("layers/12_interaction/team_graph.jl")
+include("layers/12_interaction/team_graph_checkpoint.jl")
 include("layers/12_interaction/demo.jl")
 
 include("layers/11_experiment/intent.jl")

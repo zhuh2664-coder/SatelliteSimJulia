@@ -91,7 +91,17 @@ function _route_next(node::TeamNode, output::AbstractString, state::TeamState)::
     return node.next
 end
 
-function run_team_graph(team::AgentTeam, graph::TeamGraph, user_input::String)::TeamGraphResult
+function _maybe_checkpoint_team_graph!(team::AgentTeam, state::TeamState, checkpoint::Bool, checkpoint_path)
+    checkpoint || return nothing
+    isdefined(@__MODULE__, :save_team_graph_checkpoint!) || return nothing
+    checkpoint_path === nothing ? save_team_graph_checkpoint!(team, state) :
+                                  save_team_graph_checkpoint!(team, state; path = checkpoint_path)
+    return nothing
+end
+
+function run_team_graph(team::AgentTeam, graph::TeamGraph, user_input::String;
+                        checkpoint::Bool = false,
+                        checkpoint_path::Union{String,Nothing} = nothing)::TeamGraphResult
     state = TeamState(user_input, TeamMessage[], Dict{String,Any}(), graph.start, 0, :running)
     record_ledger_event!(team.shared_memory, Dict{String,Any}(
         "event_type" => "team_graph_started",
@@ -119,10 +129,12 @@ function run_team_graph(team::AgentTeam, graph::TeamGraph, user_input::String)::
             to = next_node === nothing ? "final" : next_node)
 
         state.current_node = next_node === nothing ? "" : next_node
+        _maybe_checkpoint_team_graph!(team, state, checkpoint, checkpoint_path)
         next_node === nothing && break
     end
 
     state.status = state.step >= graph.max_steps && state.current_node != "" ? :max_steps_reached : :completed
+    _maybe_checkpoint_team_graph!(team, state, checkpoint, checkpoint_path)
     record_ledger_event!(team.shared_memory, Dict{String,Any}(
         "event_type" => "team_graph_finished",
         "status" => string(state.status),
@@ -136,7 +148,12 @@ end
 function run_team_graph(provider::AbstractLLMProvider, user_input::String;
                         session_id::String = "team_default",
                         specs::Vector{AgentSpec} = default_agent_specs(),
-                        graph::TeamGraph = default_team_graph())::TeamGraphResult
+                        graph::TeamGraph = default_team_graph(),
+                        checkpoint::Bool = false,
+                        checkpoint_path::Union{String,Nothing} = nothing)::TeamGraphResult
     team = AgentTeam(provider; session_id = session_id, specs = specs)
-    return run_team_graph(team, graph, user_input)
+    return run_team_graph(team, graph, user_input;
+        checkpoint = checkpoint,
+        checkpoint_path = checkpoint_path,
+    )
 end
