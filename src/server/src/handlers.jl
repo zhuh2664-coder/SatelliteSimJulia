@@ -125,7 +125,7 @@ end
 
 每个 WS 连接进入此函数。循环读请求 → 分发 → 响应。
 若是 start_simulation，写完响应后立即开始推流；
-推流期间不再接受新请求（沙盒场景：一连接一会话）。
+推流期间不再接受新请求，推完后回到消息循环等待下一条请求。
 """
 function ws_handler(ws)
     @info "WebSocket connected" uri=string(ws)
@@ -151,11 +151,10 @@ function ws_handler(ws)
             ok2 = WebSockets.writeguarded(ws, resp_json)
             ok2 || break
 
-            # 若是 start_simulation，开始推流
+            # 若是 start_simulation，开始推流；推完后继续等下一条请求
             if session_to_stream !== nothing
-                stream_session!(ws, session_to_stream)
-                # 推流结束，连接使命完成
-                break
+                ok3 = stream_session!(ws, session_to_stream)
+                ok3 || break
             end
         end
     catch e
