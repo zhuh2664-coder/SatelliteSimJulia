@@ -7,7 +7,7 @@ class_name SandboxWorld
 # Init(n_sat, isl_a, isl_b)：
 #   - 建地球 Sphere（按 EARTH_RADIUS_UNITS 半径）
 #   - 建 1 个 MultiMesh 批量绘制 N 个卫星 Sphere
-#   - 建 M 条 ISL 线（ImmediateMesh 动态两点）
+#   - 建 2 条 ISL 批量线（可用/不可用各一个 ImmediateMesh）
 #
 # UpdateFrame(positions, isl_avail)：
 #   - 更新每颗卫星 transform
@@ -36,10 +36,9 @@ class_name SandboxWorld
 var _earth: MeshInstance3D
 var _satellite_multimesh: MultiMesh
 var _satellite_positions: PackedVector3Array = []
-var _isl_lines: Array[MeshInstance3D] = []
-var _isl_meshes: Array[ImmediateMesh] = []
-var _isl_materials: Array[StandardMaterial3D] = []   # M4.1: per-line mat
-var _isl_avail_state: PackedByteArray = []          # M4.2: track for pulse
+var _isl_available_mesh: ImmediateMesh
+var _isl_unavailable_mesh: ImmediateMesh
+var _isl_available_material: StandardMaterial3D
 var _isl_a: PackedInt32Array
 var _isl_b: PackedInt32Array
 var _initialised: bool = false
@@ -94,23 +93,31 @@ func _build_satellites(n_sat: int) -> void:
 func _build_isl_lines(isl_a: PackedInt32Array, isl_b: PackedInt32Array) -> void:
 	_isl_a = isl_a
 	_isl_b = isl_b
-	_isl_avail_state.resize(isl_a.size())   # M4.2
-	# M4.1: 每条 ISL 自己一个材质（颜色独立可变）
-	for k in isl_a.size():
-		var im = ImmediateMesh.new()
-		var line = MeshInstance3D.new()
-		line.name = "Isl%d" % (k + 1)
-		line.mesh = im
-		var mat = StandardMaterial3D.new()
-		mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
-		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
-		mat.albedo_color = isl_unavailable_color
-		line.material_override = mat
-		line.visible = true   # M4.1: 所有候选都画，颜色区分
-		add_child(line)
-		_isl_lines.append(line)
-		_isl_meshes.append(im)
-		_isl_materials.append(mat)
+
+	_isl_available_mesh = ImmediateMesh.new()
+	_isl_unavailable_mesh = ImmediateMesh.new()
+
+	_isl_available_material = StandardMaterial3D.new()
+	_isl_available_material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	_isl_available_material.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	_isl_available_material.albedo_color = isl_color
+
+	var unavailable_mat = StandardMaterial3D.new()
+	unavailable_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	unavailable_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	unavailable_mat.albedo_color = isl_unavailable_color
+
+	var available_line = MeshInstance3D.new()
+	available_line.name = "IslAvailable"
+	available_line.mesh = _isl_available_mesh
+	available_line.material_override = _isl_available_material
+	add_child(available_line)
+
+	var unavailable_line = MeshInstance3D.new()
+	unavailable_line.name = "IslUnavailable"
+	unavailable_line.mesh = _isl_unavailable_mesh
+	unavailable_line.material_override = unavailable_mat
+	add_child(unavailable_line)
 
 func update_frame(positions: PackedFloat32Array, isl_avail: PackedByteArray) -> void:
 	if not _initialised:
@@ -122,24 +129,32 @@ func update_frame(positions: PackedFloat32Array, isl_avail: PackedByteArray) -> 
 		_satellite_positions[i] = pos
 		_satellite_multimesh.set_instance_transform(i, Transform3D(Basis(), pos))
 
-	# ISL 颜色 + 端点（M4.1: 用颜色区分，不切 visibility）
-	for k in _isl_lines.size():
+	# ISL 颜色 + 端点（M7.4: 可用/不可用各一个批量 mesh）
+	var available_vertices = PackedVector3Array()
+	var unavailable_vertices = PackedVector3Array()
+	for k in _isl_a.size():
 		var avail = k < isl_avail.size() and isl_avail[k] != 0
-		_isl_avail_state[k] = 1 if avail else 0   # M4.2
-		var mat = _isl_materials[k]
-		if not avail:
-			mat.albedo_color = isl_unavailable_color
-		# 可用边的颜色在 _process 里被脉动覆盖
 		var a = _isl_a[k] - 1
 		var b = _isl_b[k] - 1
 		var pa = _satellite_positions[a]
 		var pb = _satellite_positions[b]
-		var im: ImmediateMesh = _isl_meshes[k]
-		im.clear_surfaces()
-		im.surface_begin(Mesh.PRIMITIVE_LINES)
-		im.surface_add_vertex(pa)
-		im.surface_add_vertex(pb)
-		im.surface_end()
+		if avail:
+			available_vertices.append(pa)
+			available_vertices.append(pb)
+		else:
+			unavailable_vertices.append(pa)
+			unavailable_vertices.append(pb)
+	_rebuild_isl_mesh(_isl_available_mesh, available_vertices)
+	_rebuild_isl_mesh(_isl_unavailable_mesh, unavailable_vertices)
+
+func _rebuild_isl_mesh(im: ImmediateMesh, vertices: PackedVector3Array) -> void:
+	im.clear_surfaces()
+	if vertices.is_empty():
+		return
+	im.surface_begin(Mesh.PRIMITIVE_LINES)
+	for v in vertices:
+		im.surface_add_vertex(v)
+	im.surface_end()
 
 
 # ── M4.2: 可用 ISL 脉动动画 ─────────────────────────
@@ -152,11 +167,9 @@ func _process(_delta: float) -> void:
 	var t = Time.get_ticks_msec() / 1000.0
 	var phase = sin(t * isl_pulse_speed * TAU) * 0.5 + 0.5   # 0..1
 	var alpha = lerp(isl_pulse_min_alpha, isl_pulse_max_alpha, phase)
-	for k in _isl_materials.size():
-		if _isl_avail_state[k] != 0:
-			var c = isl_color
-			c.a = alpha
-			_isl_materials[k].albedo_color = c
+	var c = isl_color
+	c.a = alpha
+	_isl_available_material.albedo_color = c
 
 
 # ── 坐标变换（ECEF km → Godot 左手系） ─────────────────
