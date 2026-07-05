@@ -347,7 +347,10 @@ function _evaluate_traffic_full(config, positions, isl_pairs)
     isempty(isl_pairs) && return nothing
 
     # 地面站经纬度
-    gs_tuples = [(gs.lat, gs.lon, 0.0) for gs in config.ground_stations]
+    gs_tuples = [
+        (gs.position.latitude_deg, gs.position.longitude_deg, gs.position.altitude_km)
+        for gs in config.ground_stations
+    ]
     ground_ids = collect(1:length(gs_tuples))
 
     # 构造时间网格

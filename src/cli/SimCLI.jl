@@ -384,7 +384,7 @@ end
 # ────────────────────────────────────────────────────────────
 
 """
-生成可视化图片/动画/Dashboard。
+生成可视化图片/动画/Dashboard/CZML。
 
 subcommand: snapshot / dashboard / animate / czml
 positions_path: JLD2 位置文件路径

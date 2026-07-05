@@ -11,3 +11,9 @@ SatelliteSimCore = "99f6b6c7-c40f-4eb3-8423-ddc96d839c0b"
 
 [compat]
 julia = "1.12"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

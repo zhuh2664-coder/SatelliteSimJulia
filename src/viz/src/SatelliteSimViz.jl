@@ -22,6 +22,7 @@ include("ground_track.jl")
 include("coverage_heatmap.jl")
 include("animation.jl")
 include("dashboard.jl")
+include("czml.jl")
 include("api.jl")
 
 end # module

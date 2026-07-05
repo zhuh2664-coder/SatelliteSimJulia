@@ -44,9 +44,7 @@ SatelliteSimOpt = {path = "src/opt"}
 SatelliteSimOrbit = {path = "src/orbit"}
 SatelliteSimSecurity = {path = "src/security"}
 SatelliteSimTraffic = {path = "src/traffic"}
-
-[extensions]
-SatelliteSimVizGLMakieExt = "SatelliteSimViz"
+SatelliteSimViz = {path = "src/viz"}
 
 [compat]
 BenchmarkTools = "1.8.0"

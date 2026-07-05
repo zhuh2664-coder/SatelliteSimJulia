@@ -68,28 +68,10 @@ include(joinpath(@__DIR__, "test_helpers.jl"))
     end
 
     @testset "Viz" begin
-        # 用 CairoMakie（Viz 硬依赖，无显示器需求）做 smoke：
-        # 验证关键绘图函数存在 + 实际出图到 PNG 文件非空。
-        # GLMakie 交互后端由 ext/SatelliteSimVizGLMakieExt.jl 弱依赖扩展提供，
-        # 此处不依赖显示器，CI 可跑。
-        Viz = SatelliteSimJulia.SatelliteSimViz
-        @test Viz.plot_orbit_snapshot isa Function
-        @test Viz.geodetic_to_xyz isa Function
-        @test Viz.plot_ground_track isa Function
-        @test Viz.save_orbit_snapshot isa Function
-        # 构造最小 2 卫星位置矩阵，出图到临时 PNG
-        pos = zeros(Float64, 2, 1, 3)
-        pos[1,1,:] .= 7000.0, 0.0, 0.0
-        pos[2,1,:] .= 0.0, 7000.0, 0.0
-        tmp_png = tempname() * ".png"
-        try
-            Viz.save_orbit_snapshot(tmp_png, pos)
-            @test filesize(tmp_png) > 100   # 出图非空
-        catch e
-            @warn "Viz 出图失败（可能缺 coastline 数据，非阻塞）" exception=e
-            @test_broken false   # 标记但不挂红
-        finally
-            isfile(tmp_png) && rm(tmp_png; force=true)
-        end
+        include(joinpath(@__DIR__, "viz", "test_viz.jl"))
+    end
+
+    @testset "CLI" begin
+        include(joinpath(@__DIR__, "cli", "test_cli.jl"))
     end
 end

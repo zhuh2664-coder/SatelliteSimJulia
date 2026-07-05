@@ -16,6 +16,30 @@ julia --project=. -e 'using SatelliteSimJulia; demo()'
 
 `demo()` 会依次演示：Walker 星座生成、二体传播、+Grid 拓扑、ISL 物理评估、最短时延路由、覆盖率计算、GSL 可见性、TwoBody/J2 传播器对比，最后列出可用的 AI 工具。全程无需任何外部数据。
 
+## 部署与 CLI 快速验证
+
+```bash
+# 1. 部署依赖
+julia --project=. -e 'using Pkg; Pkg.instantiate()'
+
+# 2. 查看 CLI
+julia --project=. bin/satnet.jl --help
+
+# 3. 生成 Walker 星座位置矩阵
+julia --project=. bin/satnet.jl propagate --T 12 --P 3 --steps 3 --duration 120 --output outputs/cli/positions.jld2
+
+# 4. 生成 3D 快照 PNG
+julia --project=. bin/satnet.jl viz snapshot outputs/cli/positions.jld2 --output outputs/cli/snapshot.png
+
+# 5. 导出 Cesium CZML
+julia --project=. bin/satnet.jl viz czml outputs/cli/positions.jld2 --output outputs/cli/constellation.czml
+
+# 6. 回归测试
+julia --project=. test/runtests_current.jl
+```
+
+> 注：可视化会优先尝试下载 NaturalEarth 海岸线数据；离线/网络失败时自动使用内嵌简化海岸线，不影响 PNG/CZML 产物生成。
+
 如果想跑预编排实验或交互式 AI 助手：
 
 ```julia

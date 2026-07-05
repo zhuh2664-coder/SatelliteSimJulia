@@ -20,6 +20,10 @@ struct TestTarget
     reason::String
 end
 
+const ROOT = normpath(joinpath(@__DIR__, ".."))
+const SERVER_PROJECT = joinpath(ROOT, "src", "server")
+const ROOT_TEST_ENTRY = joinpath(ROOT, "test", "runtests_current.jl")
+
 const RUN_SERVER = get(ENV, "SATSIM_RUN_SERVER", "0") == "1"
 const SKIP_VIZ = get(ENV, "SATSIM_SKIP_VIZ", "0") == "1"
 const VERBOSE = get(ENV, "SATSIM_VERBOSE", "0") == "1"
@@ -37,7 +41,7 @@ end
 
 function build_targets()
     targets = TestTarget[]
-    push!(targets, target("root", `julia --project=. test/runtests_current.jl`))
+    push!(targets, target("root", `julia --project=$ROOT $ROOT_TEST_ENTRY`))
 
     # Packages with Project.toml [extras]/[targets] and test/runtests.jl.
     for (short, pkg) in [
@@ -54,11 +58,11 @@ function build_targets()
         ("distributed", "SatelliteSimDistributed"),
         ("security", "SatelliteSimSecurity"),
     ]
-        push!(targets, target(short, `julia --project=. -e "using Pkg; Pkg.test(\"$pkg\")"`))
+        push!(targets, target(short, `julia --project=$ROOT -e "using Pkg; Pkg.test(\"$pkg\")"`))
     end
 
-    push!(targets, target("viz", `julia --project=. -e "using Pkg; Pkg.test(\"SatelliteSimViz\")"`; enabled=!SKIP_VIZ, reason="SATSIM_SKIP_VIZ=1"))
-    push!(targets, target("server", `julia --project=src/server -e "using Pkg; Pkg.test()"`; enabled=RUN_SERVER, reason="set SATSIM_RUN_SERVER=1"))
+    push!(targets, target("viz", `julia --project=$ROOT -e "using Pkg; Pkg.test(\"SatelliteSimViz\")"`; enabled=!SKIP_VIZ, reason="SATSIM_SKIP_VIZ=1"))
+    push!(targets, target("server", `julia --project=$SERVER_PROJECT -e "using Pkg; Pkg.test()"`; enabled=RUN_SERVER, reason="set SATSIM_RUN_SERVER=1"))
 
     # Build helper package; not a regular test target yet.
     push!(targets, target("sysimage", `true`; enabled=false, reason="no independent [extras]/[targets] test configured yet"))

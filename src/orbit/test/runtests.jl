@@ -5,6 +5,7 @@
 
 using SatelliteSimOrbit
 using SatelliteSimFoundation
+using Dates
 using Test
 
 @testset "SatelliteSimOrbit" begin
@@ -24,6 +25,30 @@ using Test
         @test all(isfinite, pos)
         norms = [sqrt(sum(pos[i,t,:].^2)) for i in 1:6, t in 1:3]
         @test all(n -> 6800.0 < n < 7100.0, norms)
+    end
+
+    @testset "设计星座入口 → 标准时间网格" begin
+        elems = generate_walker_delta(; T=6, P=2, F=0, alt_km=550.0, inc_deg=53.0)
+        grid = SimulationTimeGrid(SimulationEpoch(DateTime(2024, 1, 1)), 120, 60)
+        pos = propagate_to_ecef(elems, grid; propagator=J2Propagator())
+        @test size(pos) == (6, 3, 3)
+        @test all(isfinite, pos)
+    end
+
+    @testset "真实 TLE 入口 → SGP4" begin
+        tle = TLEOrbitElementSet(
+            "VANGUARD 1",
+            "1 00005U 58002B   00179.78495062  .00000023  00000-0  28098-4 0  4753",
+            "2 00005  34.2682 331.5174 1859667 331.7664  19.3264 10.82419157413667",
+        )
+        grid = SimulationTimeGrid(SimulationEpoch(DateTime(2000, 6, 27, 18, 50, 19)), 120, 60)
+        pos = propagate_to_ecef(
+            [tle],
+            grid;
+            propagator=Sgp4PropagatorAdapter(; verify_checksum=false),
+        )
+        @test size(pos) == (1, 3, 3)
+        @test all(isfinite, pos)
     end
 
     @testset "传播器类型" begin
