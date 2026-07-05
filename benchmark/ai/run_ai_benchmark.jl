@@ -91,6 +91,35 @@ function _schema_permission_checks!()
     end
 end
 
+function _ai_run_lifecycle_checks!()
+    session_id = "bench_ai_run_$(rand(UInt))"
+    run_id = "bench_run_$(rand(UInt))"
+    try
+        clear_ai_runs!()
+        provider = MockProvider([
+            AssistantMessage("计划完成\nARTIFACT plan {\"goal\":\"coverage\"}", ToolCall[]),
+            AssistantMessage("执行完成\nARTIFACT result {\"coverage\":0.92}", ToolCall[]),
+            AssistantMessage("最终结论：AI run 通过", ToolCall[]),
+        ])
+        result = start_ai_run(provider, AIRunConfig(
+            id = run_id,
+            user_input = "AI run lifecycle benchmark",
+            mode = :team_graph,
+            session_id = session_id,
+            checkpoint = true,
+        ))
+        get_ai_run_status(run_id).state == :completed || error("AI run did not complete")
+        get_ai_run_result(run_id).final_answer == result.final_answer || error("AI run result mismatch")
+        haskey(result.artifacts, "plan") || error("AI run artifacts missing")
+        isempty(result.checkpoint_summary) && error("AI run checkpoint summary missing")
+        any(e -> e.event_type == "ai_run_completed", result.trace.events) || error("AI run trace missing completion event")
+        return true
+    finally
+        clear_ai_runs!()
+        _cleanup_session(session_id)
+    end
+end
+
 function _checkpoint_replay_checks!()
     session_id = "bench_checkpoint_replay_$(rand(UInt))"
     try
@@ -132,9 +161,11 @@ function main()
     report = eval_report(suite)
     report["schema_permission_checks"] = _schema_permission_checks!()
     report["checkpoint_replay_checks"] = _checkpoint_replay_checks!()
+    report["ai_run_lifecycle_checks"] = _ai_run_lifecycle_checks!()
     report["product_gate_passed"] = report["passed"] == report["total"] &&
                                      report["schema_permission_checks"] &&
-                                     report["checkpoint_replay_checks"]
+                                     report["checkpoint_replay_checks"] &&
+                                     report["ai_run_lifecycle_checks"]
 
     println(JSON.json(report))
     report["product_gate_passed"] || exit(1)

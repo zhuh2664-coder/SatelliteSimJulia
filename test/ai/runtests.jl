@@ -13,4 +13,5 @@ using Test
     include("test_team_artifacts.jl")
     include("test_team_graph_checkpoint.jl")
     include("test_evals_replay.jl")
+    include("test_ai_runs.jl")
 end

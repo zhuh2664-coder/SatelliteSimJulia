@@ -27,6 +27,7 @@ include("layers/12_interaction/team_artifacts.jl")
 include("layers/12_interaction/team_graph_checkpoint.jl")
 include("layers/12_interaction/evals.jl")
 include("layers/12_interaction/replay.jl")
+include("layers/12_interaction/ai_runs.jl")
 include("layers/12_interaction/demo.jl")
 
 include("layers/11_experiment/intent.jl")

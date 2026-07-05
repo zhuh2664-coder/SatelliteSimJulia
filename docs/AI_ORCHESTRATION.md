@@ -28,6 +28,7 @@ A real product is not just an LLM loop that calls a simulator. For satellite sim
 | CLI exposure | `teamgraph`, `ai-trace`, `ai-checkpoint`, `ai-replay`, `ai-eval` | Implemented |
 | Server API exposure | WebSocket `ai_trace`, `ai_checkpoint` | Implemented |
 | Product docs/demo/benchmark | this doc, `benchmark/ai/run_ai_benchmark.jl`, `scripts/demo_ai_orchestration.jl` | Implemented in this milestone |
+| AI run control plane | `AIRunConfig`, `AIRunStatus`, `AIRunResult`, `start_ai_run`, `get_ai_run_status` | Implemented |
 | Production deployment UI / multi-tenant RBAC | platform layer exists separately, not fully integrated with AI orchestration | Gap |
 | Real LLM provider regression | supported by provider abstraction, not used in CI because deterministic tests use `MockProvider` | Intentional |
 
@@ -110,6 +111,26 @@ plan = tool_replay_plan(trace)
 dry = replay_tools(trace; dry_run = true)
 actual = replay_tools(trace; dry_run = false, verify_hash = true)
 ```
+
+## AI run control plane
+
+`AIRun` is the product-level execution entity. It groups a user request, execution mode, session id, status, result, trace, checkpoint summary, and artifacts.
+
+```julia
+provider = MockProvider([...])
+config = AIRunConfig(
+    id = "run_001",
+    user_input = "规划并执行 walker24 覆盖分析",
+    mode = :team_graph,
+    session_id = "run_001",
+    checkpoint = true,
+)
+result = start_ai_run(provider, config)
+status = get_ai_run_status("run_001")
+result = get_ai_run_result("run_001")
+```
+
+The first implementation is synchronous and in-process. This intentionally stabilizes the product entity before introducing distributed workers or Kubernetes Jobs.
 
 ## CLI examples
 
