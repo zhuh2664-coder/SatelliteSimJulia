@@ -6,7 +6,7 @@ class_name SandboxWorld
 #
 # Init(n_sat, isl_a, isl_b)：
 #   - 建地球 Sphere（按 EARTH_RADIUS_UNITS 半径）
-#   - 建 N 个卫星 Sphere
+#   - 建 1 个 MultiMesh 批量绘制 N 个卫星 Sphere
 #   - 建 M 条 ISL 线（ImmediateMesh 动态两点）
 #
 # UpdateFrame(positions, isl_avail)：
@@ -34,7 +34,8 @@ class_name SandboxWorld
 @export var isl_pulse_max_alpha: float = 0.9
 
 var _earth: MeshInstance3D
-var _satellites: Array[MeshInstance3D] = []
+var _satellite_multimesh: MultiMesh
+var _satellite_positions: PackedVector3Array = []
 var _isl_lines: Array[MeshInstance3D] = []
 var _isl_meshes: Array[ImmediateMesh] = []
 var _isl_materials: Array[StandardMaterial3D] = []   # M4.1: per-line mat
@@ -67,21 +68,28 @@ func _build_earth() -> void:
 	add_child(_earth)
 
 func _build_satellites(n_sat: int) -> void:
-	# 共享材质（避免 N 个 Material 实例）
+	# M7.4: 1 个 MultiMeshInstance3D 批量绘制卫星，避免大星座 N 个节点。
+	var sat_mesh = SphereMesh.new()
+	sat_mesh.radius = sat_scale
+	sat_mesh.height = sat_scale * 2.0
+
 	var sat_mat = StandardMaterial3D.new()
 	sat_mat.albedo_color = sat_color
 	sat_mat.emission_enabled = true
 	sat_mat.emission = sat_emission
 	sat_mat.emission_energy_multiplier = 1.2
-	for i in n_sat:
-		var s = MeshInstance3D.new()
-		s.name = "Sat%d" % (i + 1)
-		s.mesh = SphereMesh.new()
-		s.mesh.radius = sat_scale
-		s.mesh.height = sat_scale * 2.0
-		s.material_override = sat_mat
-		add_child(s)
-		_satellites.append(s)
+	sat_mesh.material = sat_mat
+
+	_satellite_multimesh = MultiMesh.new()
+	_satellite_multimesh.transform_format = MultiMesh.TRANSFORM_3D
+	_satellite_multimesh.mesh = sat_mesh
+	_satellite_multimesh.instance_count = n_sat
+	_satellite_positions.resize(n_sat)
+
+	var inst = MultiMeshInstance3D.new()
+	inst.name = "Satellites"
+	inst.multimesh = _satellite_multimesh
+	add_child(inst)
 
 func _build_isl_lines(isl_a: PackedInt32Array, isl_b: PackedInt32Array) -> void:
 	_isl_a = isl_a
@@ -108,9 +116,11 @@ func update_frame(positions: PackedFloat32Array, isl_avail: PackedByteArray) -> 
 	if not _initialised:
 		return
 	# 卫星位置
-	for i in _satellites.size():
+	for i in _satellite_positions.size():
 		var p = i * 3
-		_satellites[i].position = ecef_km_to_unity(positions[p], positions[p + 1], positions[p + 2])
+		var pos = ecef_km_to_unity(positions[p], positions[p + 1], positions[p + 2])
+		_satellite_positions[i] = pos
+		_satellite_multimesh.set_instance_transform(i, Transform3D(Basis(), pos))
 
 	# ISL 颜色 + 端点（M4.1: 用颜色区分，不切 visibility）
 	for k in _isl_lines.size():
@@ -122,8 +132,8 @@ func update_frame(positions: PackedFloat32Array, isl_avail: PackedByteArray) -> 
 		# 可用边的颜色在 _process 里被脉动覆盖
 		var a = _isl_a[k] - 1
 		var b = _isl_b[k] - 1
-		var pa = _satellites[a].position
-		var pb = _satellites[b].position
+		var pa = _satellite_positions[a]
+		var pb = _satellite_positions[b]
 		var im: ImmediateMesh = _isl_meshes[k]
 		im.clear_surfaces()
 		im.surface_begin(Mesh.PRIMITIVE_LINES)
