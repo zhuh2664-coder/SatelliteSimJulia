@@ -143,8 +143,17 @@ function run_agent(agent::SimAgent, user_input::String)
     agent.messages[1]["content"] = system_prompt(agent)
 
     for iteration in 1:agent.max_iterations
-        # 调 LLM
+        # 调 LLM 前钩子（可阻断或审计 messages）
+        pre_llm_ctx = PreLLMCtx(agent.messages, agent)
+        proceed, _ = run_hooks!(:pre_llm, pre_llm_ctx)
+        proceed || return "（被 pre_llm 钩子阻断）"
+
         msg = chat(agent.provider, agent.messages, agent.tools)
+
+        # 调 LLM 后钩子（可替换 AssistantMessage；默认无注册，保持旧行为）
+        post_llm_ctx = PostLLMCtx(msg, agent)
+        _, transformed_msg = run_hooks!(:post_llm, post_llm_ctx)
+        transformed_msg isa AssistantMessage && (msg = transformed_msg)
 
         # 记录助手消息（显式 Dict{String,Any} 避免 tool_calls 类型冲突）
         assistant_dict = Dict{String,Any}("role" => "assistant", "content" => msg.content)
@@ -233,17 +242,12 @@ end
 
 # 实际工具分发（pre/post 钩子之外的核心逻辑）
 function _dispatch_tool(name::String, args::AbstractDict)
-    if name == "run_simulation"
-        return _tool_run_simulation(args)
-    elseif name == "scan_parameter"
-        return _tool_scan_parameter(args)
-    elseif name == "compare_constellations"
-        return _tool_compare_constellations(args)
-    elseif name == "list_available"
-        return _tool_list_available(args)
-    else
-        return Dict("error" => "未知工具: $name")
+    if isdefined(@__MODULE__, :execute_registered_tool)
+        ensure_default_ai_tools!()
+        registered = execute_registered_tool(name, args)
+        registered === nothing || return registered
     end
+    return Dict("error" => "未知工具: $name")
 end
 
 # 工具：运行仿真
@@ -255,16 +259,17 @@ function _tool_run_simulation(args::AbstractDict)
     steps = get(args, "steps", 2)
 
     # 解析星座（先于拓扑，因 LowLatencyTopo 需要 T 做小星座分派）
-    T, P, F, alt, inc = _parse_constellation(constellation)
+    cfg = parse_ai_constellation(constellation)
+    T, P, F, alt, inc = cfg.T, cfg.P, cfg.F, cfg.alt_km, cfg.inc_deg
     # 解析传播器：tle_based 返回 :sgp4 标记，走独立 SGP4 路径
-    propagator = _parse_propagator(prop)
+    propagator = parse_ai_propagator(prop)
 
     if propagator === :sgp4
         return _run_sgp4_simulation(args, constellation, topo, duration, steps)
     end
 
     # Keplerian 路径（二体/J2/J4）
-    strategy = _parse_topology(topo, T)
+    strategy = parse_ai_topology(topo, T)
     tspan = collect(range(0.0, Float64(duration); length=steps))
     config = ExperimentConfig(;
         name = "ai_simulation",
@@ -310,7 +315,7 @@ function _run_sgp4_simulation(args::AbstractDict, constellation::AbstractString,
     n = size(positions, 1)
     # P 对拓扑生成必需；TLE 星座无轨道面概念，按 n 估计 P（避免除零）
     P_est = max(1, isqrt(n))
-    strategy = _parse_topology(topo, n)
+    strategy = parse_ai_topology(topo, n)
     constraints = LEO_DEFAULTS   # 默认 LEO 物理约束（与 Keplerian 路径一致）
     D, available_isl, isl_results = assess_routing(positions, n, P_est, strategy, constraints)
     latency = compute_latency(D)
@@ -373,7 +378,8 @@ function _tool_scan_parameter(args::AbstractDict)
     param = get(args, "param", "alt_km")
     values = get(args, "values", [400, 550, 800, 1200])
 
-    T, P, F, alt, inc = _parse_constellation(base)
+    base_cfg = parse_ai_constellation(base)
+    T, P, F, alt, inc = base_cfg.T, base_cfg.P, base_cfg.F, base_cfg.alt_km, base_cfg.inc_deg
     results = []
 
     for v in values
@@ -443,13 +449,13 @@ function _tool_list_available(args::AbstractDict)
     what = get(args, "what", "all")
     result = Dict{String,Any}()
     if what in ("constellations", "all")
-        result["constellations"] = list_constellations()
+        result["constellations"] = ai_constellation_names()
     end
     if what in ("topologies", "all")
-        result["topologies"] = ["gridplus", "tshape", "honeycomb", "ring", "spiral", "mesh", "nearest_neighbor"]
+        result["topologies"] = ai_topology_terms()
     end
     if what in ("propagators", "all")
-        result["propagators"] = ["twobody", "j2", "j4", "sgp4"]
+        result["propagators"] = ai_propagator_terms()
     end
     return result
 end
@@ -468,23 +474,8 @@ function _record_scanned!(agent::SimAgent, tool::String, args::AbstractDict, res
 end
 
 function _parse_constellation(s::String)
-    # "iridium" → 从 catalog 取
-    # "walker 66/6/2" 或 "walker 66 6 2" → 解析
-    if startswith(lowercase(s), "walker")
-        # 去掉 "walker " 前缀，按 / 或空格分割
-        rest = strip(s[7:end])
-        parts = split(rest, r"[/\s]+")
-        T = parse(Int, parts[1])
-        P = length(parts) > 1 ? parse(Int, parts[2]) : 6
-        F = length(parts) > 2 ? parse(Int, parts[3]) : 1
-        return T, P, F, 550.0, 53.0
-    end
-    try
-        cfg = resolve_constellation(Symbol(s))
-        return cfg.T, cfg.P, cfg.F, cfg.alt_km, cfg.inc_deg
-    catch
-        return 24, 6, 1, 550.0, 53.0
-    end
+    cfg = parse_ai_constellation(s)
+    return cfg.T, cfg.P, cfg.F, cfg.alt_km, cfg.inc_deg
 end
 
 # ─── 意图符号 → 实现类型（统一桥接正式意图层，不再平行实现）───
@@ -524,13 +515,9 @@ function _propagator_intent(s::AbstractString)
     return SpeedFocus()
 end
 
-# 通过意图层解析拓扑（带 ResolutionContext，供 LowLatencyTopo 的小星座分派）
-_parse_topology(s::AbstractString, T::Int) =
-    resolve_topology(_topology_intent(s), ResolutionContext(T=T))
-
-# 通过意图层解析传播器；返回 :sgp4 标记或 AbstractKeplerianPropagator
-_parse_propagator(s::AbstractString) =
-    resolve_propagator(_propagator_intent(s), ResolutionContext())
+# 通过统一 AI 输入层解析拓扑/传播器；保留旧私有函数名以兼容内部调用。
+_parse_topology(s::AbstractString, T::Int) = parse_ai_topology(s, T)
+_parse_propagator(s::AbstractString) = parse_ai_propagator(s)
 
 # ─── REPL 入口 ───
 
