@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: satnet-api
+  namespace: satnet
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: satnet-api}
+  template:
+    metadata:
+      labels: {app: satnet-api}
+    spec:
+      serviceAccountName: satnet-api
+      containers:
+      - name: api
+        image: satnet-api:latest
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PORT
+          value: "8080"
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef: {name: satnet-db, key: url}
+        - name: MINIO_ENDPOINT
+          valueFrom:
+            secretKeyRef: {name: satnet-minio, key: endpoint}
+        - name: MINIO_ACCESS_KEY
+          valueFrom:
+            secretKeyRef: {name: satnet-minio, key: access-key}
+        - name: MINIO_SECRET_KEY
+          valueFrom:
+            secretKeyRef: {name: satnet-minio, key: secret-key}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: satnet-api
+  namespace: satnet
+spec:
+  selector: {app: satnet-api}
+  ports:
+  - port: 8080
+    targetPort: 8080
