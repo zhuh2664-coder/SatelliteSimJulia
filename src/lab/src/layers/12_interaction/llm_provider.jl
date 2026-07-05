@@ -21,25 +21,31 @@ struct LLMProvider <: AbstractLLMProvider
     api_key::String
     model::String
     base_url::String
+    readtimeout_s::Int
 end
 
+LLMProvider(api_key::String, model::String, base_url::String) =
+    LLMProvider(api_key, model, base_url, 120)
+
 """
-    LLMProvider(; key, model, url)
+    LLMProvider(; key, model, url, readtimeout_s)
 
 构造 LLM Provider。默认从环境变量读 DeepSeek API key。
 
 ```julia
 provider = LLMProvider()  # 自动读 DEEPSEEK_API_KEY
-provider = LLMProvider(key="sk-xxx", model="gpt-4o", url="https://api.openai.com/v1")
+provider = LLMProvider(key="sk-xxx", model="gpt-4o", url="https://api.openai.com/v1", readtimeout_s=300)
 ```
 """
 function LLMProvider(;
     key::String = get(ENV, "DEEPSEEK_API_KEY", ""),
     model::String = "deepseek-chat",
     url::String = "https://api.deepseek.com/v1",
+    readtimeout_s::Int = 120,
 )
     isempty(key) && @warn "LLM API key 为空，设置 DEEPSEEK_API_KEY 或传 key= 参数"
-    return LLMProvider(key, model, url)
+    readtimeout_s > 0 || error("readtimeout_s must be positive")
+    return LLMProvider(key, model, url, readtimeout_s)
 end
 
 """
@@ -93,7 +99,7 @@ function chat(provider::LLMProvider, messages::Vector, tools::Vector = Dict[])
         ["Authorization" => "Bearer $(provider.api_key)",
          "Content-Type" => "application/json"],
         JSON.json(body);
-        readtimeout = 120,
+        readtimeout = provider.readtimeout_s,
     )
 
     data = JSON.parse(String(resp.body))

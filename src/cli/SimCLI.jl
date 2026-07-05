@@ -517,12 +517,13 @@ end
     model::String = "deepseek-chat",
     key::String = "",
     url::String = "https://api.deepseek.com/v1",
+    timeout::Int = 120,
     voice::Bool = false,
 )
     api_key = isempty(key) ? get(ENV, "DEEPSEEK_API_KEY", "") : key
     isempty(api_key) && error("DEEPSEEK_API_KEY not set; pass --key or set env var")
 
-    provider = SatelliteSimLab.LLMProvider(; key = api_key, model = model, url = url)
+    provider = SatelliteSimLab.LLMProvider(; key = api_key, model = model, url = url, readtimeout_s = timeout)
     voice ? SatelliteSimLab.voice_agent_repl(provider) : SatelliteSimLab.agent_repl(provider)
 end
 
@@ -535,11 +536,12 @@ query: 自然语言问题，例如 "walker24 和 walker48 的时延对比"
     model::String = "deepseek-chat",
     key::String = "",
     url::String = "https://api.deepseek.com/v1",
+    timeout::Int = 120,
 )
     api_key = isempty(key) ? get(ENV, "DEEPSEEK_API_KEY", "") : key
     isempty(api_key) && error("DEEPSEEK_API_KEY not set; pass --key or set env var")
 
-    provider = SatelliteSimLab.LLMProvider(; key = api_key, model = model, url = url)
+    provider = SatelliteSimLab.LLMProvider(; key = api_key, model = model, url = url, readtimeout_s = timeout)
     agent = SatelliteSimLab.SimAgent(provider)
     reply = SatelliteSimLab.run_agent(agent, query)
     println(reply)
@@ -554,12 +556,13 @@ query: 自然语言任务，例如 "帮我规划并执行一个 walker48 覆盖�
     model::String = "deepseek-chat",
     key::String = "",
     url::String = "https://api.deepseek.com/v1",
+    timeout::Int = 120,
     session_id::String = "team_default",
 )
     api_key = isempty(key) ? get(ENV, "DEEPSEEK_API_KEY", "") : key
     isempty(api_key) && error("DEEPSEEK_API_KEY not set; pass --key or set env var")
 
-    provider = SatelliteSimLab.LLMProvider(; key = api_key, model = model, url = url)
+    provider = SatelliteSimLab.LLMProvider(; key = api_key, model = model, url = url, readtimeout_s = timeout)
     result = SatelliteSimLab.run_team(provider, query; session_id = session_id)
     println(result.final_answer)
 end
@@ -569,13 +572,14 @@ end
     model::String = "deepseek-chat",
     key::String = "",
     url::String = "https://api.deepseek.com/v1",
+    timeout::Int = 120,
     session_id::String = "team_graph_default",
     checkpoint::Bool = false,
 )
     api_key = isempty(key) ? get(ENV, "DEEPSEEK_API_KEY", "") : key
     isempty(api_key) && error("DEEPSEEK_API_KEY not set; pass --key or set env var")
 
-    provider = SatelliteSimLab.LLMProvider(; key = api_key, model = model, url = url)
+    provider = SatelliteSimLab.LLMProvider(; key = api_key, model = model, url = url, readtimeout_s = timeout)
     result = SatelliteSimLab.run_team_graph(provider, query; session_id = session_id, checkpoint = checkpoint)
     println(result.final_answer)
 end
