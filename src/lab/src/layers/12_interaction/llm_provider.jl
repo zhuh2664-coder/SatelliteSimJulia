@@ -99,7 +99,7 @@ function chat(provider::LLMProvider, messages::Vector, tools::Vector = Dict[])
         ["Authorization" => "Bearer $(provider.api_key)",
          "Content-Type" => "application/json"],
         JSON.json(body);
-        readtimeout = provider.readtimeout_s,
+        read_idle_timeout = provider.readtimeout_s,
     )
 
     data = JSON.parse(String(resp.body))

@@ -73,11 +73,14 @@ function upload_result_prefix(local_dir::String, s3_prefix::String)::String
     default_bucket = get(ENV, "MINIO_BUCKET_RESULTS", "results")
     bucket, prefix = _s3_location(s3_prefix, default_bucket)
 
-    for entry in readdir(local_dir; join = true)
-        isfile(entry) || continue
-        fname = basename(entry)
-        data = read(entry)
-        AWSS3.s3_put(config, bucket, _join_key(prefix, fname), data)
+    for (root, _, files) in walkdir(local_dir)
+        for file in files
+            entry = joinpath(root, file)
+            rel = relpath(entry, local_dir)
+            object_name = replace(rel, '\\' => '/')
+            data = read(entry)
+            AWSS3.s3_put(config, bucket, _join_key(prefix, object_name), data)
+        end
     end
     return "s3://$(bucket)/$(rstrip(prefix, '/'))/"
 end

@@ -168,10 +168,9 @@ function write_artifact_bundle!(out_dir::AbstractString, cfg_dict::Dict, result_
         "runner" => "satnet-run.jl",
     ))
 
-    mkpath(joinpath(out_dir, "artifacts"))
     artifact_names = ["result.json", "config.snapshot.json", "run_metadata.json"]
     artifacts = [_artifact_record(joinpath(out_dir, name), name) for name in artifact_names]
-    _write_json(joinpath(out_dir, "artifacts", "index.json"), Dict(
+    _write_json(joinpath(out_dir, "artifacts.index.json"), Dict(
         "schema_version" => "1",
         "generated_at" => string(now()),
         "files" => artifacts,

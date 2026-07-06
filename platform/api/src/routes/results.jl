@@ -28,9 +28,15 @@ function get_artifacts_json(req::HTTP.Request)
 
     prefix = (job.result_key === nothing || isempty(job.result_key)) ?
              "s3://results/$(id)/" : job.result_key
-    key = rstrip(prefix, '/') * "/artifacts/index.json"
+    key = rstrip(prefix, '/') * "/artifacts.index.json"
     data = Storage.download_result(key)
     return HTTP.Response(200, ["Content-Type" => "application/json"], data)
+end
+
+function _target_queryparams(target::AbstractString)
+    parts = split(String(target), "?"; limit = 2)
+    length(parts) == 2 || return Dict{String,String}()
+    return HTTP.URIs.queryparams(parts[2])
 end
 
 function _safe_result_filename(filename::AbstractString)::Bool
@@ -47,7 +53,7 @@ function download_file(req::HTTP.Request)
     job = Storage.get_job(owner_id, id)
     job === nothing && return HTTP.Response(404, JSON.json(Dict("error" => "not found")))
 
-    params = HTTP.URIs.queryparams(req.target)
+    params = _target_queryparams(req.target)
     filename = get(params, "file", "")
     _safe_result_filename(filename) || return HTTP.Response(400, JSON.json(Dict("error" => "invalid file")))
 
