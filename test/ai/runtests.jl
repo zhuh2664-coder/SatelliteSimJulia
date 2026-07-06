@@ -11,6 +11,7 @@ using Test
     include("test_trace.jl")
     include("test_mock_provider.jl")
     include("test_multiagent.jl")
+    include("test_agent_worker.jl")
     include("test_team_graph.jl")
     include("test_team_artifacts.jl")
     include("test_team_graph_checkpoint.jl")
