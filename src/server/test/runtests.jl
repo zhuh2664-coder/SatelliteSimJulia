@@ -100,6 +100,10 @@ using Test
             @test length(resp.session_id) == 8
             @test sess !== nothing
             @test size(sess.positions) == (48, 4, 3)
+            @test resp.constellation["T"] == 48
+            @test resp.constellation["P"] == 8
+            @test length(resp.shells) == 1
+            @test resp.shells[1]["alt_km"] == 550.0
 
             # stop
             stop_req = StopSimulationReq(session_id = resp.session_id)

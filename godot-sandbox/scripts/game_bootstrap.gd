@@ -30,7 +30,7 @@ var _n_sat: int = 0
 var _n_total: int = 0
 var _server_fps: float = 1.0
 var _step_s: float = 1.0
-var _speed: float = 1.0
+var _speed: float = 60.0
 var _running: bool = false
 var _paused: bool = false
 var _got_first_frame: bool = false
@@ -40,6 +40,7 @@ var _last_isl_avail: PackedByteArray = PackedByteArray()
 var _coverage_ratio: float = -1.0
 var _covered_ground: int = 0
 var _total_ground: int = 0
+var _shells: Array = []
 
 class Frame:
 	var positions: PackedFloat32Array
@@ -75,6 +76,9 @@ func _ready() -> void:
 	_ui.show_ground_changed.connect(_on_ui_show_ground)
 	_ui.show_gsl_changed.connect(_on_ui_show_gsl)
 	_ui.show_coverage_changed.connect(_on_ui_show_coverage)
+	_ui.show_shells_changed.connect(_on_ui_show_shells)
+	_ui.show_orbit_rings_changed.connect(_on_ui_show_orbit_rings)
+	_ui.show_deployment_changed.connect(_on_ui_show_deployment)
 	_world.satellite_selected.connect(_on_satellite_selected)
 	_world.selection_cleared.connect(_on_selection_cleared)
 
@@ -84,14 +88,15 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	if not _running or _paused or _buffer.is_empty() or _speed <= 0.0 or not _world.is_initialised():
 		return
-	_accum += delta * _speed
-	var interval = 1.0 / _server_fps
+	_accum += delta
+	var interval = _step_s / max(_speed, 0.001)
 	while _accum >= interval and not _buffer.is_empty():
 		_accum -= interval
 		var f: Frame = _buffer.pop_front()
 		_display_frame(f)
 
 func _display_frame(f: Frame) -> void:
+	_world.set_deployment_time(f.sim_time_s)
 	_world.update_frame(f.positions, f.isl_avail, f.ground_stations, f.gsl_pairs, f.coverage_summary)
 	_last_isl_avail = f.isl_avail
 	_displayed_frame = f.frame_index
@@ -151,10 +156,13 @@ func _on_ws_message(json_text: String) -> void:
 			_coverage_ratio = -1.0
 			_covered_ground = 0
 			_total_ground = 0
+			_shells = msg.get("shells", [])
+			_world.set_shell_metadata(_shells)
 			_ui.set_status("Session %s — %d frames" % [_session_id, _n_total])
 
 
 			_update_hud()
+
 		"frame":
 			_handle_frame(msg)
 		"stream_end":
@@ -228,9 +236,9 @@ func _on_ui_start(constellation: String) -> void:
 		"type": "start_simulation",
 		"name": constellation,
 		"tspan": [0.0, 7200.0],
-		"step_s": 1.0,
+		"step_s": 5.0,
 		"propagator": "j2",
-		"fps": 1.0,
+		"fps": 60.0,
 		"ground_stations": _default_ground_stations(),
 		"include_gsl": true,
 		"include_coverage": true,
@@ -275,6 +283,15 @@ func _on_ui_show_gsl(enabled: bool) -> void:
 func _on_ui_show_coverage(enabled: bool) -> void:
 	_world.set_show_coverage_heat(enabled)
 
+func _on_ui_show_shells(enabled: bool) -> void:
+	_world.set_show_shells(enabled)
+
+func _on_ui_show_orbit_rings(enabled: bool) -> void:
+	_world.set_show_orbit_rings(enabled)
+
+func _on_ui_show_deployment(enabled: bool) -> void:
+	_world.set_show_deployment(enabled)
+
 func _on_satellite_selected(info: Dictionary) -> void:
 	var pos = info.get("ecef_km", Vector3.ZERO)
 	_ui.set_satellite_info("selected: sat %d\nalt: %.1f km    ISL: %d\nECEF km: %.1f, %.1f, %.1f" % [
@@ -301,5 +318,6 @@ func _reset_session() -> void:
 	_coverage_ratio = -1.0
 	_covered_ground = 0
 	_total_ground = 0
+	_shells = []
 	_ui.clear_satellite_info()
 	_world.clear_selection()

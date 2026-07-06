@@ -43,6 +43,9 @@ const EARTH_EQUATORIAL_RADIUS_KM := 6378.137
 @export var ground_uncovered_color: Color = Color(0.55, 0.15, 0.10)
 @export var ground_covered_color: Color = Color(0.1, 1.0, 0.35)
 @export var gsl_color: Color = Color(0.4, 1.0, 0.45, 0.65)
+@export var shell_color: Color = Color(0.8, 0.5, 1.0, 0.28)
+@export var orbit_ring_color: Color = Color(0.8, 0.7, 1.0, 0.22)
+@export var deployment_duration_s: float = 600.0
 @export var isl_pulse_speed: float = 2.0            # M4.2: cycles per second
 @export var isl_pulse_min_alpha: float = 0.4
 @export var isl_pulse_max_alpha: float = 0.9
@@ -68,6 +71,12 @@ var _ground_station_nodes: Array = []
 var _ground_station_positions: PackedVector3Array = []
 var _gsl_mesh: ImmediateMesh
 var _gsl_instance: MeshInstance3D
+var _shell_mesh: ImmediateMesh
+var _shell_instance: MeshInstance3D
+var _ring_mesh: ImmediateMesh
+var _ring_instance: MeshInstance3D
+var _shells: Array = []
+var _deployment_time_s: float = 0.0
 var _isl_a: PackedInt32Array
 var _isl_b: PackedInt32Array
 var _last_isl_avail: PackedByteArray
@@ -81,6 +90,9 @@ var _show_earth_grid: bool = true
 var _show_ground_stations: bool = true
 var _show_gsl: bool = true
 var _show_coverage_heat: bool = true
+var _show_shells: bool = true
+var _show_orbit_rings: bool = true
+var _show_deployment: bool = true
 
 func is_initialised() -> bool:
 	return _initialised
@@ -94,13 +106,14 @@ func init(n_sat: int, isl_a: PackedInt32Array, isl_b: PackedInt32Array) -> void:
 	_build_trails()
 	_build_selection_marker()
 	_build_ground_layer()
+	_build_shell_layer()
 	_initialised = true
 
 
 # ── 子方法：建场景对象 ─────────────────────────────────
 
 func _clear_generated_nodes() -> void:
-	for name in ["Earth", "EarthGrid", "Satellites", "IslAvailable", "IslUnavailable", "Trails", "SelectedSatellite", "SelectedIsl", "GroundStations", "GslLinks"]:
+	for name in ["Earth", "EarthGrid", "Satellites", "IslAvailable", "IslUnavailable", "Trails", "SelectedSatellite", "SelectedIsl", "GroundStations", "GslLinks", "ShellRings", "OrbitRings"]:
 		var n = get_node_or_null(NodePath(name))
 		if n != null:
 			remove_child(n)
@@ -258,6 +271,26 @@ func _build_ground_layer() -> void:
 	_gsl_instance.visible = _show_gsl
 	add_child(_gsl_instance)
 
+func _build_shell_layer() -> void:
+	_shell_mesh = ImmediateMesh.new()
+	_set_degenerate_line(_shell_mesh)
+	_shell_instance = MeshInstance3D.new()
+	_shell_instance.name = "ShellRings"
+	_shell_instance.mesh = _shell_mesh
+	_shell_instance.material_override = _line_material(shell_color)
+	_shell_instance.visible = _show_shells
+	add_child(_shell_instance)
+
+	_ring_mesh = ImmediateMesh.new()
+	_set_degenerate_line(_ring_mesh)
+	_ring_instance = MeshInstance3D.new()
+	_ring_instance.name = "OrbitRings"
+	_ring_instance.mesh = _ring_mesh
+	_ring_instance.material_override = _line_material(orbit_ring_color)
+	_ring_instance.visible = _show_orbit_rings
+	add_child(_ring_instance)
+	_rebuild_shell_visuals()
+
 func _set_degenerate_line(im: ImmediateMesh) -> void:
 	im.clear_surfaces()
 	im.surface_begin(Mesh.PRIMITIVE_LINES)
@@ -283,7 +316,8 @@ func update_frame(positions: PackedFloat32Array, isl_avail: PackedByteArray, gro
 		var pos = ecef_km_to_unity(ecef.x, ecef.y, ecef.z)
 		_satellite_positions_ecef[i] = ecef
 		_satellite_positions[i] = pos
-		_satellite_multimesh.set_instance_transform(i, Transform3D(Basis(), pos))
+		var scale = _satellite_visual_scale(i)
+		_satellite_multimesh.set_instance_transform(i, Transform3D(Basis().scaled(Vector3.ONE * scale), pos))
 
 	_update_trails()
 	_update_isl_meshes(isl_avail)
@@ -413,6 +447,68 @@ func _ground_material(color: Color, energy: float) -> StandardMaterial3D:
 	mat.emission_energy_multiplier = energy
 	return mat
 
+func set_shell_metadata(shells: Array) -> void:
+	_shells = shells
+	_rebuild_shell_visuals()
+
+func set_deployment_time(sim_time_s: float) -> void:
+	_deployment_time_s = sim_time_s
+
+func _satellite_visual_scale(index: int) -> float:
+	if not _show_deployment or _satellite_positions.size() == 0:
+		return 1.0
+	var progress = clamp(_deployment_time_s / max(1.0, deployment_duration_s), 0.0, 1.0)
+	var active_count = max(1, int(ceil(float(_satellite_positions.size()) * progress)))
+	return 1.0 if index < active_count else 0.18
+
+func _rebuild_shell_visuals() -> void:
+	if _shell_mesh == null or _ring_mesh == null:
+		return
+	_shell_mesh.clear_surfaces()
+	_ring_mesh.clear_surfaces()
+	if _shells.is_empty():
+		_set_degenerate_line(_shell_mesh)
+		_set_degenerate_line(_ring_mesh)
+		return
+	_shell_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+	_ring_mesh.surface_begin(Mesh.PRIMITIVE_LINES)
+	for shell in _shells:
+		var alt_km = float(shell.get("alt_km", 550.0))
+		var inc_deg = float(shell.get("inc_deg", 53.0))
+		var planes = max(1, int(shell.get("P", 1)))
+		var radius_km = EARTH_EQUATORIAL_RADIUS_KM + alt_km
+		_add_shell_band(radius_km)
+		_add_orbit_planes(radius_km, inc_deg, planes)
+	_shell_mesh.surface_end()
+	_ring_mesh.surface_end()
+
+func _add_shell_band(radius_km: float) -> void:
+	var r_units = radius_km / scale_km_per_unit
+	var segments = 160
+	for lat_deg in [-10.0, 0.0, 10.0]:
+		for s in segments:
+			_shell_mesh.surface_add_vertex(_sphere_point(r_units, lat_deg, 360.0 * float(s) / float(segments)))
+			_shell_mesh.surface_add_vertex(_sphere_point(r_units, lat_deg, 360.0 * float(s + 1) / float(segments)))
+
+func _add_orbit_planes(radius_km: float, inc_deg: float, planes: int) -> void:
+	var segments = 160
+	var raan_span = 180.0 if abs(inc_deg - 90.0) < 1.0 else 360.0
+	var draw_planes = min(planes, 24)
+	for p in draw_planes:
+		var raan_deg = raan_span * float(p) / float(max(1, planes))
+		for s in segments:
+			_ring_mesh.surface_add_vertex(_orbit_point(radius_km, inc_deg, raan_deg, 360.0 * float(s) / float(segments)))
+			_ring_mesh.surface_add_vertex(_orbit_point(radius_km, inc_deg, raan_deg, 360.0 * float(s + 1) / float(segments)))
+
+func _orbit_point(radius_km: float, inc_deg: float, raan_deg: float, u_deg: float) -> Vector3:
+	var inc = deg_to_rad(inc_deg)
+	var raan = deg_to_rad(raan_deg)
+	var u = deg_to_rad(u_deg)
+	var x = radius_km * (cos(raan) * cos(u) - sin(raan) * sin(u) * cos(inc))
+	var y = radius_km * (sin(raan) * cos(u) + cos(raan) * sin(u) * cos(inc))
+	var z = radius_km * (sin(u) * sin(inc))
+	return ecef_km_to_unity(x, y, z)
+
 
 # ── 交互选择 ─────────────────────────────────────────────
 
@@ -537,6 +633,19 @@ func set_show_gsl(enabled: bool) -> void:
 
 func set_show_coverage_heat(enabled: bool) -> void:
 	_show_coverage_heat = enabled
+
+func set_show_shells(enabled: bool) -> void:
+	_show_shells = enabled
+	if _shell_instance != null:
+		_shell_instance.visible = enabled
+
+func set_show_orbit_rings(enabled: bool) -> void:
+	_show_orbit_rings = enabled
+	if _ring_instance != null:
+		_ring_instance.visible = enabled
+
+func set_show_deployment(enabled: bool) -> void:
+	_show_deployment = enabled
 
 
 # ── M4.2: 可用 ISL 脉动动画 ─────────────────────────

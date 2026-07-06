@@ -41,6 +41,27 @@ end
 处理 start_simulation：启动会话并返回响应。
 推流由 ws_handler 负责（拿到响应后开始推 frame）。
 """
+function _constellation_metadata(name::AbstractString)
+    config = resolve_constellation(Symbol(name))
+    config isa WalkerConstellationConfig || return Dict{String,Any}()
+    return Dict{String,Any}(
+        "name" => String(name),
+        "T" => config.T,
+        "P" => config.P,
+        "F" => config.F,
+        "alt_km" => config.alt_km,
+        "inc_deg" => config.inc_deg,
+    )
+end
+
+function _shell_metadata(name::AbstractString)
+    meta = _constellation_metadata(name)
+    isempty(meta) && return Dict{String,Any}[]
+    shell = copy(meta)
+    shell["id"] = 1
+    return [shell]
+end
+
 function handle_start_simulation(req::StartSimulationReq)
     session = start_session(;
         name = req.name,
@@ -62,6 +83,8 @@ function handle_start_simulation(req::StartSimulationReq)
         n_ground_stations = length(session.ground_stations),
         gsl_enabled = session.include_gsl && !isempty(session.ground_stations),
         coverage_enabled = session.include_coverage && !isempty(session.ground_stations),
+        constellation = _constellation_metadata(session.name),
+        shells = _shell_metadata(session.name),
     )
 end
 

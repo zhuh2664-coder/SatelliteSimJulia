@@ -16,6 +16,7 @@
 | M7   | 14 星座回归 + 性能               | ✅ done       | `e5d1a8e`, `f5baeac`, `d43c9e2`, `407ce27`, `c9a3741`, `8a209bb`, `7b46e4a`, `d8f4f35` |
 | M8   | 可视化功能完善                   | ✅ done       | working tree |
 | M9   | 地面站 / GSL / 覆盖热力图        | ✅ done       | working tree |
+| M10  | 壳层 / 轨道面 / 部署可视化       | ✅ done       | working tree |
 
 ## 工作纪律
 

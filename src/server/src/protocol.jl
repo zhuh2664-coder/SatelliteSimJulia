@@ -106,6 +106,8 @@ Base.@kwdef struct StartSimulationResp
     n_ground_stations::Int = 0
     gsl_enabled::Bool = false
     coverage_enabled::Bool = false
+    constellation::Dict{String,Any} = Dict{String,Any}()
+    shells::Vector{Dict{String,Any}} = Dict{String,Any}[]
 end
 
 Base.@kwdef struct StopSimulationResp

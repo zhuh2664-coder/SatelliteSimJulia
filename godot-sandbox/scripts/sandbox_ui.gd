@@ -18,6 +18,9 @@ class_name SandboxUI
 #   show_ground_changed(enabled: bool)
 #   show_gsl_changed(enabled: bool)
 #   show_coverage_changed(enabled: bool)
+#   show_shells_changed(enabled: bool)
+#   show_orbit_rings_changed(enabled: bool)
+#   show_deployment_changed(enabled: bool)
 # ============================================================
 
 signal start_clicked(constellation: String)
@@ -31,6 +34,9 @@ signal show_earth_grid_changed(enabled: bool)
 signal show_ground_changed(enabled: bool)
 signal show_gsl_changed(enabled: bool)
 signal show_coverage_changed(enabled: bool)
+signal show_shells_changed(enabled: bool)
+signal show_orbit_rings_changed(enabled: bool)
+signal show_deployment_changed(enabled: bool)
 
 # M5.1: 状态主题色（顶部面板背景）
 @export var theme_idle: Color = Color(0.0, 0.0, 0.0, 0.55)
@@ -53,6 +59,9 @@ var _show_grid_check: CheckBox
 var _show_ground_check: CheckBox
 var _show_gsl_check: CheckBox
 var _show_coverage_check: CheckBox
+var _show_shells_check: CheckBox
+var _show_rings_check: CheckBox
+var _show_deploy_check: CheckBox
 var _status_label: Label
 var _hud_label: Label
 var _sat_info_label: Label
@@ -76,6 +85,9 @@ func _ready() -> void:
 	_show_ground_check.toggled.connect(show_ground_changed.emit)
 	_show_gsl_check.toggled.connect(show_gsl_changed.emit)
 	_show_coverage_check.toggled.connect(show_coverage_changed.emit)
+	_show_shells_check.toggled.connect(show_shells_changed.emit)
+	_show_rings_check.toggled.connect(show_orbit_rings_changed.emit)
+	_show_deploy_check.toggled.connect(show_deployment_changed.emit)
 
 func _build_ui() -> void:
 	# 全屏 Control
@@ -120,7 +132,7 @@ func _build_ui() -> void:
 	_speed_slider = HSlider.new()
 	_speed_slider.min_value = 0.25
 	_speed_slider.max_value = 300.0
-	_speed_slider.value = 1.0
+	_speed_slider.value = 60.0
 	_speed_slider.custom_minimum_size = Vector2(160, 0)
 	hbox.add_child(_speed_slider)
 
@@ -145,6 +157,12 @@ func _build_ui() -> void:
 	hbox.add_child(_show_gsl_check)
 	_show_coverage_check = _new_check("Coverage", true)
 	hbox.add_child(_show_coverage_check)
+	_show_shells_check = _new_check("Shells", true)
+	hbox.add_child(_show_shells_check)
+	_show_rings_check = _new_check("Rings", true)
+	hbox.add_child(_show_rings_check)
+	_show_deploy_check = _new_check("Deploy", true)
+	hbox.add_child(_show_deploy_check)
 
 	# 状态文本
 	_status_label = Label.new()
