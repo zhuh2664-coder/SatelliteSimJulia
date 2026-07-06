@@ -65,6 +65,14 @@ function router(req::HTTP.Request)
             id = split(path, "/")[4]
             req.context[:id] = id
             return _wrap(get_job_status)(req)
+        elseif startswith(path, "/api/jobs/") && endswith(path, "/logs") && req.method == "GET"
+            id = split(path, "/")[4]
+            req.context[:id] = id
+            return _wrap(get_job_logs)(req)
+        elseif startswith(path, "/api/jobs/") && endswith(path, "/artifacts") && req.method == "GET"
+            id = split(path, "/")[4]
+            req.context[:id] = id
+            return _wrap(get_artifacts_json)(req)
         elseif startswith(path, "/api/jobs/") && endswith(path, "/result.json") && req.method == "GET"
             id = split(path, "/")[4]
             req.context[:id] = id

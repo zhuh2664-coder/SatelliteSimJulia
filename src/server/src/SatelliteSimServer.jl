@@ -18,7 +18,7 @@ include("streamer.jl")
 include("handlers.jl")
 
 export parse_request, ListConstellationsReq, DescribeConstellationReq,
-       GroundStationSpec, StartSimulationReq, StopSimulationReq, AITraceReq, AICheckpointReq,
+       GroundStationSpec, WalkerSpec, StartSimulationReq, StopSimulationReq, AITraceReq, AICheckpointReq,
        ListConstellationsResp, DescribeConstellationResp,
        StartSimulationResp, StopSimulationResp, AITraceResp, AICheckpointResp, ErrorResponse,
        start_session, stop_session!, get_session,

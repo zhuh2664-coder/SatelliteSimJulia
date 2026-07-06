@@ -41,9 +41,7 @@ end
 处理 start_simulation：启动会话并返回响应。
 推流由 ws_handler 负责（拿到响应后开始推 frame）。
 """
-function _constellation_metadata(name::AbstractString)
-    config = resolve_constellation(Symbol(name))
-    config isa WalkerConstellationConfig || return Dict{String,Any}()
+function _constellation_metadata(name::AbstractString, config::WalkerConstellationConfig)
     return Dict{String,Any}(
         "name" => String(name),
         "T" => config.T,
@@ -54,17 +52,27 @@ function _constellation_metadata(name::AbstractString)
     )
 end
 
-function _shell_metadata(name::AbstractString)
-    meta = _constellation_metadata(name)
-    isempty(meta) && return Dict{String,Any}[]
-    shell = copy(meta)
+function _shell_metadata(name::AbstractString, config::WalkerConstellationConfig)
+    shell = _constellation_metadata(name, config)
     shell["id"] = 1
     return [shell]
 end
 
+function _walker_config(spec::WalkerSpec)
+    return WalkerConstellationConfig(
+        T = spec.T,
+        P = spec.P,
+        F = spec.F,
+        alt_km = spec.alt_km,
+        inc_deg = spec.inc_deg,
+    )
+end
+
 function handle_start_simulation(req::StartSimulationReq)
+    config = req.walker === nothing ? nothing : _walker_config(req.walker)
     session = start_session(;
         name = req.name,
+        config = config,
         tspan = req.tspan,
         step_s = req.step_s,
         propagator = req.propagator,
@@ -83,8 +91,8 @@ function handle_start_simulation(req::StartSimulationReq)
         n_ground_stations = length(session.ground_stations),
         gsl_enabled = session.include_gsl && !isempty(session.ground_stations),
         coverage_enabled = session.include_coverage && !isempty(session.ground_stations),
-        constellation = _constellation_metadata(session.name),
-        shells = _shell_metadata(session.name),
+        constellation = _constellation_metadata(session.name, session.constellation),
+        shells = _shell_metadata(session.name, session.constellation),
     )
 end
 

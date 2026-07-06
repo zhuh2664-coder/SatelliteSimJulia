@@ -18,8 +18,17 @@ using Test
         r = parse_request("""{"type":"start_simulation","name":"iridium"}""")
         @test r isa StartSimulationReq
         @test r.name == "iridium"
+        @test r.walker === nothing
         @test r.tspan == [0.0, 600.0]
         @test r.step_s == 10.0
+
+        r = parse_request("""{"type":"start_simulation","name":"custom_walker","walker":{"T":10,"P":2,"F":1,"alt_km":600.0,"inc_deg":45.0}}""")
+        @test r.walker !== nothing
+        @test r.walker.T == 10
+        @test r.walker.P == 2
+        @test r.walker.F == 1
+        @test r.walker.alt_km == 600.0
+        @test r.walker.inc_deg == 45.0
 
         # start_simulation 完整字段
         r = parse_request("""{"type":"start_simulation","name":"walker48","tspan":[0.0,30.0],"step_s":5.0,"propagator":"j4","fps":20.0}""")
@@ -115,6 +124,29 @@ using Test
             @test_throws ArgumentError dispatch_request(stop_req)
         finally
             # 清理（万一断言失败也要清）
+            haskey(SESSIONS, resp.session_id) && stop_session!(resp.session_id)
+        end
+    end
+
+    @testset "handlers: custom Walker start" begin
+        req = StartSimulationReq(
+            name = "custom_walker",
+            walker = WalkerSpec(T = 10, P = 2, F = 1, alt_km = 600.0, inc_deg = 45.0),
+            tspan = [0.0, 10.0],
+            step_s = 10.0,
+        )
+        resp, sess = dispatch_request(req)
+        try
+            @test resp.ok
+            @test resp.n_sat == 10
+            @test resp.n_time == 2
+            @test size(sess.positions) == (10, 2, 3)
+            @test sess.constellation.T == 10
+            @test resp.constellation["name"] == "custom_walker"
+            @test resp.constellation["T"] == 10
+            @test resp.constellation["alt_km"] == 600.0
+            @test resp.shells[1]["P"] == 2
+        finally
             haskey(SESSIONS, resp.session_id) && stop_session!(resp.session_id)
         end
     end

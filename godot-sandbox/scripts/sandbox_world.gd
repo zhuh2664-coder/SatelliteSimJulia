@@ -454,6 +454,39 @@ func set_shell_metadata(shells: Array) -> void:
 func set_deployment_time(sim_time_s: float) -> void:
 	_deployment_time_s = sim_time_s
 
+func set_deployment_duration(seconds: float) -> void:
+	deployment_duration_s = max(1.0, seconds)
+
+func set_satellite_marker_radius(radius_units: float) -> void:
+	satellite_marker_radius_units = max(0.01, radius_units)
+	if _satellite_multimesh != null:
+		var sat_mesh = SphereMesh.new()
+		sat_mesh.radius = satellite_marker_radius_units
+		sat_mesh.height = satellite_marker_radius_units * 2.0
+		var sat_mat = StandardMaterial3D.new()
+		sat_mat.albedo_color = sat_color
+		sat_mat.emission_enabled = true
+		sat_mat.emission = sat_emission
+		sat_mat.emission_energy_multiplier = 1.2
+		sat_mesh.material = sat_mat
+		_satellite_multimesh.mesh = sat_mesh
+	if _selected_marker != null:
+		var selected_mesh = SphereMesh.new()
+		selected_mesh.radius = satellite_marker_radius_units * 1.8
+		selected_mesh.height = satellite_marker_radius_units * 3.6
+		var selected_mat = StandardMaterial3D.new()
+		selected_mat.albedo_color = selected_sat_color
+		selected_mat.emission_enabled = true
+		selected_mat.emission = selected_sat_color
+		selected_mat.emission_energy_multiplier = 1.5
+		selected_mesh.material = selected_mat
+		_selected_marker.mesh = selected_mesh
+	for marker in _ground_station_nodes:
+		var mesh = SphereMesh.new()
+		mesh.radius = satellite_marker_radius_units * 1.2
+		mesh.height = satellite_marker_radius_units * 2.4
+		marker.mesh = mesh
+
 func _satellite_visual_scale(index: int) -> float:
 	if not _show_deployment or _satellite_positions.size() == 0:
 		return 1.0

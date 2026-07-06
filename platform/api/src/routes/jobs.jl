@@ -87,3 +87,13 @@ function get_job_status(req::HTTP.Request)
 
     return HTTP.Response(200, JSON.json(Dict("status" => status)))
 end
+
+function get_job_logs(req::HTTP.Request)
+    owner_id = _owner_id(req)
+    id = UUID(req.context[:id])
+    job = Storage.get_job(owner_id, id)
+    job === nothing && return HTTP.Response(404, JSON.json(Dict("error" => "not found")))
+
+    logs = job.runner_logs === nothing ? "" : job.runner_logs
+    return HTTP.Response(200, ["Content-Type" => "text/plain"], logs)
+end

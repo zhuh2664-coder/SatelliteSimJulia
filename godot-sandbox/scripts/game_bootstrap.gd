@@ -41,6 +41,7 @@ var _coverage_ratio: float = -1.0
 var _covered_ground: int = 0
 var _total_ground: int = 0
 var _shells: Array = []
+var _pending_start_options: Dictionary = {}
 
 class Frame:
 	var positions: PackedFloat32Array
@@ -79,6 +80,8 @@ func _ready() -> void:
 	_ui.show_shells_changed.connect(_on_ui_show_shells)
 	_ui.show_orbit_rings_changed.connect(_on_ui_show_orbit_rings)
 	_ui.show_deployment_changed.connect(_on_ui_show_deployment)
+	_ui.deployment_duration_changed.connect(_on_ui_deployment_duration)
+	_ui.marker_radius_changed.connect(_on_ui_marker_radius)
 	_world.satellite_selected.connect(_on_satellite_selected)
 	_world.selection_cleared.connect(_on_selection_cleared)
 
@@ -122,9 +125,16 @@ func _update_hud() -> void:
 func _on_ws_open() -> void:
 	_ui.set_status("Connected")
 	_send({"type": "list_constellations"})
+	if not _pending_start_options.is_empty():
+		_start_with_options(_pending_start_options)
+		_pending_start_options = {}
 
 func _on_ws_closed() -> void:
-	_ui.set_status("Disconnected")
+	if not _pending_start_options.is_empty():
+		_ui.set_status("Reconnecting…")
+		_ws.connect_to(server_uri)
+	else:
+		_ui.set_status("Disconnected")
 
 func _on_ws_message(json_text: String) -> void:
 	var msg = JSON.parse_string(json_text)
@@ -171,6 +181,9 @@ func _on_ws_message(json_text: String) -> void:
 			_ui.set_running(false)
 			_ui.set_status("Stream ended")
 		"error":
+			_running = false
+			_paused = false
+			_ui.set_running(false)
 			_ui.set_status("Error: " + str(msg.get("message", "")))
 
 func _handle_frame(msg: Dictionary) -> void:
@@ -225,24 +238,35 @@ func _default_ground_stations() -> Array:
 
 # ── UI 事件 ───────────────────────────────────────────────
 
-func _on_ui_start(constellation: String) -> void:
+func _on_ui_start(options: Dictionary) -> void:
 	if _running:
 		return
+	if not _ws.is_open():
+		_pending_start_options = options
+		_ui.set_status("Connecting…")
+		_ws.connect_to(server_uri)
+		return
+	_start_with_options(options)
+
+func _start_with_options(options: Dictionary) -> void:
 	_reset_session()
 	_running = true
 	_paused = false
 	_ui.set_status("Starting…")
-	_send({
+	var req = {
 		"type": "start_simulation",
-		"name": constellation,
-		"tspan": [0.0, 7200.0],
-		"step_s": 5.0,
-		"propagator": "j2",
-		"fps": 60.0,
+		"name": str(options.get("name", "")),
+		"tspan": [0.0, float(options.get("duration_s", 7200.0))],
+		"step_s": float(options.get("step_s", 5.0)),
+		"propagator": str(options.get("propagator", "j2")),
+		"fps": float(options.get("server_fps", 60.0)),
 		"ground_stations": _default_ground_stations(),
-		"include_gsl": true,
-		"include_coverage": true,
-	})
+		"include_gsl": bool(options.get("include_gsl", true)),
+		"include_coverage": bool(options.get("include_coverage", true)),
+	}
+	if options.has("walker"):
+		req["walker"] = options["walker"]
+	_send(req)
 
 func _on_ui_stop() -> void:
 	if not _running:
@@ -291,6 +315,12 @@ func _on_ui_show_orbit_rings(enabled: bool) -> void:
 
 func _on_ui_show_deployment(enabled: bool) -> void:
 	_world.set_show_deployment(enabled)
+
+func _on_ui_deployment_duration(seconds: float) -> void:
+	_world.set_deployment_duration(seconds)
+
+func _on_ui_marker_radius(radius_units: float) -> void:
+	_world.set_satellite_marker_radius(radius_units)
 
 func _on_satellite_selected(info: Dictionary) -> void:
 	var pos = info.get("ecef_km", Vector3.ZERO)

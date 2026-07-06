@@ -62,6 +62,19 @@ if [[ "$SUBMIT_JOB" == "1" ]]; then
             succeeded)
                 curl -fsS "$API/api/jobs/$JOB_ID/result.json" \
                     -H "Authorization: Bearer $TOKEN" | jq -e '.fitness != null' >/dev/null
+                curl -fsS "$API/api/jobs/$JOB_ID/artifacts" \
+                    -H "Authorization: Bearer $TOKEN" | jq -e '
+                        (.files | length >= 3) and
+                        any(.files[]; .path == "result.json") and
+                        any(.files[]; .path == "config.snapshot.json") and
+                        any(.files[]; .path == "run_metadata.json")
+                    ' >/dev/null
+                curl -fsS "$API/api/jobs/$JOB_ID/download?file=run_metadata.json" \
+                    -H "Authorization: Bearer $TOKEN" | jq -e '.julia.version != null and .duration_s != null' >/dev/null
+                curl -fsS "$API/api/jobs/$JOB_ID/download?file=config.snapshot.json" \
+                    -H "Authorization: Bearer $TOKEN" | jq -e '.name == "walker48-test"' >/dev/null
+                curl -fsS "$API/api/jobs/$JOB_ID/logs" \
+                    -H "Authorization: Bearer $TOKEN" | grep -q '\[runner\]'
                 echo "SMOKE API: JOB SUCCEEDED"
                 exit 0
                 ;;

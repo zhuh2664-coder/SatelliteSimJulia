@@ -47,9 +47,18 @@ Base.@kwdef struct GroundStationSpec
     alt_km::Float64 = 0.0
 end
 
+Base.@kwdef struct WalkerSpec
+    T::Int
+    P::Int
+    F::Int
+    alt_km::Float64
+    inc_deg::Float64
+end
+
 Base.@kwdef struct StartSimulationReq <: Request
     type::String = "start_simulation"
-    name::String                      # catalog 符号，如 "iridium"
+    name::String                      # catalog 符号；custom Walker 时作为显示名
+    walker::Union{Nothing,WalkerSpec} = nothing
     tspan::Vector{Float64} = [0.0, 600.0]
     step_s::Float64 = 10.0
     propagator::String = "j2"         # "two_body" | "j2" | "j4"
@@ -144,6 +153,7 @@ end
 StructTypes.StructType(::Type{ListConstellationsReq}) = StructTypes.Struct()
 StructTypes.StructType(::Type{DescribeConstellationReq}) = StructTypes.Struct()
 StructTypes.StructType(::Type{GroundStationSpec}) = StructTypes.Struct()
+StructTypes.StructType(::Type{WalkerSpec}) = StructTypes.Struct()
 StructTypes.StructType(::Type{StartSimulationReq}) = StructTypes.Struct()
 StructTypes.StructType(::Type{StopSimulationReq}) = StructTypes.Struct()
 StructTypes.StructType(::Type{AITraceReq}) = StructTypes.Struct()
@@ -176,6 +186,16 @@ function _parse_ground_station_specs(items)
     return specs
 end
 
+function _parse_walker_spec(w)
+    return WalkerSpec(
+        T = Int(w.T),
+        P = Int(w.P),
+        F = Int(w.F),
+        alt_km = Float64(w.alt_km),
+        inc_deg = Float64(w.inc_deg),
+    )
+end
+
 """
     parse_request(json_str) -> Request
 
@@ -191,7 +211,8 @@ function parse_request(s::AbstractString)
         return DescribeConstellationReq(name = String(obj.name))
     elseif t == "start_simulation"
         # 可选字段做容错（客户端可能省略使用默认值）
-        kwargs = Dict{Symbol,Any}(:name => String(obj.name))
+        kwargs = Dict{Symbol,Any}(:name => haskey(obj, :name) ? String(obj.name) : "custom_walker")
+        haskey(obj, :walker) && (kwargs[:walker] = _parse_walker_spec(obj.walker))
         haskey(obj, :tspan) && (kwargs[:tspan] = Float64.(obj.tspan))
         haskey(obj, :step_s) && (kwargs[:step_s] = Float64(obj.step_s))
         haskey(obj, :propagator) && (kwargs[:propagator] = String(obj.propagator))

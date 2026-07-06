@@ -26,7 +26,8 @@ using SatelliteSimNet
 
 字段：
 - `id::String`               会话唯一 ID
-- `name::String`             catalog 星座名
+- `name::String`             星座显示名（catalog 名或 custom_walker）
+- `constellation::WalkerConstellationConfig` 本次实际使用的 Walker 参数
 - `positions::Array{Float64,3}` ECEF km，形状 (N, T, 3)
 - `isl_edges::Vector{Tuple{Int,Int}}`  候选 ISL 边（1-based 卫星索引对）
 - `step_s::Float64`          每帧间隔秒
@@ -43,6 +44,7 @@ using SatelliteSimNet
 mutable struct SimulationSession
     id::String
     name::String
+    constellation::WalkerConstellationConfig
     positions::Array{Float64,3}
     isl_edges::Vector{Tuple{Int,Int}}
     step_s::Float64
@@ -76,12 +78,13 @@ end
 # ── 启动会话：预算位置 + ISL 边集 ───────────────────────────
 
 """
-    start_session(name; tspan, step_s, propagator, fps) -> SimulationSession
+    start_session(name; config, tspan, step_s, propagator, fps) -> SimulationSession
 
 预算一个星座的完整仿真状态并存入 SESSIONS。
 
 参数：
-- `name`     catalog 星座符号字符串（如 "iridium"）
+- `name`     catalog 星座符号字符串或 custom 显示名
+- `config`   可选 Walker 参数；为空时从 catalog 解析 name
 - `tspan`    时间区间 [t0, t1] 秒
 - `step_s`   帧间隔秒
 - `propagator`  传播器名 "two_body"/"j2"/"j4"
@@ -91,6 +94,7 @@ end
 """
 function start_session(;
     name::AbstractString,
+    config::Union{Nothing,WalkerConstellationConfig} = nothing,
     tspan::AbstractVector{<:Real} = [0.0, 600.0],
     step_s::Real = 10.0,
     propagator::AbstractString = "j2",
@@ -99,13 +103,13 @@ function start_session(;
     include_gsl::Bool = true,
     include_coverage::Bool = true,
 )
-    # 1. 解析 catalog 配置
-    sym = Symbol(name)
-    config = resolve_constellation(sym)  # WalkerConstellationConfig 或 TLE
-
-    # 当前只支持 Walker；TLE 需走 SGP4，后续接入
-    config isa WalkerConstellationConfig ||
-        throw(ArgumentError("only Walker constellations supported for now; got $(typeof(config))"))
+    # 1. 解析星座配置（catalog 或 custom Walker）
+    if config === nothing
+        resolved = resolve_constellation(Symbol(name))  # WalkerConstellationConfig 或 TLE
+        resolved isa WalkerConstellationConfig ||
+            throw(ArgumentError("only Walker constellations supported for now; got $(typeof(resolved))"))
+        config = resolved
+    end
 
     T, P, F = config.T, config.P, config.F
     alt_km, inc_deg = config.alt_km, config.inc_deg
@@ -128,6 +132,7 @@ function start_session(;
     session = SimulationSession(
         session_id,
         String(name),
+        config,
         positions,
         isl_edges,
         Float64(step_s),
