@@ -34,24 +34,26 @@ SATELLITESIMJULIA — PARALLEL VALIDATION
 max_jobs=4 child_threads=2 precompile=no
 package=no viz=no gmat=no server=no
 
-quick_validate               PASS     29.1       QUICK VALIDATE: ALL PASS
-smoke_core_net_lab           PASS     12.8       SMOKE SUCCESS
-probe_e2e                    PASS     35.5       PROBE-2 DONE
-probe_opt                    PASS     127.5      PROBE OPT: ALL PASS
-probe_type_stability         PASS     18.2       PASS/INFO: 28
-probe_experiment_matrix      PASS     14.7       registered experiment smoke: PASS
-probe_orbit_propagator_matrix PASS     6.6        ORBIT PROPAGATOR MATRIX: ALL PASS
-probe_topology_strategy_matrix PASS     8.9        TOPOLOGY MATRIX: ALL PASS
-probe_routing_algorithm_matrix PASS     7.9        ROUTING ALGORITHM MATRIX: ALL PASS
-probe_traffic_aon_power      PASS     7.5        TRAFFIC AON POWER: ALL PASS
-probe_lab_integration_boundaries PASS     11.8       LAB INTEGRATION BOUNDARIES: ALL PASS
-probe_ai_offline_react_planner PASS     12.3       AI OFFLINE REACT PLANNER: ALL PASS
-probe_ai_llm_provider_fake_http PASS     14.4       AI LLM PROVIDER FAKE HTTP: ALL PASS
-probe_viz_czml_artifact      PASS     22.8       VIZ CZML ARTIFACT: ALL PASS
-probe_dynamic_topology_churn PASS     4.9        DYNAMIC TOPOLOGY CHURN: ALL PASS
-probe_revise_hot_reload      PASS     25.7       Revise hot reload probe PASS
+quick_validate               PASS     14.3       QUICK VALIDATE: ALL PASS
+smoke_core_net_lab           PASS     6.5        SMOKE SUCCESS
+probe_e2e                    PASS     15.6       PROBE-2 DONE
+probe_opt                    PASS     56.6       PROBE OPT: ALL PASS
+probe_type_stability         PASS     6.4        PASS/INFO: 28
+probe_experiment_matrix      PASS     9.0        registered experiment smoke: PASS
+probe_orbit_propagator_matrix PASS     4.1        ORBIT PROPAGATOR MATRIX: ALL PASS
+probe_topology_strategy_matrix PASS     6.1        TOPOLOGY MATRIX: ALL PASS
+probe_routing_algorithm_matrix PASS     4.4        ROUTING ALGORITHM MATRIX: ALL PASS
+probe_traffic_aon_power      PASS     4.5        TRAFFIC AON POWER: ALL PASS
+probe_lab_integration_boundaries PASS     7.4        LAB INTEGRATION BOUNDARIES: ALL PASS
+probe_ai_offline_react_planner PASS     7.0        AI OFFLINE REACT PLANNER: ALL PASS
+probe_ai_llm_provider_fake_http PASS     6.8        AI LLM PROVIDER FAKE HTTP: ALL PASS
+probe_ai_llm_provider_tool_loop PASS     10.1       AI LLM PROVIDER TOOL LOOP: ALL PASS
+probe_viz_czml_artifact      PASS     12.0       VIZ CZML ARTIFACT: ALL PASS
+probe_dynamic_topology_churn PASS     3.3        DYNAMIC TOPOLOGY CHURN: ALL PASS
+probe_lab_net_routing_vertical PASS     5.0        LAB NET ROUTING VERTICAL: ALL PASS
+probe_revise_hot_reload      PASS     7.6        Revise hot reload probe PASS
 
-SUMMARY: 16 passed, 0 failed
+SUMMARY: 18 passed, 0 failed
 ```
 
 ### 1.2 最大化推进总纲

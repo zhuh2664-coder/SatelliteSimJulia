@@ -53,8 +53,10 @@ function marker_for(output::String)
         "LAB INTEGRATION BOUNDARIES: ALL PASS",
         "AI OFFLINE REACT PLANNER: ALL PASS",
         "AI LLM PROVIDER FAKE HTTP: ALL PASS",
+        "AI LLM PROVIDER TOOL LOOP: ALL PASS",
         "VIZ CZML ARTIFACT: ALL PASS",
         "DYNAMIC TOPOLOGY CHURN: ALL PASS",
+        "LAB NET ROUTING VERTICAL: ALL PASS",
         "VIZ PNG ARTIFACT: ALL PASS",
         "PASS/INFO:",
         "registered experiment smoke: PASS",
@@ -210,8 +212,10 @@ function main()
         job("probe_lab_integration_boundaries", `julia --project=$ROOT $(_script("scripts", "probe_lab_integration_boundaries.jl"))`),
         job("probe_ai_offline_react_planner", `julia --project=$ROOT $(_script("scripts", "probe_ai_offline_react_planner.jl"))`),
         job("probe_ai_llm_provider_fake_http", `julia --project=$(_script("src", "lab")) $(_script("scripts", "probe_ai_llm_provider_fake_http.jl"))`),
+        job("probe_ai_llm_provider_tool_loop", `julia --project=$(_script("src", "lab")) $(_script("scripts", "probe_ai_llm_provider_tool_loop.jl"))`),
         job("probe_viz_czml_artifact", `julia --project=$(_script("src", "viz")) $(_script("scripts", "probe_viz_czml_artifact.jl"))`),
         job("probe_dynamic_topology_churn", `julia --project=$ROOT $(_script("scripts", "probe_dynamic_topology_churn.jl"))`),
+        job("probe_lab_net_routing_vertical", `julia --project=$ROOT $(_script("scripts", "probe_lab_net_routing_vertical.jl"))`),
         job("probe_revise_hot_reload", `julia --project=$ROOT $(_script("scripts", "probe_revise_hot_reload.jl"))`),
     ]
 
