@@ -137,6 +137,12 @@ end
         end
         @test occursin("tool_call", out_trace)
 
+        out_replay_plan = capture_stdout() do
+            CLI.command_main(["ai-trace", session_id, "--mode", "replay_plan"])
+        end
+        replay_plan = JSON.parse(out_replay_plan)
+        @test replay_plan[1]["tool"] == "list_available"
+
         out_replay = capture_stdout() do
             CLI.command_main(["ai-replay", session_id])
         end
@@ -146,6 +152,19 @@ end
             CLI.command_main(["ai-checkpoint", session_id])
         end
         @test JSON.parse(out_checkpoint)["status"] == "completed"
+
+        withenv("DEEPSEEK_API_KEY" => nothing) do
+            for command in (["chat", "ping"], ["teamgraph", "ping"])
+                err = nothing
+                try
+                    CLI.command_main(command)
+                catch e
+                    err = e
+                end
+                @test err !== nothing
+                @test occursin("DEEPSEEK_API_KEY not set", sprint(showerror, err))
+            end
+        end
     finally
         isdir(session_dir) && rm(session_dir; recursive = true, force = true)
         SatelliteSimLab.clear_hooks!()
