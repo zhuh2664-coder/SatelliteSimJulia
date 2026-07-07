@@ -60,15 +60,29 @@ function _tool_run_study_plan(args::AbstractDict)
     isempty(String(goal)) && error("goal required")
     answers = haskey(args, "answers") ? _symbolize_keys(args["answers"]) : Dict{Symbol,Any}()
     answers[:goal] = goal
+    ground_stations = _parse_ai_ground_stations(get(args, "ground_stations", get(answers, :ground_stations, [])))
+    ground_pairs = _parse_ai_ground_pairs(get(args, "ground_pairs", get(answers, :ground_pairs, [])), ground_stations)
     plan = create_plan(answers)
     study_obj = build_study(plan)
-    result = run_study(study_obj)
+    result = run_study(study_obj; ground_stations = ground_stations, ground_pairs = ground_pairs)
+    traffic_evaluation = result.traffic_evaluation
+    traffic_totals = _traffic_assignment_totals(traffic_evaluation)
     return Dict(
         "plan" => _plan_summary(plan),
         "coverage_ratio" => round(result.coverage.coverage_ratio, digits=4),
         "avg_latency_ms" => round(result.latency.avg_latency_ms, digits=2),
         "connectivity_ratio" => round(result.network.connectivity_ratio, digits=4),
         "fitness" => round(result.fitness, digits=4),
+        "traffic_demands" => length(result.config.traffic_demands),
+        "ground_stations" => length(result.config.ground_stations),
+        "ground_pairs" => length(result.config.ground_pairs),
+        "traffic_evaluation_ran" => traffic_evaluation !== nothing,
+        "traffic_fallback" => !isempty(result.config.traffic_demands) && traffic_evaluation === nothing,
+        "traffic_time_steps" => traffic_evaluation === nothing ? 0 : length(traffic_evaluation.assignments_by_time),
+        "traffic_assignments" => traffic_evaluation === nothing ? 0 : sum(length, traffic_evaluation.assignments_by_time),
+        "offered_mbps" => round(traffic_totals.offered_mbps, digits=3),
+        "carried_mbps" => round(traffic_totals.carried_mbps, digits=3),
+        "dropped_mbps" => round(traffic_totals.dropped_mbps, digits=3),
     )
 end
 
@@ -110,6 +124,27 @@ function register_planner_ai_tools!()
             "properties" => Dict{String,Any}(
                 "goal" => Dict("type" => "string"),
                 "answers" => Dict("type" => "object"),
+                "ground_stations" => Dict(
+                    "type" => "array",
+                    "items" => Dict(
+                        "type" => "object",
+                        "properties" => Dict(
+                            "id" => Dict("type" => "integer"),
+                            "name" => Dict("type" => "string"),
+                            "lat" => Dict("type" => "number"),
+                            "lon" => Dict("type" => "number"),
+                            "alt_km" => Dict("type" => "number"),
+                        ),
+                        "required" => ["lat", "lon"],
+                    ),
+                ),
+                "ground_pairs" => Dict(
+                    "type" => "array",
+                    "items" => Dict(
+                        "type" => "array",
+                        "items" => Dict("type" => "integer"),
+                    ),
+                ),
             ),
             "required" => ["goal"],
         ),

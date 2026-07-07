@@ -4,10 +4,14 @@
 # 和实际解析逻辑三处漂移。
 
 export ai_constellation_names, ai_topology_terms, ai_propagator_terms,
-       parse_ai_constellation, parse_ai_topology, parse_ai_propagator
+       ai_routing_terms, ai_traffic_terms,
+       parse_ai_constellation, parse_ai_topology, parse_ai_propagator,
+       parse_ai_routing
 
 ai_topology_terms() = ["balanced", "robust", "minimal", "adaptive"]
 ai_propagator_terms() = ["fast", "balanced", "precise", "tle_based"]
+ai_routing_terms() = ["shortest_path", "load_balanced", "multipath"]
+ai_traffic_terms() = ["none", "uniform", "hotspot", "video", "iot"]
 ai_constellation_names() = list_constellations()
 
 function parse_ai_constellation(s::AbstractString)::WalkerConstellationConfig
@@ -55,4 +59,12 @@ end
 
 function parse_ai_propagator(s::AbstractString)::Union{AbstractKeplerianPropagator,Symbol}
     return resolve_propagator(_ai_propagator_intent(s), ResolutionContext())
+end
+
+function parse_ai_routing(s::AbstractString)::Symbol
+    v = lowercase(strip(String(s)))
+    v in ("shortest_path", "shortest", "dijkstra", "latency") && return :shortest_path
+    v in ("load_balanced", "load_balance", "min_load", "minload") && return :load_balanced
+    v in ("multipath", "ecmp", "multi_path") && return :multipath
+    error("未知路由词 '$s'。可用词: $(join(ai_routing_terms(), ", "))")
 end

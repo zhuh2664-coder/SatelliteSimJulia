@@ -12,6 +12,7 @@ Base.@kwdef struct ToolBudget
     max_scan_values::Int = 20
     max_compare_constellations::Int = 10
     max_tle_sats::Int = 200
+    max_ground_stations::Int = 20
 end
 
 const _DEFAULT_TOOL_GUARDS_REGISTERED = Ref(false)
@@ -34,6 +35,11 @@ function estimate_tool_cost(tool::String, args::AbstractDict)::Dict{String,Any}
             "satellites" => _walker_T(constellation),
             "max_sats" => Int(get(args, "max_sats", 24)),
             "propagator" => String(get(args, "propagator", "fast")),
+            "ground_stations" => length(get(args, "ground_stations", Any[])),
+        )
+    elseif tool == "run_study_plan"
+        return Dict{String,Any}(
+            "ground_stations" => length(get(args, "ground_stations", Any[])),
         )
     elseif tool == "scan_parameter"
         values = get(args, "values", Any[])
@@ -64,6 +70,14 @@ function guard_tool_call(tool::String, args::AbstractDict; budget::ToolBudget=de
             max_sats <= budget.max_tle_sats ||
                 return false, "max_sats=$max_sats exceeds max_tle_sats=$(budget.max_tle_sats)"
         end
+
+        n_ground = get(cost, "ground_stations", 0)
+        n_ground <= budget.max_ground_stations ||
+            return false, "ground_stations=$n_ground exceeds max_ground_stations=$(budget.max_ground_stations)"
+    elseif tool == "run_study_plan"
+        n_ground = get(cost, "ground_stations", 0)
+        n_ground <= budget.max_ground_stations ||
+            return false, "ground_stations=$n_ground exceeds max_ground_stations=$(budget.max_ground_stations)"
     elseif tool == "scan_parameter"
         n = get(cost, "scan_values", 0)
         n <= budget.max_scan_values || return false, "scan values=$n exceeds max_scan_values=$(budget.max_scan_values)"
