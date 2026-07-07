@@ -88,13 +88,17 @@ end
 
 返回距离矩阵 D、可用 ISL 列表、ISL 评估结果。
 """
+function _topology_isl_candidates(strategy, T::Int, P::Int)
+    topo_output = generate_topology(strategy, T, P)
+    return vcat(topo_output.static_links, topo_output.dynamic_candidates)
+end
+
 function assess_routing(
     positions::Array{Float64,3}, T::Int, P::Int,
     strategy, constraints; ground_pairs = Tuple{Int,Int}[],
 )
     last_pos = positions_at_last(positions)
-    topo_output = generate_topology(strategy, T, P)
-    all_links = vcat(topo_output.static_links, topo_output.dynamic_candidates)
+    all_links = _topology_isl_candidates(strategy, T, P)
 
     isl_results = evaluate_isl_batch(last_pos, all_links; constraints = constraints)
 
@@ -191,6 +195,7 @@ function full_constellation_assessment(config)
         positions, T, P, config.topology_strategy, config.constraints;
         ground_pairs = config.ground_pairs,
     )
+    traffic_isl_candidates = _topology_isl_candidates(config.topology_strategy, T, P)
 
     latency = compute_latency(D)
     network = compute_network_metrics(D)
@@ -223,30 +228,32 @@ function full_constellation_assessment(config)
     end
 
     n_isl = length(available_isl)
-    # 流量评估：尝试完整 AON（多时间步），失败则降级到占位（向后兼容）
+    # 流量评估：尝试完整 AON（多时间步），失败则降级到占位（向后兼容）。
+    # AON 必须接收完整拓扑候选边，而不是 assess_routing 在最后一帧过滤出的
+    # available_isl；否则早期可用但最后一帧不可用的链路会被整段漏评估。
     traffic_evaluation = nothing
-    link_loads = if n_isl > 0 && !isempty(config.traffic_demands)
+    link_loads = if !isempty(traffic_isl_candidates) && !isempty(config.traffic_demands)
         traffic_evaluation = try
-            _evaluate_traffic_full(config, positions, available_isl)
+            _evaluate_traffic_full(config, positions, traffic_isl_candidates)
         catch
             nothing  # 降级
         end
         if traffic_evaluation === nothing
-            # 降级：旧占位路径
+            # 降级：旧占位路径仍基于最后一帧可用边，保持历史行为。
             _assign_demands_to_isls(config.traffic_demands, available_isl, D, T)
         else
-            # 从真 AON 结果提取最后一步的 ISL 负载
-            _extract_last_isl_loads(traffic_evaluation, n_isl)
+            # 从真 AON 结果提取最后一步的 ISL 负载；link_id 对应完整候选边顺序。
+            _extract_last_isl_loads(traffic_evaluation, length(traffic_isl_candidates))
         end
     elseif n_isl > 0
         [config.constraints.isl_max_capacity_mbps * 0.5 for _ in 1:n_isl]
     else
         Float64[]
     end
-    utilization = if n_isl > 0
+    utilization = if !isempty(link_loads)
         compute_link_utilization(
             link_loads,
-            [config.constraints.isl_max_capacity_mbps for _ in 1:n_isl],
+            [config.constraints.isl_max_capacity_mbps for _ in eachindex(link_loads)],
         )
     else
         compute_link_utilization(Float64[], Float64[])
@@ -346,8 +353,15 @@ function _evaluate_traffic_full(config, positions, isl_pairs)
     isempty(config.ground_stations) && return nothing
     isempty(isl_pairs) && return nothing
 
-    # 地面站经纬度
-    gs_tuples = [(gs.lat, gs.lon, 0.0) for gs in config.ground_stations]
+    # 地面站经纬高
+    gs_tuples = [
+        (
+            gs.position.latitude_deg,
+            gs.position.longitude_deg,
+            gs.position.altitude_km,
+        )
+        for gs in config.ground_stations
+    ]
     ground_ids = collect(1:length(gs_tuples))
 
     # 构造时间网格
