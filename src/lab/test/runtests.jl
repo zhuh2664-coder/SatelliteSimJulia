@@ -26,6 +26,42 @@ function _small_config(; name="lab-smoke")
 end
 
 @testset "SatelliteSimLab" begin
+    @testset "include order smoke" begin
+        @test isdefined(SatelliteSimLab, :ExperimentConfig)
+        @test isdefined(SatelliteSimLab, :ResolutionContext)
+        @test isdefined(SatelliteSimLab, :TrafficResolutionContext)
+        @test isdefined(SatelliteSimLab, :full_constellation_assessment)
+
+        cfg = ExperimentConfig(name = "include-order-smoke", tspan = [0.0, 60.0])
+        @test cfg.name == "include-order-smoke"
+        @test cfg.tspan == [0.0, 60.0]
+    end
+
+    @testset "traffic time grid alignment" begin
+        grid = SatelliteSimLab._simulation_time_grid_from_tspan([0.0, 60.0, 120.0], 3)
+        @test grid !== nothing
+        @test timeslot_offsets(grid) == [0, 60, 120]
+
+        @test SatelliteSimLab._simulation_time_grid_from_tspan([0.0, 60.0], 3) === nothing
+
+        single = SatelliteSimLab._simulation_time_grid_from_tspan([0.0], 1)
+        @test single !== nothing
+        @test timeslot_offsets(single) == [0]
+        @test SatelliteSimLab._simulation_time_grid_from_tspan([60.0], 1) === nothing
+
+        short_final = SatelliteSimLab._simulation_time_grid_from_tspan([0.0, 3.0, 6.0, 9.0, 10.0], 5)
+        @test short_final !== nothing
+        @test timeslot_offsets(short_final) == [0, 3, 6, 9, 10]
+        @test SatelliteSimLab._simulation_time_grid_from_tspan([0.0, 3.0, 7.0, 10.0], 4) === nothing
+
+        fuzzy = SatelliteSimLab._simulation_time_grid_from_tspan([0.0, 60.0000000004, 120.0000000003], 3)
+        @test fuzzy !== nothing
+        @test timeslot_offsets(fuzzy) == [0, 60, 120]
+        @test SatelliteSimLab._simulation_time_grid_from_tspan([0.0, 60.001, 120.0], 3) === nothing
+        @test SatelliteSimLab._simulation_time_grid_from_tspan([0.0, NaN], 2) === nothing
+        @test SatelliteSimLab._simulation_time_grid_from_tspan([0.0, Inf], 2) === nothing
+    end
+
     @testset "run_experiment smoke" begin
         result = run_experiment(_small_config())
         @test result isa ExperimentResult

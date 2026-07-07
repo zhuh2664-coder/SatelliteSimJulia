@@ -15,13 +15,15 @@
 
 using SatelliteSimCore
 using SatelliteSimNet
-using SatelliteSimTraffic: TrafficDemand, evaluate_traffic_from_bare_arrays
+using SatelliteSimTraffic: TrafficDemand, LinkLoadSample, evaluate_traffic_from_bare_arrays
 import Random
 # 从 Foundation 借时间网格（Core re-export 了 Foundation，但 SimulationTimeGrid 需要显式引用）
 import SatelliteSimFoundation: SimulationTimeGrid, default_starlink_simulation_epoch
 
 export propagate_constellation_positions, assess_coverage, assess_routing,
-       assess_routing_temporal, full_constellation_assessment
+       assess_routing_temporal, assess_routing_temporal_dynamic,
+       assess_temporal_flow_routes,
+       full_constellation_assessment
 
 # ────────────────────────────────────────────────────────────
 # 基础组合：星座生成 + 传播 → 位置矩阵
@@ -165,6 +167,170 @@ function assess_routing_temporal(
     return D_series
 end
 
+"""
+    assess_routing_temporal_dynamic(positions, T, P, strategy_builder, constraints) -> Vector{Matrix{Float64}}
+
+预编排：对每个时间步重新生成拓扑，再计算该帧的路由距离矩阵。
+
+`strategy_builder(t)` 必须返回一个拓扑策略。这个入口用于动态候选链路
+随时间变化的策略，例如 `NearestNeighborStrategy(positions=positions, time_step=t)`。
+旧的 `assess_routing_temporal` 保持固定拓扑语义；本函数是并行新增入口。
+"""
+function assess_routing_temporal_dynamic(
+    positions::Array{Float64,3}, T::Int, P::Int,
+    strategy_builder::Function, constraints,
+)
+    n_time = n_timesteps(positions)
+    D_series = Vector{Matrix{Float64}}(undef, n_time)
+
+    for t in 1:n_time
+        strategy = strategy_builder(t)
+        topo_output = generate_topology(strategy, T, P)
+        all_links = vcat(topo_output.static_links, topo_output.dynamic_candidates)
+        pos_t = position_at_instant(positions, t)
+        isl_results = evaluate_isl_batch(pos_t, all_links; constraints = constraints)
+
+        available_isl = Tuple{Int,Int}[
+            (Int(all_links[i][1]), Int(all_links[i][2]))
+            for (i, result) in enumerate(isl_results) if result.available
+        ]
+
+        if isempty(available_isl)
+            D = fill(Inf, T, T)
+            for i in 1:T; D[i, i] = 0.0; end
+        else
+            weights = Float64[r.latency_ms for r in isl_results if r.available]
+            adjacency = build_adjacency(T, available_isl, weights)
+            D = all_pairs_shortest_paths(adjacency)
+        end
+
+        D_series[t] = D
+    end
+
+    return D_series
+end
+
+"""
+    assess_temporal_flow_routes(positions, T, P, strategy_builder, constraints, demands, algorithm; elapsed_by_time)
+
+预编排：每个时间步重新生成拓扑，并对活跃 `TrafficDemand` 做逐流路由。
+这是卫星节点级探针入口：当前把 `source_ground_id` / `destination_ground_id`
+解释为卫星节点 id（并限制到 `1:T`），用于先打通动态拓扑、业务流量和 Net
+多分派路由接口。真实地面端到接入卫星的 GSL 映射由完整 AON bridge 路径负责。
+
+这个入口刻意不替换 `run_experiment`：它先把动态拓扑、业务流量和 Net 的
+多分派路由接口稳定串起来，供实验层/AI 层显式调用。
+"""
+function assess_temporal_flow_routes(
+    positions::Array{Float64,3}, T::Int, P::Int,
+    strategy_builder::Function, constraints,
+    demands::Vector{TrafficDemand}, algorithm;
+    elapsed_by_time = collect(0:(n_timesteps(positions)-1)),
+)
+    n_time = n_timesteps(positions)
+    length(elapsed_by_time) == n_time ||
+        throw(ArgumentError("elapsed_by_time length must match positions time dimension"))
+
+    frames = Vector{NamedTuple}(undef, n_time)
+
+    for t in 1:n_time
+        strategy = strategy_builder(t)
+        topo_output = generate_topology(strategy, T, P)
+        all_links = vcat(topo_output.static_links, topo_output.dynamic_candidates)
+        pos_t = position_at_instant(positions, t)
+        isl_results = evaluate_isl_batch(pos_t, all_links; constraints = constraints)
+
+        available_isl = Tuple{Int,Int}[
+            (Int(all_links[i][1]), Int(all_links[i][2]))
+            for (i, result) in enumerate(isl_results) if result.available
+        ]
+        weights = Float64[result.latency_ms for result in isl_results if result.available]
+        graph = routing_graph_from_edges(T, available_isl, weights)
+
+        elapsed_s = Int(round(elapsed_by_time[t]))
+        active_demands = TrafficDemand[
+            demand for demand in demands
+            if demand.start_elapsed_s <= elapsed_s < demand.end_elapsed_s
+        ]
+        routes = RoutingOutput[
+            route(algorithm, RoutingInput(
+                graph,
+                clamp(demand.source_ground_id, 1, T),
+                clamp(demand.destination_ground_id, 1, T),
+            ))
+            for demand in active_demands
+        ]
+        link_loads = _link_load_samples_from_routes(
+            available_isl,
+            routes,
+            active_demands,
+            t,
+            elapsed_s,
+            hasproperty(constraints, :isl_max_capacity_mbps) ?
+                getproperty(constraints, :isl_max_capacity_mbps) : Inf,
+        )
+
+        frames[t] = (
+            time_index = t,
+            elapsed_s = elapsed_s,
+            available_isl = available_isl,
+            weights = weights,
+            active_demands = active_demands,
+            routes = routes,
+            link_loads = link_loads,
+        )
+    end
+
+    return frames
+end
+
+function _link_load_samples_from_routes(
+    available_isl::Vector{Tuple{Int,Int}},
+    routes::Vector{RoutingOutput},
+    demands::Vector{TrafficDemand},
+    time_index::Int,
+    elapsed_s::Int,
+    capacity_mbps::Real,
+)::Vector{LinkLoadSample}
+    length(routes) == length(demands) ||
+        throw(ArgumentError("routes and demands must have the same length"))
+
+    edge_index = Dict{Tuple{Int,Int},Int}()
+    for (idx, (src, dst)) in enumerate(available_isl)
+        edge_index[(src, dst)] = idx
+        edge_index[(dst, src)] = idx
+    end
+
+    loads = Dict{Int,Float64}()
+    for (route_output, demand) in zip(routes, demands)
+        isfinite(route_output.total_weight) || continue
+        path = route_output.path
+        length(path) >= 2 || continue
+        for hop in 1:length(path)-1
+            link_id = get(edge_index, (path[hop], path[hop + 1]), nothing)
+            link_id === nothing && continue
+            loads[link_id] = get(loads, link_id, 0.0) + demand.rate_mbps
+        end
+    end
+
+    return [
+        begin
+            src, dst = available_isl[link_id]
+            LinkLoadSample(
+                link_type = :isl,
+                link_id = link_id,
+                endpoint_a_id = src,
+                endpoint_b_id = dst,
+                time_index = time_index,
+                elapsed_s = elapsed_s,
+                load_mbps = load_mbps,
+                capacity_mbps = capacity_mbps,
+            )
+        end
+        for (link_id, load_mbps) in sort(collect(loads); by = first)
+    ]
+end
+
 # ────────────────────────────────────────────────────────────
 # 全套评估：覆盖 + 路由 + 容量 + 适应度
 # ────────────────────────────────────────────────────────────
@@ -195,11 +361,8 @@ function full_constellation_assessment(config)
     latency = compute_latency(D)
     network = compute_network_metrics(D)
 
-    # 路由结果（用于 routing_metrics）
-    # 注意：当前评估用全对最短路径距离矩阵 D（Floyd-Warshall）。
-    # routing_algorithm 字段记录用户意图，但 ECMP/MinLoad 的逐流 route() 接口
-    # 与矩阵模型不兼容，故此处标签反映意图，实际路径仍走最短路径。
-    # 完整的逐流路由评估（ECMP 分散/MLB 负载感知）待 route() 接口统一后接入。
+    # 路由结果（用于 routing_metrics）。
+    # 默认仍基于矩阵可达性；若后面成功跑出 traffic_evaluation，则替换为逐流真实路径。
     route_label = string(typeof(config.routing_algorithm).name.name)
     # 路由端点：优先 ground_pairs；否则若 ground_stations 非空，从它生成配对；
     # 最后降级为默认对跖点配对
@@ -252,6 +415,15 @@ function full_constellation_assessment(config)
         compute_link_utilization(Float64[], Float64[])
     end
 
+    if traffic_evaluation !== nothing
+        traffic_routing_results = _routing_outputs_from_traffic(traffic_evaluation, route_label)
+        if !isempty(traffic_routing_results)
+            routing_results = traffic_routing_results
+            latency = _latency_from_traffic(traffic_evaluation)
+            network = _network_from_traffic(traffic_evaluation)
+        end
+    end
+
     routing_metrics = compute_routing_metrics(routing_results)
     max_isl = T * 4 ÷ 2
     fitness = (1 - config.alpha) * routing_metrics.avg_hop_count +
@@ -262,6 +434,92 @@ function full_constellation_assessment(config)
         routing_metrics, fitness, time() - t_start,
         traffic_evaluation,
     )
+end
+
+function _network_from_traffic(traffic_evaluation)
+    total = 0
+    routed = 0
+    delays_ms = Float64[]
+    for assignments in traffic_evaluation.assignments_by_time
+        for assignment in assignments
+            total += 1
+            route_path = assignment.route
+            route_path.reachable || continue
+            routed += 1
+            route_path.total_delay_s === nothing || push!(delays_ms, 1000.0 * route_path.total_delay_s)
+        end
+    end
+
+    total == 0 && return NetworkMetrics(0.0, 0.0, false, 0.0)
+    connectivity_ratio = routed / total
+    if isempty(delays_ms)
+        return NetworkMetrics(0.0, 0.0, false, connectivity_ratio)
+    end
+    return NetworkMetrics(
+        maximum(delays_ms),
+        sum(delays_ms) / length(delays_ms),
+        routed == total,
+        connectivity_ratio,
+    )
+end
+
+function _latency_from_traffic(traffic_evaluation)
+    samples_ms = Float64[]
+    for assignments in traffic_evaluation.assignments_by_time
+        for assignment in assignments
+            route_path = assignment.route
+            route_path.reachable || continue
+            route_path.total_delay_s === nothing && continue
+            push!(samples_ms, 1000.0 * route_path.total_delay_s)
+        end
+    end
+
+    if isempty(samples_ms)
+        return LatencyResult(0.0, 0.0, 0.0, 0)
+    end
+
+    sorted_vals = sort(samples_ms)
+    return LatencyResult(
+        sum(samples_ms) / length(samples_ms),
+        maximum(samples_ms),
+        minimum(samples_ms),
+        length(samples_ms),
+        _quantile_sorted(sorted_vals, 0.50),
+        _quantile_sorted(sorted_vals, 0.95),
+        _quantile_sorted(sorted_vals, 0.99),
+        sorted_vals,
+    )
+end
+
+function _quantile_sorted(sorted_vals::Vector{Float64}, q::Float64)
+    isempty(sorted_vals) && return 0.0
+    q <= 0 && return first(sorted_vals)
+    q >= 1 && return last(sorted_vals)
+    pos = 1 + (length(sorted_vals) - 1) * q
+    lo = floor(Int, pos)
+    hi = ceil(Int, pos)
+    lo == hi && return sorted_vals[lo]
+    frac = pos - lo
+    return sorted_vals[lo] * (1 - frac) + sorted_vals[hi] * frac
+end
+
+function _routing_outputs_from_traffic(traffic_evaluation, route_label::String)
+    outputs = RoutingOutput[]
+    for assignments in traffic_evaluation.assignments_by_time
+        for assignment in assignments
+            route_path = assignment.route
+            if route_path.reachable
+                push!(outputs, RoutingOutput(
+                    route_path.satellite_path,
+                    route_path.total_delay_s === nothing ? 0.0 : 1000.0 * route_path.total_delay_s,
+                    string(route_label, ":", route_path.reason),
+                ))
+            else
+                push!(outputs, RoutingOutput(Int[], Inf, string(route_label, ":", route_path.reason)))
+            end
+        end
+    end
+    return outputs
 end
 
 # ────────────────────────────────────────────────────────────
@@ -334,11 +592,45 @@ end
 # 完整 AON 流量评估（多时间步，通过桥接调 evaluate_traffic）
 # ────────────────────────────────────────────────────────────
 
+function _simulation_time_grid_from_tspan(tspan, n_time::Int)
+    n_time >= 1 || return nothing
+    length(tspan) == n_time || return nothing
+    isempty(tspan) && return nothing
+
+    time_tol = 1e-6
+    first_offset = Float64(first(tspan))
+    isfinite(first_offset) || return nothing
+    isapprox(first_offset, 0.0; atol = time_tol, rtol = 0.0) || return nothing
+
+    offsets = Int[]
+    for value in tspan
+        offset = Float64(value)
+        isfinite(offset) || return nothing
+        rounded = round(Int, offset)
+        isapprox(offset, rounded; atol = time_tol, rtol = 0.0) || return nothing
+        push!(offsets, rounded)
+    end
+
+    first(offsets) == 0 || return nothing
+    any(offset -> offset < 0, offsets) && return nothing
+    n_time == 1 && return SimulationTimeGrid(default_starlink_simulation_epoch(), 0, 1)
+
+    deltas = diff(offsets)
+    any(delta -> delta <= 0, deltas) && return nothing
+    step = first(deltas)
+    step > 0 || return nothing
+
+    grid = SimulationTimeGrid(default_starlink_simulation_epoch(), last(offsets), step)
+    time_count(grid) == n_time || return nothing
+    timeslot_offsets(grid) == offsets || return nothing
+    return grid
+end
+
 """
     _evaluate_traffic_full(config, positions, isl_pairs) -> Union{Nothing,TrafficEvaluation}
 
 构造多时间步的 ISL/GSL 评估数据，调 evaluate_traffic_from_bare_arrays 跑完整 AON。
-需要 ground_stations 作为地面端点；无 ground_stations 或 tspan 不足 2 步则返回 nothing（降级）。
+需要 ground_stations 作为地面端点；无 ground_stations、无时间步或无 ISL 则返回 nothing（降级）。
 """
 function _evaluate_traffic_full(config, positions, isl_pairs)
     n_time = size(positions, 2)
@@ -353,22 +645,22 @@ function _evaluate_traffic_full(config, positions, isl_pairs)
     ]
     ground_ids = collect(1:length(gs_tuples))
 
-    # 构造时间网格
-    tspan = config.tspan
-    duration = isempty(tspan) ? 0 : Int(round(maximum(tspan) - minimum(tspan)))
-    step = length(tspan) >= 2 ? Int(round(tspan[2] - tspan[1])) : max(duration, 1)
-    step = max(step, 1)
-    grid = SimulationTimeGrid(default_starlink_simulation_epoch(), duration, step)
+    # 构造和 positions 时间维严格一致的时间网格。
+    grid = _simulation_time_grid_from_tspan(config.tspan, n_time)
+    grid === nothing && return nothing
 
     # 每时间步评估 ISL + GSL
     isl_results_by_time = [
         evaluate_isl_batch(positions[:,t,:], isl_pairs; constraints=config.constraints)
         for t in 1:n_time
     ]
-    gsl_avail, gsl_dist, gsl_elev = Matrix{Bool}[], Matrix{Float64}[], Matrix{Float64}[]
+    gsl_avail = Matrix{Bool}[]
+    gsl_dist = Matrix{Float64}[]
+    gsl_elev = Matrix{Float64}[]
+    gsl_delay = Matrix{Float64}[]
     for t in 1:n_time
-        a, d, e, _ = evaluate_gsl_batch(positions[:,t,:], gs_tuples; constraints=config.constraints)
-        push!(gsl_avail, a); push!(gsl_dist, d); push!(gsl_elev, e)
+        a, d, e, delay = evaluate_gsl_batch(positions[:,t,:], gs_tuples; constraints=config.constraints)
+        push!(gsl_avail, a); push!(gsl_dist, d); push!(gsl_elev, e); push!(gsl_delay, delay)
     end
 
     # 调完整 AON
@@ -377,6 +669,8 @@ function _evaluate_traffic_full(config, positions, isl_pairs)
         gsl_avail, gsl_dist, gsl_elev,
         ground_ids, grid, config.traffic_demands;
         isl_capacity_mbps = config.constraints.isl_max_capacity_mbps,
+        gsl_delay_ms_by_time = gsl_delay,
+        routing_algorithm = config.routing_algorithm,
     )
 end
 

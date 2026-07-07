@@ -274,6 +274,10 @@ function _tool_run_simulation(args::AbstractDict)
     prop = get(args, "propagator", "twobody")
     duration = get(args, "duration_s", 600)
     steps = get(args, "steps", 2)
+    traffic = lowercase(strip(String(get(args, "traffic", "none"))))
+    ground_stations = _parse_ai_ground_stations(get(args, "ground_stations", []))
+    ground_pairs = _parse_ai_ground_pairs(get(args, "ground_pairs", []), ground_stations)
+    traffic_arg = _ai_traffic_arg(args, traffic)
 
     # 解析传播器：tle_based 返回 :sgp4 标记，走独立 SGP4 路径
     propagator = parse_ai_propagator(prop)
@@ -292,10 +296,16 @@ function _tool_run_simulation(args::AbstractDict)
     config = ExperimentConfig(;
         name = "ai_simulation",
         constellation = WalkerConstellationConfig(T=T, P=P, F=F, alt_km=alt, inc_deg=inc),
+        propagator = propagator,
         tspan = tspan,
         topology_strategy = strategy,
+        traffic = traffic_arg,
+        ground_stations = ground_stations,
+        ground_pairs = ground_pairs,
     )
     result = run_experiment(config)
+    traffic_evaluation = result.traffic_evaluation
+    traffic_totals = _traffic_assignment_totals(traffic_evaluation)
 
     return Dict(
         "constellation" => constellation,
@@ -307,7 +317,105 @@ function _tool_run_simulation(args::AbstractDict)
         "connectivity_ratio" => round(result.network.connectivity_ratio, digits=4),
         "fitness" => round(result.fitness, digits=4),
         "duration_s" => round(result.duration_s, digits=3),
+        "traffic_enabled" => traffic != "none" || !isempty(config.traffic_demands),
+        "traffic_demands" => length(config.traffic_demands),
+        "ground_stations" => length(config.ground_stations),
+        "ground_pairs" => length(config.ground_pairs),
+        "traffic_evaluation_ran" => traffic_evaluation !== nothing,
+        "traffic_fallback" => traffic != "none" && traffic_evaluation === nothing,
+        "traffic_time_steps" => traffic_evaluation === nothing ? 0 : length(traffic_evaluation.assignments_by_time),
+        "traffic_assignments" => traffic_evaluation === nothing ? 0 : sum(length, traffic_evaluation.assignments_by_time),
+        "offered_mbps" => round(traffic_totals.offered_mbps, digits=3),
+        "carried_mbps" => round(traffic_totals.carried_mbps, digits=3),
+        "dropped_mbps" => round(traffic_totals.dropped_mbps, digits=3),
     )
+end
+
+function _ai_traffic_arg(traffic::AbstractString)
+    traffic == "none" && return TrafficDemand[]
+    traffic == "uniform" && return :uniform
+    traffic == "hotspot" && return :hotspot
+    traffic == "video" && return :video
+    traffic == "iot" && return :iot
+    return TrafficDemand[]
+end
+
+function _ai_traffic_arg(args::AbstractDict, traffic::AbstractString)
+    explicit = _parse_ai_traffic_demands(get(args, "traffic_demands", []))
+    isempty(explicit) || return explicit
+    return _ai_traffic_arg(traffic)
+end
+
+function _parse_ai_traffic_demands(raw)::Vector{TrafficDemand}
+    raw isa AbstractVector || return TrafficDemand[]
+    demands = TrafficDemand[]
+    for (idx, item) in enumerate(raw)
+        item isa AbstractDict || continue
+        source = Int(get(item, "source_ground_id", get(item, :source_ground_id, 0)))
+        destination = Int(get(item, "destination_ground_id", get(item, :destination_ground_id, 0)))
+        source > 0 && destination > 0 && source != destination || continue
+        start_s = Int(get(item, "start_elapsed_s", get(item, :start_elapsed_s, 0)))
+        end_s = Int(get(item, "end_elapsed_s", get(item, :end_elapsed_s, 3600)))
+        rate = Float64(get(item, "rate_mbps", get(item, :rate_mbps, 0.0)))
+        id = Int(get(item, "id", get(item, :id, idx)))
+        try
+            push!(demands, TrafficDemand(;
+                id = id,
+                source_ground_id = source,
+                destination_ground_id = destination,
+                start_elapsed_s = start_s,
+                end_elapsed_s = end_s,
+                rate_mbps = rate,
+            ))
+        catch
+            # Ignore malformed entries; schema/probe tests cover valid explicit demands.
+        end
+    end
+    return demands
+end
+
+function _parse_ai_ground_stations(raw)::Vector{GroundStation}
+    raw isa AbstractVector || return GroundStation[]
+    stations = GroundStation[]
+    for (idx, item) in enumerate(raw)
+        item isa AbstractDict || continue
+        lat = Float64(get(item, "lat", get(item, :lat, 0.0)))
+        lon = Float64(get(item, "lon", get(item, :lon, 0.0)))
+        alt_km = Float64(get(item, "alt_km", get(item, :alt_km, 0.0)))
+        id = Int(get(item, "id", get(item, :id, idx)))
+        name = String(get(item, "name", get(item, :name, "ground_$id")))
+        push!(stations, GroundStation(id = id, name = name, position = GeodeticPosition(lat, lon, alt_km)))
+    end
+    return stations
+end
+
+function _parse_ai_ground_pairs(raw, ground_stations::Vector{GroundStation})::Vector{Tuple{Int,Int}}
+    pairs = Tuple{Int,Int}[]
+    if raw isa AbstractVector
+        for item in raw
+            item isa AbstractVector || continue
+            length(item) == 2 || continue
+            push!(pairs, (Int(item[1]), Int(item[2])))
+        end
+    end
+    !isempty(pairs) && return pairs
+    ids = [station.id for station in ground_stations]
+    return [(ids[i], ids[j]) for i in eachindex(ids) for j in i+1:length(ids)]
+end
+
+function _traffic_assignment_totals(traffic_evaluation)
+    traffic_evaluation === nothing && return (offered_mbps = 0.0, carried_mbps = 0.0, dropped_mbps = 0.0)
+    offered = 0.0
+    carried = 0.0
+    dropped = 0.0
+    for assignments in traffic_evaluation.assignments_by_time
+        for assignment in assignments
+            offered += assignment.offered_mbps
+            carried += assignment.carried_mbps
+            dropped += assignment.dropped_mbps
+        end
+    end
+    return (offered_mbps = offered, carried_mbps = carried, dropped_mbps = dropped)
 end
 
 # SGP4 独立路径：catalog 优先取 TLE，无则要求工具参数传 tle。
@@ -316,6 +424,11 @@ end
 # 与 Keplerian 路径共享同一套指标计算（单一真相源）。
 function _run_sgp4_simulation(args::AbstractDict, constellation::AbstractString,
                                topo::AbstractString, duration::Real, steps::Integer)
+    traffic = lowercase(strip(String(get(args, "traffic", "none"))))
+    ground_stations = _parse_ai_ground_stations(get(args, "ground_stations", []))
+    ground_pairs = _parse_ai_ground_pairs(get(args, "ground_pairs", []), ground_stations)
+    traffic_arg = _ai_traffic_arg(args, traffic)
+
     # 1. 取 TLE：catalog 优先（:starlink_tle / "<name>_tle"），否则参数 tle 兜底。
     #    限制卫星数（默认 24）：真实 TLE 文件可能含上万颗，全量跑不现实。
     max_sats = Int(get(args, "max_sats", 24))
@@ -339,6 +452,32 @@ function _run_sgp4_simulation(args::AbstractDict, constellation::AbstractString,
     latency = compute_latency(D)
     network = compute_network_metrics(D)
 
+    tspan = Float64.(timeslot_offsets(tg))
+    traffic_config = ExperimentConfig(;
+        name = "ai_sgp4_simulation",
+        constellation = WalkerConstellationConfig(T=n, P=1, F=0, alt_km=550.0, inc_deg=53.0),
+        tspan = tspan,
+        constraints = constraints,
+        topology_strategy = strategy,
+        traffic = traffic_arg,
+        ground_stations = ground_stations,
+        ground_pairs = ground_pairs,
+    )
+    traffic_evaluation = if !isempty(traffic_config.traffic_demands)
+        try
+            _evaluate_traffic_full(traffic_config, positions, available_isl)
+        catch
+            nothing
+        end
+    else
+        nothing
+    end
+    traffic_totals = _traffic_assignment_totals(traffic_evaluation)
+    if traffic_evaluation !== nothing
+        latency = _latency_from_traffic(traffic_evaluation)
+        network = _network_from_traffic(traffic_evaluation)
+    end
+
     return Dict(
         "constellation" => constellation,
         "n_satellites" => n,
@@ -349,6 +488,17 @@ function _run_sgp4_simulation(args::AbstractDict, constellation::AbstractString,
         "max_latency_ms" => round(latency.max_latency_ms, digits=2),
         "connectivity_ratio" => round(network.connectivity_ratio, digits=4),
         "duration_s" => round(Float64(duration), digits=3),
+        "traffic_enabled" => traffic != "none" || !isempty(traffic_config.traffic_demands),
+        "traffic_demands" => length(traffic_config.traffic_demands),
+        "ground_stations" => length(traffic_config.ground_stations),
+        "ground_pairs" => length(traffic_config.ground_pairs),
+        "traffic_evaluation_ran" => traffic_evaluation !== nothing,
+        "traffic_fallback" => traffic != "none" && traffic_evaluation === nothing,
+        "traffic_time_steps" => traffic_evaluation === nothing ? 0 : length(traffic_evaluation.assignments_by_time),
+        "traffic_assignments" => traffic_evaluation === nothing ? 0 : sum(length, traffic_evaluation.assignments_by_time),
+        "offered_mbps" => round(traffic_totals.offered_mbps, digits=3),
+        "carried_mbps" => round(traffic_totals.carried_mbps, digits=3),
+        "dropped_mbps" => round(traffic_totals.dropped_mbps, digits=3),
     )
 end
 
