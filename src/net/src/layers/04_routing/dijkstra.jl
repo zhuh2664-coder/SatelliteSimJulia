@@ -5,20 +5,32 @@ export DijkstraRouting, build_adjacency, all_pairs_shortest_paths,
 
 struct DijkstraRouting <: AbstractRoutingAlgorithm end
 
+function _routing_graph_adjacency_matrix(graph::RoutingGraph)::Matrix{Float64}
+    A = fill(Inf, graph.n_nodes, graph.n_nodes)
+    for i in 1:graph.n_nodes
+        A[i, i] = 0.0
+    end
+    for (u, neighbors) in graph.adj
+        1 <= u <= graph.n_nodes || throw(ArgumentError("edge source must be in 1:n_nodes"))
+        for (v, weight) in neighbors
+            1 <= v <= graph.n_nodes || throw(ArgumentError("edge destination must be in 1:n_nodes"))
+            isfinite(weight) || throw(ArgumentError("edge weights must be finite"))
+            weight >= 0 || throw(ArgumentError("edge weights must be non-negative"))
+            A[u, v] = min(A[u, v], Float64(weight))
+        end
+    end
+    return A
+end
+
 function route(::DijkstraRouting, input::RoutingInput)::RoutingOutput
-    g = input.graph.g
     src = input.source
     dst = input.destination
+    src == dst && return RoutingOutput([src], 0.0, "Dijkstra")
 
-    state = Graphs.dijkstra_shortest_paths(g, src, Graphs.weights(g))
-    # Graphs.jl 用 has_path 判可达（is_reachable 不存在，pre-existing bug 修复）
-    if isfinite(state.dists[dst]) && state.dists[dst] < Inf
-        # 用 enumerate_paths 从 parents 重建路径
-        path = Graphs.enumerate_paths(state, dst)
-        return RoutingOutput(path, state.dists[dst], "Dijkstra")
-    else
-        return RoutingOutput(Int[], Inf, "Dijkstra-unreachable")
-    end
+    A = _routing_graph_adjacency_matrix(input.graph)
+    path, cost = shortest_path_from_adjacency(A, src, dst)
+    isempty(path) && return RoutingOutput(Int[], Inf, "Dijkstra-unreachable")
+    return RoutingOutput(path, cost, "Dijkstra")
 end
 
 function build_adjacency(N::Int, edges::Vector{Tuple{Int,Int}}, weights::Vector{Float64})
