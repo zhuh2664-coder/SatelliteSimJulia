@@ -516,3 +516,277 @@ function evaluate_traffic(
 
     return TrafficEvaluation(isl_series.time_grid, demands, assignments_by_time, link_loads_by_time)
 end
+
+"""
+    evaluate_traffic(demands, isl_series, access_table, algorithm)::TrafficEvaluation
+
+对一组业务需求进行端到端流量评估，并显式使用网络层路由算法。
+
+旧的三参数入口保持 AON shortest-delay 语义。本入口用于把 Net 路由算法
+落到正式的 `TrafficAssignment` 和 `LinkLoadSample` 产物中：
+`DijkstraRouting`/`ECMPRouting` 走 `route(...)` 分派，`MinLoadRouting`
+按时间步内已分配负载逐流选择 min-load path。
+"""
+function evaluate_traffic(
+    demands::Vector{TrafficDemand},
+    isl_series::ISLPhysicalLinkSeries,
+    access_table::AccessDecisionTable,
+    algorithm::AbstractRoutingAlgorithm,
+)::TrafficEvaluation
+    isl_series.time_grid === access_table.time_grid ||
+        throw(ArgumentError("ISL series and access table must share the same time_grid object"))
+    length(unique(demand.id for demand in demands)) == length(demands) ||
+        throw(ArgumentError("traffic demand ids must be unique"))
+    _assert_aon_algorithm_supported(algorithm)
+
+    assignments_by_time = Vector{Vector{TrafficAssignment}}()
+    link_loads_by_time = Vector{Vector{LinkLoadSample}}()
+
+    for time_index in 1:time_count(isl_series.time_grid)
+        elapsed_s = timeslot_offsets(isl_series.time_grid)[time_index]
+        assignments = TrafficAssignment[]
+        loads = Dict{Tuple,Float64}()
+        metadata = Dict{Tuple,NamedTuple}()
+        isl_samples = link_samples_at(isl_series, time_index)
+        snapshot = _routing_snapshot_from_isl_samples(isl_samples)
+        current_loads = zeros(Float64, length(snapshot.edges))
+
+        for demand in demands
+            is_active(demand, elapsed_s) || continue
+            route = _route_path_with_algorithm(
+                route_request(demand),
+                access_table,
+                time_index,
+                elapsed_s,
+                snapshot,
+                current_loads,
+                algorithm,
+            )
+            carried_mbps = route.reachable ? demand.rate_mbps : 0.0
+            dropped_mbps = demand.rate_mbps - carried_mbps
+            push!(
+                assignments,
+                TrafficAssignment(
+                    demand_id = demand.id,
+                    time_index = time_index,
+                    elapsed_s = elapsed_s,
+                    route = route,
+                    offered_mbps = demand.rate_mbps,
+                    carried_mbps = carried_mbps,
+                    dropped_mbps = dropped_mbps,
+                ),
+            )
+
+            route.reachable || continue
+            _add_route_loads!(
+                loads,
+                metadata,
+                access_table,
+                isl_samples,
+                demand,
+                route,
+                time_index,
+                carried_mbps,
+            )
+            _add_current_loads!(current_loads, snapshot, route.satellite_path, carried_mbps)
+        end
+
+        push!(assignments_by_time, assignments)
+        push!(link_loads_by_time, build_link_load_samples(time_index, elapsed_s, loads, metadata))
+    end
+
+    return TrafficEvaluation(isl_series.time_grid, demands, assignments_by_time, link_loads_by_time)
+end
+
+function _assert_aon_algorithm_supported(algorithm::AbstractRoutingAlgorithm)::Nothing
+    if algorithm isa CGRRouting
+        throw(ArgumentError(
+            "CGRRouting requires CGRContactPlan/time-expanded contact semantics and cannot be used " *
+            "with Traffic AON RoutingInput. Add a CGR-specific traffic adapter before using it here.",
+        ))
+    elseif algorithm isa PINNRoutingAlgorithm
+        throw(ArgumentError(
+            "PINNRoutingAlgorithm currently predicts latency without returning a satellite path, " *
+            "so it cannot generate Traffic AON LinkLoadSample. Add path semantics before using it here.",
+        ))
+    end
+    return nothing
+end
+
+function _routing_snapshot_from_isl_samples(samples::Vector{<:ISLPhysicalLinkSample})
+    available = [sample for sample in samples if sample.state isa LinkAvailable]
+    edges = Tuple{Int,Int}[(sample.endpoint_a_id, sample.endpoint_b_id) for sample in available]
+    weights = Float64[sample.propagation_delay_s for sample in available]
+    capacities = Float64[sample.capacity_mbps for sample in available]
+    link_ids = Int[sample.link_id for sample in available]
+    n_nodes = isempty(samples) ? 0 : maximum(
+        max(sample.endpoint_a_id, sample.endpoint_b_id) for sample in samples
+    )
+    graph = routing_graph_from_edges(n_nodes, edges, weights)
+
+    edge_index = Dict{Tuple{Int,Int},Int}()
+    for (idx, (src, dst)) in enumerate(edges)
+        edge_index[(src, dst)] = idx
+        edge_index[(dst, src)] = idx
+    end
+
+    return (
+        graph = graph,
+        edges = edges,
+        weights = weights,
+        capacities = capacities,
+        link_ids = link_ids,
+        edge_index = edge_index,
+    )
+end
+
+function _route_path_with_algorithm(
+    request::RouteRequest,
+    access_table::AccessDecisionTable,
+    time_index::Int,
+    elapsed_s::Int,
+    snapshot,
+    current_loads::Vector{Float64},
+    algorithm::AbstractRoutingAlgorithm,
+)::RoutePath
+    source_access = access_decisions_at(access_table, request.source_ground_id, time_index)
+    destination_access = access_decisions_at(access_table, request.destination_ground_id, time_index)
+    source_satellite_id = source_access.selected_satellite_id
+    destination_satellite_id = destination_access.selected_satellite_id
+
+    source_satellite_id === nothing && return route_unreachable(
+        request, time_index, elapsed_s, source_satellite_id, destination_satellite_id, :source_no_access,
+    )
+    destination_satellite_id === nothing && return route_unreachable(
+        request, time_index, elapsed_s, source_satellite_id, destination_satellite_id, :destination_no_access,
+    )
+    source_satellite_id == destination_satellite_id && return RoutePath(
+        request = request,
+        time_index = time_index,
+        elapsed_s = elapsed_s,
+        source_access_satellite_id = source_satellite_id,
+        destination_access_satellite_id = destination_satellite_id,
+        satellite_path = [source_satellite_id],
+        isl_link_ids = Int[],
+        isl_delay_s = 0.0,
+        source_gsl_delay_s = source_access.selected_sample === nothing ?
+            0.0 : source_access.selected_sample.propagation_delay_s,
+        destination_gsl_delay_s = destination_access.selected_sample === nothing ?
+            0.0 : destination_access.selected_sample.propagation_delay_s,
+        total_delay_s = (source_access.selected_sample === nothing ?
+            0.0 : source_access.selected_sample.propagation_delay_s) +
+            (destination_access.selected_sample === nothing ?
+                0.0 : destination_access.selected_sample.propagation_delay_s),
+        reachable = true,
+        reason = :same_access_satellite,
+    )
+    max(source_satellite_id, destination_satellite_id) <= snapshot.graph.n_nodes ||
+        return route_unreachable(
+            request, time_index, elapsed_s, source_satellite_id, destination_satellite_id, :isl_unreachable,
+        )
+
+    path = if algorithm isa MinLoadRouting
+        min_load_path(
+            snapshot.graph.n_nodes,
+            snapshot.edges,
+            snapshot.weights,
+            source_satellite_id,
+            destination_satellite_id,
+            current_loads,
+            snapshot.capacities;
+            K=5,
+        )
+    else
+        route(algorithm, RoutingInput(snapshot.graph, source_satellite_id, destination_satellite_id)).path
+    end
+
+    isempty(path) && return route_unreachable(
+        request, time_index, elapsed_s, source_satellite_id, destination_satellite_id, :isl_unreachable,
+    )
+
+    link_path, isl_delay_s = _link_path_and_delay(snapshot, path)
+    isfinite(isl_delay_s) || return route_unreachable(
+        request, time_index, elapsed_s, source_satellite_id, destination_satellite_id, :isl_unreachable,
+    )
+    source_gsl_delay_s = source_access.selected_sample === nothing ?
+        0.0 : source_access.selected_sample.propagation_delay_s
+    destination_gsl_delay_s = destination_access.selected_sample === nothing ?
+        0.0 : destination_access.selected_sample.propagation_delay_s
+    total_delay_s = source_gsl_delay_s + isl_delay_s + destination_gsl_delay_s
+
+    return RoutePath(
+        request = request,
+        time_index = time_index,
+        elapsed_s = elapsed_s,
+        source_access_satellite_id = source_satellite_id,
+        destination_access_satellite_id = destination_satellite_id,
+        satellite_path = path,
+        isl_link_ids = link_path,
+        isl_delay_s = isl_delay_s,
+        source_gsl_delay_s = source_gsl_delay_s,
+        destination_gsl_delay_s = destination_gsl_delay_s,
+        total_delay_s = total_delay_s,
+        reachable = true,
+        reason = algorithm isa MinLoadRouting ? :min_load : :routing_algorithm,
+    )
+end
+
+function _link_path_and_delay(snapshot, path::Vector{Int})
+    link_path = Int[]
+    total_delay_s = 0.0
+    for hop in 1:length(path)-1
+        edge_idx = get(snapshot.edge_index, (path[hop], path[hop + 1]), nothing)
+        edge_idx === nothing && return Int[], Inf
+        push!(link_path, snapshot.link_ids[edge_idx])
+        total_delay_s += snapshot.weights[edge_idx]
+    end
+    return link_path, total_delay_s
+end
+
+function _add_current_loads!(
+    current_loads::Vector{Float64},
+    snapshot,
+    path::Vector{Int},
+    load_mbps::Real,
+)::Nothing
+    for hop in 1:length(path)-1
+        edge_idx = get(snapshot.edge_index, (path[hop], path[hop + 1]), nothing)
+        edge_idx === nothing && continue
+        current_loads[edge_idx] += load_mbps
+    end
+    return nothing
+end
+
+function _add_route_loads!(
+    loads::Dict{Tuple,Float64},
+    metadata::Dict{Tuple,NamedTuple},
+    access_table::AccessDecisionTable,
+    isl_samples::Vector{<:ISLPhysicalLinkSample},
+    demand::TrafficDemand,
+    route::RoutePath,
+    time_index::Int,
+    carried_mbps::Real,
+)::Nothing
+    source_access = access_decisions_at(access_table, demand.source_ground_id, time_index)
+    destination_access = access_decisions_at(access_table, demand.destination_ground_id, time_index)
+    add_gsl_load!(
+        loads,
+        metadata,
+        source_access.selected_sample,
+        demand.source_ground_id,
+        route.source_access_satellite_id,
+        carried_mbps,
+    )
+    add_gsl_load!(
+        loads,
+        metadata,
+        destination_access.selected_sample,
+        demand.destination_ground_id,
+        route.destination_access_satellite_id,
+        carried_mbps,
+    )
+    for link_id in route.isl_link_ids
+        add_isl_load!(loads, metadata, isl_samples[link_id], carried_mbps)
+    end
+    return nothing
+end

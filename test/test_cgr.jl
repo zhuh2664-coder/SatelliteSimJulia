@@ -117,6 +117,49 @@ end
     @test out_fail.total_weight == Inf
 end
 
+@testset "CGR temporal boundaries and UInt32 routing overload" begin
+    cp = CGRContactPlan("boundaries")
+    add_contact!(cp, UInt32(1), UInt32(2), 0.0, 10.0, 0.001)
+    add_contact!(cp, UInt32(2), UInt32(3), 0.0, 10.0, 0.001)
+
+    @test is_reachable_at(cp, UInt32(1), UInt32(2), 0.0)
+    @test is_reachable_at(cp, UInt32(1), UInt32(2), 9.999)
+    @test !is_reachable_at(cp, UInt32(1), UInt32(2), 10.0)
+    @test isempty(active_contacts(cp, 10.0))
+
+    out = route(CGRRouting(), cp, UInt32(1), UInt32(3), 0.0)
+    @test out isa RoutingOutput
+    @test out.path == [1, 2, 3]
+    @test out.algorithm == "CGR"
+
+    same_path, same_delay, same_arrival = cgr_route(cp, UInt32(1), UInt32(1), 5.0)
+    @test same_path == UInt32[1]
+    @test same_delay == 0.0
+    @test same_arrival == 5.0
+end
+
+@testset "CGR validation, LSA, and pruning helpers" begin
+    cp = CGRContactPlan("helpers")
+    add_contact!(cp, UInt32(1), UInt32(2), 0.0, 10.0, 0.001)
+    add_contact!(cp, UInt32(2), UInt32(3), 0.0, 10.0, 0.002)
+    add_contact!(cp, UInt32(4), UInt32(5), 0.0, 10.0, 0.003)
+
+    @test validate_path(cp, UInt32[1, 2, 3], 5.0)
+    @test !validate_path(cp, UInt32[1, 2, 3], 10.0)
+    @test !validate_path(cp, UInt32[1], 5.0)
+
+    lsa = cgr_lsa(cp, UInt32(1), 5.0)
+    @test length(lsa) == 1
+    @test lsa[1][1] == UInt32(1)
+    @test lsa[1][2] == UInt32(2)
+    @test isapprox(lsa[1][3], 0.001; atol=1e-12)
+
+    remaining = prune_contacts!(cp, UInt32(3))
+    @test remaining == 2
+    @test all(c -> c.src in UInt32[1, 2], cp.contacts)
+    @test !haskey(cp.adjacency, UInt32(4))
+end
+
 @testset "CGR route table" begin
     cp = CGRContactPlan("table")
     add_contact!(cp, UInt32(1), UInt32(2), 0.0, 10.0, 0.001)

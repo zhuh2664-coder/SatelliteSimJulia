@@ -194,3 +194,181 @@ end
     @test isapprox(route.destination_gsl_delay_s, 0.011; atol = TRAFFIC_BRIDGE_ATOL)
     @test isapprox(route.total_delay_s, 0.060; atol = TRAFFIC_BRIDGE_ATOL)
 end
+
+@testset "bare-array traffic bridge honors MinLoadRouting on tiny diamond hotspot" begin
+    grid = traffic_bridge_grid()
+    positions = zeros(Float64, 4, time_count(grid), 3)
+    isl_pairs = Tuple{Int,Int}[(1, 2), (2, 4), (1, 3), (3, 4)]
+    isl_results_by_time = [
+        [
+            (distance_km = 1000.0, available = true, line_of_sight = true, latency_ms = 1.0)
+            for _ in isl_pairs
+        ]
+        for _ in 1:time_count(grid)
+    ]
+
+    gsl_availability = Bool[
+        true false;
+        true true;
+        true true;
+        false true;
+    ]
+    gsl_distance = fill(500.0, 4, 2)
+    gsl_elevation = Float64[
+        80.0 10.0;
+        20.0 20.0;
+        20.0 20.0;
+        10.0 80.0;
+    ]
+    gsl_avail_by_time = [copy(gsl_availability) for _ in 1:time_count(grid)]
+    gsl_dist_by_time = [copy(gsl_distance) for _ in 1:time_count(grid)]
+    gsl_elev_by_time = [copy(gsl_elevation) for _ in 1:time_count(grid)]
+    demands = TrafficDemand[
+        TrafficDemand(
+            id = 1,
+            source_ground_id = 1,
+            destination_ground_id = 4,
+            start_elapsed_s = 0,
+            end_elapsed_s = 60,
+            rate_mbps = 100.0,
+        ),
+        TrafficDemand(
+            id = 2,
+            source_ground_id = 1,
+            destination_ground_id = 4,
+            start_elapsed_s = 0,
+            end_elapsed_s = 60,
+            rate_mbps = 100.0,
+        ),
+    ]
+
+    evaluation = evaluate_traffic_from_bare_arrays(
+        positions,
+        isl_pairs,
+        isl_results_by_time,
+        gsl_avail_by_time,
+        gsl_dist_by_time,
+        gsl_elev_by_time,
+        [1, 4],
+        grid,
+        demands;
+        isl_capacity_mbps = 100.0,
+        gsl_capacity_mbps = 500.0,
+        constellation_name = "traffic-bridge-minload-diamond",
+        routing_algorithm = MinLoadRouting(),
+    )
+
+    @test evaluation isa TrafficEvaluation
+    @test evaluation.time_grid === grid
+    @test length(evaluation.assignments_by_time[1]) == 2
+    @test isempty(evaluation.assignments_by_time[2])
+    @test isempty(evaluation.link_loads_by_time[2])
+
+    assignments = evaluation.assignments_by_time[1]
+    @test all(assignment -> assignment.route.reachable, assignments)
+    @test all(assignment -> assignment.route.reason == :min_load, assignments)
+    @test all(assignment -> isapprox(assignment.carried_mbps, 100.0; atol = TRAFFIC_BRIDGE_ATOL), assignments)
+    @test all(assignment -> isapprox(assignment.dropped_mbps, 0.0; atol = TRAFFIC_BRIDGE_ATOL), assignments)
+
+    paths = Set(Tuple(assignment.route.satellite_path) for assignment in assignments)
+    @test paths == Set([(1, 2, 4), (1, 3, 4)])
+    @test assignments[1].route.satellite_path != assignments[2].route.satellite_path
+
+    isl_loads = sort(
+        filter(load -> load.link_type == :isl, evaluation.link_loads_by_time[1]);
+        by = load -> load.link_id,
+    )
+    @test length(isl_loads) == 4
+    @test [load.link_id for load in isl_loads] == [1, 2, 3, 4]
+    @test all(load -> isapprox(load.load_mbps, 100.0; atol = TRAFFIC_BRIDGE_ATOL), isl_loads)
+    @test all(load -> isapprox(load.capacity_mbps, 100.0; atol = TRAFFIC_BRIDGE_ATOL), isl_loads)
+    @test all(load -> isapprox(load.utilization, 1.0; atol = TRAFFIC_BRIDGE_ATOL), isl_loads)
+    @test all(load -> !load.congested, isl_loads)
+
+    gsl_loads = filter(load -> load.link_type == :gsl, evaluation.link_loads_by_time[1])
+    @test length(gsl_loads) == 2
+    @test all(load -> isapprox(load.load_mbps, 200.0; atol = TRAFFIC_BRIDGE_ATOL), gsl_loads)
+    @test all(load -> isapprox(load.capacity_mbps, 500.0; atol = TRAFFIC_BRIDGE_ATOL), gsl_loads)
+    @test all(load -> isapprox(load.utilization, 0.4; atol = TRAFFIC_BRIDGE_ATOL), gsl_loads)
+    @test all(load -> !load.congested, gsl_loads)
+end
+
+@testset "bare-array traffic bridge supports LongestVisible handover policy" begin
+    grid = traffic_bridge_grid()
+    positions = zeros(Float64, 3, time_count(grid), 3)
+    isl_pairs = Tuple{Int,Int}[(1, 3), (2, 3)]
+    isl_results_by_time = [
+        [
+            (distance_km = 1000.0, available = true, line_of_sight = true, latency_ms = 1.0)
+            for _ in isl_pairs
+        ]
+        for _ in 1:time_count(grid)
+    ]
+
+    gsl_avail_by_time = [
+        Bool[
+            true false;
+            true false;
+            false true;
+        ],
+        Bool[
+            true false;
+            true false;
+            false true;
+        ],
+    ]
+    gsl_dist_by_time = [fill(500.0, 3, 2) for _ in 1:time_count(grid)]
+    gsl_elev_by_time = [
+        Float64[
+            80.0 10.0;
+            20.0 10.0;
+            10.0 80.0;
+        ],
+        Float64[
+            20.0 10.0;
+            80.0 10.0;
+            10.0 80.0;
+        ],
+    ]
+    demands = TrafficDemand[
+        TrafficDemand(
+            id = 1,
+            source_ground_id = 1,
+            destination_ground_id = 3,
+            start_elapsed_s = 0,
+            end_elapsed_s = 120,
+            rate_mbps = 10.0,
+        ),
+    ]
+
+    default_eval = evaluate_traffic_from_bare_arrays(
+        positions,
+        isl_pairs,
+        isl_results_by_time,
+        gsl_avail_by_time,
+        gsl_dist_by_time,
+        gsl_elev_by_time,
+        [1, 3],
+        grid,
+        demands;
+        routing_algorithm = DijkstraRouting(),
+    )
+    longest_eval = evaluate_traffic_from_bare_arrays(
+        positions,
+        isl_pairs,
+        isl_results_by_time,
+        gsl_avail_by_time,
+        gsl_dist_by_time,
+        gsl_elev_by_time,
+        [1, 3],
+        grid,
+        demands;
+        routing_algorithm = DijkstraRouting(),
+        handover_policy = LongestVisible(),
+    )
+
+    @test only(default_eval.assignments_by_time[1]).route.source_access_satellite_id == 1
+    @test only(default_eval.assignments_by_time[2]).route.source_access_satellite_id == 2
+    @test only(longest_eval.assignments_by_time[1]).route.source_access_satellite_id == 1
+    @test only(longest_eval.assignments_by_time[2]).route.source_access_satellite_id == 1
+end

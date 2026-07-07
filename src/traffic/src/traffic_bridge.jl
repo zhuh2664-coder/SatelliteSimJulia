@@ -148,6 +148,7 @@ function _build_access_table(
     time_grid::SimulationTimeGrid;
     capacity_mbps::Float64 = 500.0,
     gsl_delay_ms_by_time = nothing,
+    handover_policy = nothing,
 )::AccessDecisionTable
     n_time = length(gsl_avail_by_time)
     decisions_by_ground = Dict{Int,Vector{AccessDecision}}()
@@ -155,60 +156,83 @@ function _build_access_table(
     for ground_local in eachindex(ground_ids)
         ground_id = ground_ids[ground_local]
         decisions = AccessDecision[]
+        prev_satellite_id = nothing
         for time_index in 1:n_time
             elapsed_s = Int(timeslot_offsets(time_grid)[time_index])
+            visible_samples = GSLPhysicalLinkSample[]
             avail = gsl_avail_by_time[time_index][:, ground_local]  # 所有卫星对这地面站
-            # 选可见卫星中仰角最高的
-            best_sat = nothing
-            best_elev = -Inf
             for sat_id in eachindex(avail)
-                if avail[sat_id]
-                    elev = gsl_elev_by_time[time_index][sat_id, ground_local]
-                    if elev > best_elev
-                        best_elev = elev
-                        best_sat = sat_id
-                    end
-                end
+                avail[sat_id] || continue
+                push!(visible_samples, _gsl_sample_from_matrices(
+                    gsl_dist_by_time,
+                    gsl_elev_by_time,
+                    gsl_delay_ms_by_time,
+                    ground_id,
+                    sat_id,
+                    ground_local,
+                    time_index,
+                    elapsed_s,
+                    capacity_mbps,
+                ))
             end
 
-            if best_sat === nothing
-                push!(decisions, AccessDecision(;
-                    ground_id = ground_id,
-                    time_index = time_index,
-                    selected_satellite_id = nothing,
-                    selected_sample = nothing,
-                ))
+            selected_sample = if handover_policy === nothing
+                _select_max_elevation_sample(visible_samples)
             else
-                dist = gsl_dist_by_time[time_index][best_sat, ground_local]
-                sample = GSLPhysicalLinkSample{Float64}(;
-                    ground_id = ground_id,
-                    satellite_id = best_sat,
-                    time_index = time_index,
-                    elapsed_s = elapsed_s,
-                    distance_km = dist,
-                    propagation_delay_s = _gsl_delay_s(
-                        gsl_delay_ms_by_time,
-                        gsl_dist_by_time,
-                        time_index,
-                        best_sat,
-                        ground_local,
-                    ),
-                    elevation_deg = best_elev,
-                    capacity_mbps = capacity_mbps,
-                    state = LinkAvailable(),
-                )
-                push!(decisions, AccessDecision(;
-                    ground_id = ground_id,
-                    time_index = time_index,
-                    selected_satellite_id = best_sat,
-                    selected_sample = sample,
-                ))
+                select_satellite(handover_policy, visible_samples, prev_satellite_id)
             end
+            prev_satellite_id = selected_sample === nothing ? nothing : selected_sample.satellite_id
+
+            push!(decisions, AccessDecision(;
+                ground_id = ground_id,
+                time_index = time_index,
+                selected_satellite_id = selected_sample === nothing ? nothing : selected_sample.satellite_id,
+                selected_sample = selected_sample,
+            ))
         end
         decisions_by_ground[ground_id] = decisions
     end
 
     return AccessDecisionTable(time_grid, decisions_by_ground)
+end
+
+function _gsl_sample_from_matrices(
+    gsl_dist_by_time::Vector{Matrix{Float64}},
+    gsl_elev_by_time::Vector{Matrix{Float64}},
+    gsl_delay_ms_by_time,
+    ground_id::Int,
+    sat_id::Int,
+    ground_local::Int,
+    time_index::Int,
+    elapsed_s::Int,
+    capacity_mbps::Float64,
+)
+    return GSLPhysicalLinkSample{Float64}(;
+        ground_id = ground_id,
+        satellite_id = sat_id,
+        time_index = time_index,
+        elapsed_s = elapsed_s,
+        distance_km = gsl_dist_by_time[time_index][sat_id, ground_local],
+        propagation_delay_s = _gsl_delay_s(
+            gsl_delay_ms_by_time,
+            gsl_dist_by_time,
+            time_index,
+            sat_id,
+            ground_local,
+        ),
+        elevation_deg = gsl_elev_by_time[time_index][sat_id, ground_local],
+        capacity_mbps = capacity_mbps,
+        state = LinkAvailable(),
+    )
+end
+
+function _select_max_elevation_sample(samples::Vector{GSLPhysicalLinkSample})
+    isempty(samples) && return nothing
+    best = first(samples)
+    for sample in Iterators.drop(samples, 1)
+        sample.elevation_deg > best.elevation_deg && (best = sample)
+    end
+    return best
 end
 
 # ────────────────────────────────────────────────────────────
@@ -240,6 +264,7 @@ end
 - `gsl_capacity_mbps`: GSL 容量（默认 500）
 - `gsl_delay_ms_by_time`: 可选 GSL delay 矩阵序列；提供时优先于 distance/c
 - `routing_algorithm`: 可选 Net 路由算法；未提供时保持旧的 shortest-delay AON 语义
+- `handover_policy`: 可选 GSL 接入/切换策略；未提供时保持旧 max-elevation 语义
 
 # 返回
 - `TrafficEvaluation`: 完整流量评估（含 assignments、link_loads、拥塞、dropped）
@@ -259,6 +284,7 @@ function evaluate_traffic_from_bare_arrays(
     gsl_delay_ms_by_time = nothing,
     constellation_name::String = "bridge",
     routing_algorithm = nothing,
+    handover_policy = nothing,
 )::TrafficEvaluation
     time_count(time_grid) == size(positions, 2) ||
         throw(ArgumentError("time_grid length must match positions time dimension"))
@@ -278,6 +304,7 @@ function evaluate_traffic_from_bare_arrays(
         ground_ids, time_grid;
         capacity_mbps = gsl_capacity_mbps,
         gsl_delay_ms_by_time = gsl_delay_ms_by_time,
+        handover_policy = handover_policy,
     )
 
     # 4. 调用完整 AON。未传算法时保持旧 shortest-delay 语义。
