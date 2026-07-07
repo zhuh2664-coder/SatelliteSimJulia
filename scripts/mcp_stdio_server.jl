@@ -1,9 +1,14 @@
 #!/usr/bin/env julia
-# Minimal MCP-style stdio server for SatelliteSimJulia tools.
+# SatelliteSimJulia 的最小 MCP-style stdio server。
 #
-# This is a small JSON-RPC server that supports MCP initialize, tools/list,
-# and tools/call. It accepts both Content-Length framed messages and newline
-# delimited JSON for local smoke testing.
+# 该 server 故意只暴露 scripts/mcp_tool_runner.jl 中的只读 safe tools：
+# list_constellations 与 describe_constellation。仿真、传播、frame payload、
+# package test、export、写文件等工具不会被 tools/list 广播，也不能通过
+# tools/call 触达。
+#
+# 这是一个小型 JSON-RPC server，支持 MCP initialize、tools/list 与 tools/call。
+# 它同时接受标准 Content-Length framed 消息和用于本地 smoke test 的
+# newline-delimited JSON。
 
 include(joinpath(@__DIR__, "mcp_tool_runner.jl"))
 
@@ -12,55 +17,20 @@ function schema_object(properties::Dict; required=String[])
         "type" => "object",
         "properties" => properties,
         "required" => required,
-        "additionalProperties" => true,
+        "additionalProperties" => false,
     )
 end
 
 const TOOL_SCHEMAS = Dict(
     "list_constellations" => Dict(
         "name" => "list_constellations",
-        "description" => "List known SatelliteSimJulia constellation catalog names.",
+        "description" => "List known SatelliteSimJulia constellation catalog names. Read-only safe tool.",
         "inputSchema" => schema_object(Dict()),
     ),
     "describe_constellation" => Dict(
         "name" => "describe_constellation",
-        "description" => "Describe a Walker constellation by catalog name.",
+        "description" => "Describe a Walker constellation by catalog name. Read-only safe tool.",
         "inputSchema" => schema_object(Dict("name" => Dict("type" => "string")); required=["name"]),
-    ),
-    "start_simulation_summary" => Dict(
-        "name" => "start_simulation_summary",
-        "description" => "Run a bounded constellation propagation and return summary metadata.",
-        "inputSchema" => schema_object(Dict(
-            "name" => Dict("type" => "string"),
-            "tspan" => Dict("type" => "array", "items" => Dict("type" => "number")),
-            "step_s" => Dict("type" => "number"),
-            "propagator" => Dict("type" => "string"),
-            "fps" => Dict("type" => "number"),
-        ); required=["name"]),
-    ),
-    "frame_payload_once" => Dict(
-        "name" => "frame_payload_once",
-        "description" => "Generate one frame payload for a bounded constellation config.",
-        "inputSchema" => schema_object(Dict(
-            "name" => Dict("type" => "string"),
-            "tspan" => Dict("type" => "array", "items" => Dict("type" => "number")),
-            "step_s" => Dict("type" => "number"),
-            "propagator" => Dict("type" => "string"),
-            "frame_index" => Dict("type" => "integer"),
-        ); required=["name"]),
-    ),
-    "run_pkg_test" => Dict(
-        "name" => "run_pkg_test",
-        "description" => "Run an allowlisted Julia package test and return a compact result.",
-        "inputSchema" => schema_object(Dict("package" => Dict("type" => "string")); required=["package"]),
-    ),
-    "zcode_token_usage_summary" => Dict(
-        "name" => "zcode_token_usage_summary",
-        "description" => "Summarize local ZCode token usage without printing message bodies.",
-        "inputSchema" => schema_object(Dict(
-            "date" => Dict("type" => "string"),
-            "top" => Dict("type" => "integer"),
-        )),
     ),
 )
 
@@ -71,7 +41,7 @@ function read_message(io::IO)
 
     if startswith(lowercase(line), "content-length:")
         n = parse(Int, strip(split(line, ":", limit=2)[2]))
-        # Consume headers until blank line.
+        # 读取并丢弃 headers，直到空行。
         while !eof(io)
             h = readline(io)
             isempty(strip(h)) && break
@@ -119,7 +89,8 @@ function handle_request(req::AbstractDict)
         params = get(req, "params", Dict())
         name = String(get(params, "name", ""))
         args = get(params, "arguments", Dict())
-        haskey(TOOLS, name) || return rpc_error(id, -32602, "unknown tool: $name")
+        haskey(TOOL_SCHEMAS, name) || return rpc_error(id, -32602, "unknown or disabled safe tool: $name")
+        haskey(TOOLS, name) || return rpc_error(id, -32602, "tool is not present in safe runner dispatch: $name")
         try
             result = TOOLS[name](args)
             text = JSON.json(Dict("ok" => true, "tool" => name, "result" => result))

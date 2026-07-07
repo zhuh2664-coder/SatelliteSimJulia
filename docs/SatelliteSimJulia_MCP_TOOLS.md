@@ -1,18 +1,23 @@
 # SatelliteSimJulia MCP Tools Contract
 
-This document defines a minimal, MCP-ready tool surface for SatelliteSimJulia.
+> **默认安全边界**：`agentos_app.py`、`scripts/mcp_tool_runner.jl` 和 `scripts/mcp_stdio_server.jl` 默认只暴露只读 safe tools：`list_constellations` 与 `describe_constellation`。仿真/传播、测试、`frame_payload_once`、PNG/CZML/JLD2/export、写文件、token 审计脚本、长任务和公网服务均不在默认 dispatch 中。
 
-The first implementation is intentionally a JSON CLI runner (`scripts/mcp_tool_runner.jl`) rather than a full MCP stdio server. A future MCP server can map MCP `tools/call` requests to this runner or to the same Julia functions.
+This document defines the minimal MCP-ready safe tool surface for SatelliteSimJulia.
+
+The current implementation is intentionally a JSON CLI runner (`scripts/mcp_tool_runner.jl`) plus a small stdio JSON-RPC server (`scripts/mcp_stdio_server.jl`). Both share the same safe allowlist. A future production MCP server must keep the same default boundary unless a separate privileged mode is explicitly designed and reviewed.
 
 ---
 
-## Design Goals
+## Hard Boundaries
 
-1. Reuse existing simulation/server code.
-2. Keep tool inputs and outputs JSON-serializable.
-3. Prefer read-only or bounded side effects in the first version.
-4. Return structured errors instead of stack traces.
-5. Keep long-running streaming out of the first version.
+1. **Read-only by default**: only catalog inspection is exposed.
+2. **Runner-level allowlist**: `TOOLS` in `scripts/mcp_tool_runner.jl` contains only the two safe tools.
+3. **MCP list/call allowlist**: `scripts/mcp_stdio_server.jl` advertises and dispatches only the same two safe tools.
+4. **No simulation or propagation**: tools that call `propagate_to_ecef` are not exported through the safe surface.
+5. **No tests**: package test helpers are intentionally disabled in this surface.
+6. **No frame payloads**: frame payload generation is intentionally disabled.
+7. **No exports or file writes**: PNG/CZML/JLD2/export/file-writing tools are not present.
+8. **No public AgentOS bind**: AgentOS is loopback-only (`127.0.0.1`) and ignores host/API-key environment overrides for this local safe demo.
 
 ---
 
@@ -25,18 +30,18 @@ julia --project=. scripts/mcp_tool_runner.jl <tool-name> '<json-args>'
 Successful output:
 
 ```json
-{"ok":true,"tool":"list_constellations","result":{}}
+{"ok":true,"tool":"list_constellations","result":{"names":["iridium"]}}
 ```
 
 Error output:
 
 ```json
-{"ok":false,"tool":"...","error_type":"ArgumentError","message":"..."}
+{"ok":false,"tool":"...","error_type":"ArgumentError","message":"unknown or disabled safe tool: ..."}
 ```
 
 ---
 
-## Tools
+## Safe Tools
 
 ### 1. `list_constellations`
 
@@ -59,7 +64,6 @@ Output:
 Implementation source:
 
 - `SatelliteSimCore.list_constellations`
-- `SatelliteSimServer.handle_list_constellations`
 
 ---
 
@@ -89,155 +93,21 @@ Output:
 Implementation source:
 
 - `SatelliteSimCore.resolve_constellation`
-- `SatelliteSimServer.handle_describe_constellation`
 
 ---
 
-### 3. `start_simulation_summary`
+## Disabled / Not Dispatched by Default
 
-Start a bounded simulation session and return only summary metadata, not streaming frames.
+These names are intentionally not present in `TOOLS` and must not appear in `tools/list`:
 
-Input:
+- `start_simulation_summary` — would trigger propagation (`propagate_to_ecef`).
+- `frame_payload_once` — would generate frame payload data and topology/link details.
+- `run_pkg_test` — would execute Julia test commands.
+- `zcode_token_usage_summary` — would execute a local Python audit script.
+- Any PNG/CZML/JLD2/export/file-writing helper.
+- Any long-running, streaming, external-publishing, or public-network service helper.
 
-```json
-{
-  "name":"iridium",
-  "tspan":[0.0, 30.0],
-  "step_s":10.0,
-  "propagator":"j2",
-  "fps":10.0
-}
-```
-
-Output:
-
-```json
-{
-  "session_id":"abc12345",
-  "n_sat":66,
-  "n_time":4,
-  "fps":10.0,
-  "step_s":10.0,
-  "tspan":[0.0,30.0]
-}
-```
-
-Implementation source:
-
-- `SatelliteSimServer.start_session`
-- `SatelliteSimServer.handle_start_simulation`
-
-Side effect:
-
-- Creates an in-memory server session. CLI runner should stop/cleanup the session unless the caller explicitly requests `keep_session=true`.
-
----
-
-### 4. `frame_payload_once`
-
-Generate a single frame payload for a bounded session config.
-
-Input:
-
-```json
-{
-  "name":"iridium",
-  "tspan":[0.0, 30.0],
-  "step_s":10.0,
-  "propagator":"j2",
-  "frame_index":1
-}
-```
-
-Output:
-
-```json
-{
-  "type":"frame",
-  "session_id":"...",
-  "t":0.0,
-  "frame_index":1,
-  "n_total":4,
-  "positions":[...],
-  "isl_pairs":[[1,2]],
-  "isl_avail":[true]
-}
-```
-
-Implementation source:
-
-- `SatelliteSimServer.start_session`
-- `SatelliteSimServer.frame_payload`
-
-Side effect:
-
-- Temporary in-memory session; runner should always cleanup.
-
----
-
-### 5. `run_pkg_test`
-
-Run one Julia package test with a bounded command wrapper.
-
-Input:
-
-```json
-{"package":"SatelliteSimCore"}
-```
-
-Output:
-
-```json
-{
-  "package":"SatelliteSimCore",
-  "success":true,
-  "duration_s":4.2,
-  "marker":"Testing SatelliteSimCore tests passed"
-}
-```
-
-Allowed packages should be allowlisted.
-
-Initial allowlist:
-
-- `SatelliteSimFoundation`
-- `SatelliteSimOrbit`
-- `SatelliteSimMetrics`
-- `SatelliteSimLink`
-- `GMAT`
-- `SatelliteSimCore`
-- `SatelliteSimNet`
-- `SatelliteSimTraffic`
-- `SatelliteSimLab`
-- `SatelliteSimOpt`
-- `SatelliteSimViz`
-- `SatelliteSimServer`
-
----
-
-### 6. `zcode_token_usage_summary`
-
-Run the token usage audit script in summary mode.
-
-Input:
-
-```json
-{"date":"today","top":10}
-```
-
-Output:
-
-```json
-{
-  "command":"python3 scripts/zcode_token_usage_report.py --date today --top 10",
-  "success":true,
-  "text":"..."
-}
-```
-
-Security:
-
-- The script must not print message contents or credentials.
+If a caller requests one of these through the safe runner or MCP server, the expected behavior is a structured error, not execution.
 
 ---
 
@@ -257,21 +127,22 @@ Supported JSON-RPC methods:
 - `tools/call`
 - `shutdown`
 
-The server accepts standard `Content-Length` framed messages and also newline-delimited JSON for local smoke tests. It reuses `scripts/mcp_tool_runner.jl` as its tool backend.
+The server accepts standard `Content-Length` framed messages and newline-delimited JSON for local smoke tests. It reuses `scripts/mcp_tool_runner.jl` as its tool backend and exposes only the same two safe tools.
 
 Smoke-tested behavior:
 
 - `initialize` returns serverInfo `{name: "satellitesimjulia", version: "0.1.0"}`
-- `tools/list` returns 6 tools
+- `tools/list` returns exactly 2 tools
 - `tools/call` with `describe_constellation {"name":"iridium"}` returns `T=66`
+- `tools/call` with disabled names such as `run_pkg_test` or `frame_payload_once` returns an error
 
 ---
 
-## Future Full MCP Server
+## Future Privileged Surfaces
 
-A full production MCP server can later expose these as `tools/list` and `tools/call` over stdio or HTTP.
+A future privileged MCP server may expose simulation, tests, frame payloads, exports, or file-writing tools only as a separate mode with explicit review. It should not reuse the safe default dispatch table.
 
-Recommended future files:
+Recommended future files, if that mode is ever designed:
 
 ```text
 src/mcp/Project.toml
@@ -280,7 +151,7 @@ src/mcp/bin/serve_stdio.jl
 src/mcp/test/runtests.jl
 ```
 
-For now, `scripts/mcp_tool_runner.jl` is the stable backend contract.
+For now, `scripts/mcp_tool_runner.jl` is the stable safe backend contract.
 
 ---
 
@@ -305,7 +176,7 @@ Do not return raw stack traces by default.
 
 - No external publishing.
 - No destructive file operations.
-- Package test tool uses an allowlist.
-- Simulation tools use bounded `tspan` and `step_s`.
-- Token audit is read-only.
-- Long-running/streaming tasks are deferred to a future durable task API.
+- No package tests through this surface.
+- No propagation or frame payload through this surface.
+- No exports or file writes through this surface.
+- Long-running/streaming tasks are deferred to a future reviewed privileged API, not this default safe API.
