@@ -15,14 +15,14 @@
 
 using SatelliteSimCore
 using SatelliteSimNet
-using SatelliteSimTraffic: TrafficDemand, LinkLoadSample, evaluate_traffic_from_bare_arrays
+using SatelliteSimTraffic: TrafficDemand, LinkLoadSample, TrafficEvaluation, evaluate_traffic_from_bare_arrays
 import Random
 # 从 Foundation 借时间网格（Core re-export 了 Foundation，但 SimulationTimeGrid 需要显式引用）
 import SatelliteSimFoundation: SimulationTimeGrid, default_starlink_simulation_epoch
 
 export propagate_constellation_positions, assess_coverage, assess_routing,
        assess_routing_temporal, assess_routing_temporal_dynamic,
-       assess_temporal_flow_routes,
+       assess_temporal_flow_routes, assess_ground_traffic_temporal_dynamic,
        full_constellation_assessment
 
 # ────────────────────────────────────────────────────────────
@@ -214,12 +214,14 @@ end
     assess_temporal_flow_routes(positions, T, P, strategy_builder, constraints, demands, algorithm; elapsed_by_time)
 
 预编排：每个时间步重新生成拓扑，并对活跃 `TrafficDemand` 做逐流路由。
-这是卫星节点级探针入口：当前把 `source_ground_id` / `destination_ground_id`
-解释为卫星节点 id（并限制到 `1:T`），用于先打通动态拓扑、业务流量和 Net
-多分派路由接口。真实地面端到接入卫星的 GSL 映射由完整 AON bridge 路径负责。
 
-这个入口刻意不替换 `run_experiment`：它先把动态拓扑、业务流量和 Net 的
-多分派路由接口稳定串起来，供实验层/AI 层显式调用。
+这是**卫星节点级 probe**：`TrafficDemand.source_ground_id` /
+`destination_ground_id` 在这里必须已经是卫星节点 id，且必须落在 `1:T`。
+它只用于低成本验证动态拓扑、活跃时间窗和 Net 路由分派，不走 GSL access、
+`AccessDecisionTable` 或 Traffic AON，也不证明 ground-end-to-end MinLoad 负载均衡。
+
+正式地面端到端流量实验请使用 `assess_ground_traffic_temporal_dynamic`，它会
+通过 `evaluate_traffic_from_bare_arrays` 返回 `TrafficEvaluation`。
 """
 function assess_temporal_flow_routes(
     positions::Array{Float64,3}, T::Int, P::Int,
@@ -230,6 +232,7 @@ function assess_temporal_flow_routes(
     n_time = n_timesteps(positions)
     length(elapsed_by_time) == n_time ||
         throw(ArgumentError("elapsed_by_time length must match positions time dimension"))
+    _validate_satellite_node_demands(demands, T)
 
     frames = Vector{NamedTuple}(undef, n_time)
 
@@ -255,8 +258,8 @@ function assess_temporal_flow_routes(
         routes = RoutingOutput[
             route(algorithm, RoutingInput(
                 graph,
-                clamp(demand.source_ground_id, 1, T),
-                clamp(demand.destination_ground_id, 1, T),
+                demand.source_ground_id,
+                demand.destination_ground_id,
             ))
             for demand in active_demands
         ]
@@ -283,6 +286,156 @@ function assess_temporal_flow_routes(
 
     return frames
 end
+
+"""
+    assess_ground_traffic_temporal_dynamic(
+        positions, T, P, strategy_builder, constraints, ground_stations, demands;
+        elapsed_by_time, routing_algorithm, isl_capacity_mbps, gsl_capacity_mbps,
+        constellation_name,
+    ) -> TrafficEvaluation
+
+正式地面端到端动态流量入口：每个时间步重新生成拓扑，使用 union ISL 保持
+link id 稳定，构造 GSL access，再通过 Traffic bridge 进入 AON/MinLoad。
+
+本函数只做薄编排，不复制 Traffic AON、MinLoad、GSL access 或 Net 路由逻辑。
+当前 GSL 接入沿用 bridge 的 max-elevation 策略。
+"""
+function assess_ground_traffic_temporal_dynamic(
+    positions::Array{Float64,3}, T::Int, P::Int,
+    strategy_builder::Function, constraints,
+    ground_stations::Vector{GroundStation},
+    demands::Vector{TrafficDemand};
+    elapsed_by_time = collect(0:(n_timesteps(positions)-1)),
+    routing_algorithm = nothing,
+    isl_capacity_mbps = hasproperty(constraints, :isl_max_capacity_mbps) ?
+        getproperty(constraints, :isl_max_capacity_mbps) : 1000.0,
+    gsl_capacity_mbps = hasproperty(constraints, :gsl_base_capacity_mbps) ?
+        getproperty(constraints, :gsl_base_capacity_mbps) : 500.0,
+    constellation_name::String = "lab-ground-traffic",
+)::TrafficEvaluation
+    n_time = n_timesteps(positions)
+    length(elapsed_by_time) == n_time ||
+        throw(ArgumentError("elapsed_by_time length must match positions time dimension"))
+    isempty(ground_stations) && throw(ArgumentError("ground_stations must not be empty"))
+
+    grid = _simulation_time_grid_from_tspan(Float64.(elapsed_by_time), n_time)
+    grid === nothing && throw(ArgumentError(
+        "elapsed_by_time must start at 0 and form a positive integer uniform grid",
+    ))
+
+    links_by_time = [
+        _topology_links(strategy_builder(t), T, P)
+        for t in 1:n_time
+    ]
+    isl_pairs = _stable_link_union(links_by_time)
+    isl_results_by_time = [
+        _isl_results_for_union(
+            position_at_instant(positions, t),
+            isl_pairs,
+            links_by_time[t],
+            constraints,
+        )
+        for t in 1:n_time
+    ]
+
+    gs_tuples = _ground_station_tuples(ground_stations)
+    gsl_avail = Matrix{Bool}[]
+    gsl_dist = Matrix{Float64}[]
+    gsl_elev = Matrix{Float64}[]
+    gsl_delay = Matrix{Float64}[]
+    for t in 1:n_time
+        a, d, e, delay = evaluate_gsl_batch(
+            position_at_instant(positions, t),
+            gs_tuples;
+            constraints = constraints,
+        )
+        push!(gsl_avail, a)
+        push!(gsl_dist, d)
+        push!(gsl_elev, e)
+        push!(gsl_delay, delay)
+    end
+
+    return evaluate_traffic_from_bare_arrays(
+        positions,
+        isl_pairs,
+        isl_results_by_time,
+        gsl_avail,
+        gsl_dist,
+        gsl_elev,
+        _ground_station_ids(ground_stations),
+        grid,
+        demands;
+        isl_capacity_mbps = Float64(isl_capacity_mbps),
+        gsl_capacity_mbps = Float64(gsl_capacity_mbps),
+        gsl_delay_ms_by_time = gsl_delay,
+        constellation_name = constellation_name,
+        routing_algorithm = routing_algorithm,
+    )
+end
+
+function _validate_satellite_node_demands(demands::Vector{TrafficDemand}, T::Int)::Nothing
+    for demand in demands
+        if !(1 <= demand.source_ground_id <= T) || !(1 <= demand.destination_ground_id <= T)
+            throw(ArgumentError(
+                "assess_temporal_flow_routes is a satellite-node probe; demand endpoints " *
+                "must be satellite ids in 1:$T. For ground endpoints/GSL/TrafficEvaluation, " *
+                "use assess_ground_traffic_temporal_dynamic.",
+            ))
+        end
+    end
+    return nothing
+end
+
+_ground_station_ids(ground_stations::Vector{GroundStation}) = [station.id for station in ground_stations]
+
+_ground_station_tuples(ground_stations::Vector{GroundStation}) = [
+    (
+        station.position.latitude_deg,
+        station.position.longitude_deg,
+        station.position.altitude_km,
+    )
+    for station in ground_stations
+]
+
+function _topology_links(strategy, T::Int, P::Int)::Vector{Tuple{Int,Int}}
+    topo_output = generate_topology(strategy, T, P)
+    return _normalize_isl_links(vcat(topo_output.static_links, topo_output.dynamic_candidates))
+end
+
+function _normalize_isl_links(links)::Vector{Tuple{Int,Int}}
+    normalized = Tuple{Int,Int}[]
+    for (src, dst) in links
+        src_i = Int(src)
+        dst_i = Int(dst)
+        src_i == dst_i && continue
+        push!(normalized, minmax(src_i, dst_i))
+    end
+    return sort(unique(normalized))
+end
+
+function _stable_link_union(links_by_time)::Vector{Tuple{Int,Int}}
+    seen = Set{Tuple{Int,Int}}()
+    for links in links_by_time
+        union!(seen, links)
+    end
+    return sort(collect(seen))
+end
+
+function _isl_results_for_union(
+    pos_t::Matrix{Float64},
+    isl_pairs::Vector{Tuple{Int,Int}},
+    active_links::Vector{Tuple{Int,Int}},
+    constraints,
+)
+    results = evaluate_isl_batch(pos_t, isl_pairs; constraints = constraints)
+    active = Set(active_links)
+    return [
+        isl_pairs[idx] in active ? result : _unavailable_isl_result(result)
+        for (idx, result) in enumerate(results)
+    ]
+end
+
+_unavailable_isl_result(result) = merge(result, (available = false, line_of_sight = false))
 
 function _link_load_samples_from_routes(
     available_isl::Vector{Tuple{Int,Int}},
@@ -643,7 +796,7 @@ function _evaluate_traffic_full(config, positions, isl_pairs)
         (gs.position.latitude_deg, gs.position.longitude_deg, gs.position.altitude_km)
         for gs in config.ground_stations
     ]
-    ground_ids = collect(1:length(gs_tuples))
+    ground_ids = _ground_station_ids(config.ground_stations)
 
     # 构造和 positions 时间维严格一致的时间网格。
     grid = _simulation_time_grid_from_tspan(config.tspan, n_time)

@@ -1,6 +1,6 @@
 # ===== 参数扫描引擎 =====
 
-export sweep, sweep_dict
+export sweep, sweep_dict, sweep_ground_traffic
 
 """
     sweep(f, param::Symbol, values::Vector) -> Vector{Pair{T,Any}}
@@ -43,6 +43,32 @@ function sweep_dict(f::Function, params::Dict{Symbol,Vector})
             nothing
         end
         push!(out, merge(kw, Dict(:result => result)))
+    end
+    return out
+end
+
+"""
+    sweep_ground_traffic(scenario, param, values) -> Vector{NamedTuple}
+
+外层参数扫描入口。`scenario(param => value)` 必须返回一次正式 ground traffic
+`TrafficEvaluation`。本函数只负责扫描和摘要，不替代单次实验主入口。
+"""
+function sweep_ground_traffic(scenario::Function, param::Symbol, values::Vector)
+    out = NamedTuple[]
+    for value in values
+        evaluation = try
+            scenario(param => value)
+        catch e
+            @warn "ground traffic sweep failed at $param=$value: $e"
+            nothing
+        end
+        summary = evaluation === nothing ? nothing : traffic_evaluation_summary(evaluation)
+        push!(out, (
+            param = param,
+            value = value,
+            evaluation = evaluation,
+            summary = summary,
+        ))
     end
     return out
 end

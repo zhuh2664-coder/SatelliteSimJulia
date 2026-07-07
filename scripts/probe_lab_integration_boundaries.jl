@@ -57,6 +57,39 @@ const LAB_COMMON = (
         @test full_aon_result.traffic_evaluation isa TrafficEvaluation
         @test length(full_aon_result.traffic_evaluation.assignments_by_time) == length(full_aon.tspan)
         @test length(full_aon_result.traffic_evaluation.link_loads_by_time) == length(full_aon.tspan)
+
+        min_load_full_aon = ExperimentConfig(;
+            LAB_COMMON...,
+            routing_algorithm=MinLoadRouting(),
+            traffic=:uniform,
+            ground_pairs=[(1, 2)],
+            ground_stations=lab_boundary_ground_stations(),
+        )
+        min_load_result = run_experiment(min_load_full_aon)
+        min_load_assignments = vcat(min_load_result.traffic_evaluation.assignments_by_time...)
+
+        @test min_load_result.traffic_evaluation isa TrafficEvaluation
+        @test any(
+            assignment -> assignment.route.reachable && assignment.route.reason == :min_load,
+            min_load_assignments,
+        )
+        @test min_load_result.routing_metrics.total_pairs == length(min_load_assignments)
+        @test min_load_result.routing_metrics.routed_pairs ==
+              count(assignment -> assignment.route.reachable, min_load_assignments)
+        @test min_load_result.latency.path_count == min_load_result.routing_metrics.routed_pairs
+        @test min_load_result.latency.samples_ms == sort([
+            1000.0 * assignment.route.total_delay_s
+            for assignment in min_load_assignments
+            if assignment.route.reachable
+        ])
+        reachable_count = count(assignment -> assignment.route.reachable, min_load_assignments)
+        @test min_load_result.network.connectivity_ratio == reachable_count / length(min_load_assignments)
+        @test min_load_result.network.is_connected == (reachable_count == length(min_load_assignments))
+        if !isempty(min_load_result.latency.samples_ms)
+            @test min_load_result.network.diameter == maximum(min_load_result.latency.samples_ms)
+            @test min_load_result.network.avg_path_length ==
+                  sum(min_load_result.latency.samples_ms) / length(min_load_result.latency.samples_ms)
+        end
     end
 
     @testset "Routing algorithm is currently a Lab intent label" begin

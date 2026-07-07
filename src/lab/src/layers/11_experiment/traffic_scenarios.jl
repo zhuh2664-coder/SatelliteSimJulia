@@ -1,6 +1,7 @@
 # ===== Traffic scenario helpers =====
 
-export all_to_all_pairs, city_to_city_pairs, city_to_city_pairs_sampled
+export all_to_all_pairs, city_to_city_pairs, city_to_city_pairs_sampled,
+       run_dynamic_ground_traffic_scenario, traffic_evaluation_summary
 
 function all_to_all_pairs(T::Int)
     pairs = Tuple{Int,Int}[]
@@ -124,4 +125,61 @@ function sample_pairs(n::Int, total::Int)
         push!(pairs, p)
     end
     return pairs
+end
+
+"""
+    run_dynamic_ground_traffic_scenario(config; strategy_builder, positions, demands, routing_algorithm)
+
+显式 scenario runner：用 `ExperimentConfig` 调正式 ground-end-to-end 动态流量入口。
+默认保持 `run_experiment(config)` 旧语义不变；需要这个场景时显式调用本函数。
+"""
+function run_dynamic_ground_traffic_scenario(
+    config::ExperimentConfig;
+    strategy_builder::Function = _ -> config.topology_strategy,
+    positions = nothing,
+    demands = config.traffic_demands,
+    routing_algorithm = config.routing_algorithm,
+    constellation_name::String = string(config.name, "-ground-traffic"),
+)
+    isempty(config.ground_stations) && throw(ArgumentError(
+        "run_dynamic_ground_traffic_scenario requires ground_stations",
+    ))
+    isempty(demands) && throw(ArgumentError(
+        "run_dynamic_ground_traffic_scenario requires non-empty traffic demands",
+    ))
+    positions_matrix = if positions === nothing
+        _, propagated = propagate_constellation_positions(config)
+        propagated
+    else
+        positions
+    end
+    return assess_ground_traffic_temporal_dynamic(
+        positions_matrix,
+        config.constellation.T,
+        config.constellation.P,
+        strategy_builder,
+        config.constraints,
+        config.ground_stations,
+        demands;
+        elapsed_by_time = config.tspan,
+        routing_algorithm = routing_algorithm,
+        constellation_name = constellation_name,
+    )
+end
+
+function traffic_evaluation_summary(evaluation)
+    assignments = reduce(vcat, evaluation.assignments_by_time; init = Any[])
+    loads = reduce(vcat, evaluation.link_loads_by_time; init = Any[])
+    isl_loads = filter(load -> load.link_type == :isl, loads)
+    gsl_loads = filter(load -> load.link_type == :gsl, loads)
+    return (
+        n_times = length(evaluation.assignments_by_time),
+        n_assignments = length(assignments),
+        n_reachable = count(assignment -> assignment.route.reachable, assignments),
+        offered_mbps = sum(assignment -> assignment.offered_mbps, assignments; init = 0.0),
+        carried_mbps = sum(assignment -> assignment.carried_mbps, assignments; init = 0.0),
+        dropped_mbps = sum(assignment -> assignment.dropped_mbps, assignments; init = 0.0),
+        max_isl_utilization = isempty(isl_loads) ? 0.0 : maximum(load -> load.utilization, isl_loads),
+        max_gsl_utilization = isempty(gsl_loads) ? 0.0 : maximum(load -> load.utilization, gsl_loads),
+    )
 end
