@@ -55,6 +55,22 @@ function _tool_plan_study(args::AbstractDict)
     return _plan_summary(create_plan(answers))
 end
 
+function _study_tool_tspan(args::AbstractDict)
+    has_duration = haskey(args, "duration_s")
+    has_steps = haskey(args, "steps")
+    (has_duration || has_steps) || return nothing
+    duration = Float64(get(args, "duration_s", 600))
+    steps = max(1, Int(get(args, "steps", 2)))
+    return collect(range(0.0, duration; length = steps))
+end
+
+function _first_successful_case(run::StudyRunResult)
+    for case_result in run.cases
+        case_result.status === :succeeded && case_result.result !== nothing && return case_result
+    end
+    return nothing
+end
+
 function _tool_run_study_plan(args::AbstractDict)
     goal = Symbol(String(get(args, "goal", "")))
     isempty(String(goal)) && error("goal required")
@@ -62,13 +78,33 @@ function _tool_run_study_plan(args::AbstractDict)
     answers[:goal] = goal
     ground_stations = _parse_ai_ground_stations(get(args, "ground_stations", get(answers, :ground_stations, [])))
     ground_pairs = _parse_ai_ground_pairs(get(args, "ground_pairs", get(answers, :ground_pairs, [])), ground_stations)
+    max_cases = Int(get(args, "max_cases", 8))
+    tspan = _study_tool_tspan(args)
     plan = create_plan(answers)
-    study_obj = build_study(plan)
-    result = run_study(study_obj; ground_stations = ground_stations, ground_pairs = ground_pairs)
+    run = run_study_plan(plan;
+        ground_stations = ground_stations,
+        ground_pairs = ground_pairs,
+        max_cases = max_cases,
+        tspan = tspan,
+    )
+    manifest = study_run_manifest(run)
+    first_case = _first_successful_case(run)
+    result = first_case === nothing ? nothing : first_case.result
+    base = Dict{String,Any}(
+        "plan" => _plan_summary(plan),
+        "summary_scope" => "representative_first_successful_case",
+        "case_count" => length(run.cases),
+        "manifest" => manifest,
+        "artifacts" => manifest["artifacts"],
+        "status" => manifest["status"],
+    )
+    if result === nothing
+        base["error"] = "no successful study cases"
+        return base
+    end
     traffic_evaluation = result.traffic_evaluation
     traffic_totals = _traffic_assignment_totals(traffic_evaluation)
-    return Dict(
-        "plan" => _plan_summary(plan),
+    merge!(base, Dict{String,Any}(
         "coverage_ratio" => round(result.coverage.coverage_ratio, digits=4),
         "avg_latency_ms" => round(result.latency.avg_latency_ms, digits=2),
         "connectivity_ratio" => round(result.network.connectivity_ratio, digits=4),
@@ -83,7 +119,8 @@ function _tool_run_study_plan(args::AbstractDict)
         "offered_mbps" => round(traffic_totals.offered_mbps, digits=3),
         "carried_mbps" => round(traffic_totals.carried_mbps, digits=3),
         "dropped_mbps" => round(traffic_totals.dropped_mbps, digits=3),
-    )
+    ))
+    return base
 end
 
 function register_planner_ai_tools!()
@@ -124,6 +161,9 @@ function register_planner_ai_tools!()
             "properties" => Dict{String,Any}(
                 "goal" => Dict("type" => "string"),
                 "answers" => Dict("type" => "object"),
+                "max_cases" => Dict("type" => "integer", "default" => 8, "description" => "最多展开并执行的 StudyRun case 数。"),
+                "duration_s" => Dict("type" => "number", "description" => "可选短仿真时长；提供后与 steps 一起生成 tspan。"),
+                "steps" => Dict("type" => "integer", "description" => "可选采样步数；提供后与 duration_s 一起生成 tspan。"),
                 "ground_stations" => Dict(
                     "type" => "array",
                     "items" => Dict(
