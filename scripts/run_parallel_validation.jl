@@ -31,6 +31,7 @@ const RUN_PACKAGE_TESTS = enabled("SATSIM_RUN_PACKAGE_TESTS")
 const RUN_VIZ = enabled("SATSIM_RUN_VIZ_GROUP")
 const RUN_GMAT = enabled("SATSIM_RUN_GMAT_GROUP")
 const RUN_SERVER = enabled("SATSIM_RUN_SERVER_GROUP")
+const RUN_REAL_DATA = enabled("SATSIM_RUN_REAL_DATA_GROUP")
 
 struct ValidationJob
     name::String
@@ -48,16 +49,36 @@ function marker_for(output::String)
         "PROBE-2 DONE",
         "PROBE OPT: ALL PASS",
         "ORBIT PROPAGATOR MATRIX: ALL PASS",
+        "ORBIT REAL TLE UNIFIED ENTRY: ALL PASS",
+        "ORBIT TLE SOURCE REGISTRY ENTRY: ALL PASS",
         "ROUTING ALGORITHM MATRIX: ALL PASS",
         "TRAFFIC AON POWER: ALL PASS",
+        "TRAFFIC MINLOAD SEQUENTIAL: ALL PASS",
+        "TRAFFIC EVALUATION MINLOAD BRIDGE: ALL PASS",
         "LAB INTEGRATION BOUNDARIES: ALL PASS",
+        "LAB RUN EXPERIMENT MINLOAD AON SEMANTICS: ALL PASS",
         "AI OFFLINE REACT PLANNER: ALL PASS",
+        "AI RUN SIMULATION TRAFFIC AON: ALL PASS",
+        "AI RUN SIMULATION SGP4 TRAFFIC AON: ALL PASS",
+        "AI RUN STUDY PLAN TRAFFIC AON: ALL PASS",
+        "AI TEAM GRAPH RUN SIMULATION: ALL PASS",
+        "AI TEAM GRAPH TRAFFIC AON: ALL PASS",
         "AI LLM PROVIDER FAKE HTTP: ALL PASS",
         "AI LLM PROVIDER TOOL LOOP: ALL PASS",
+        "CLI COMMAND MATRIX: ALL PASS",
+        "REAL DATA SOURCES: ALL PASS",
+        "REAL TRAFFIC DEMANDS: ALL PASS",
+        "REAL TRAFFIC CALIBRATION SAMPLES: ALL PASS",
+        "REAL SCENARIO SGP4 TRAFFIC DEMANDS: ALL PASS",
+        "NS3 STK EXPORTERS: ALL PASS",
         "VIZ CZML ARTIFACT: ALL PASS",
         "DYNAMIC TOPOLOGY CHURN: ALL PASS",
         "LAB NET ROUTING VERTICAL: ALL PASS",
+        "LAB DYNAMIC TOPOLOGY TEMPORAL: ALL PASS",
+        "LAB TEMPORAL FLOW ROUTE TRAFFIC: ALL PASS",
         "VIZ PNG ARTIFACT: ALL PASS",
+        "VIZ TEMPORAL ROUTE ARTIFACT: ALL PASS",
+        "VIZ TRAFFIC LOAD ARTIFACT: ALL PASS",
         "PASS/INFO:",
         "registered experiment smoke: PASS",
         "TOPOLOGY MATRIX: ALL PASS",
@@ -206,17 +227,33 @@ function main()
         job("probe_type_stability", `julia --project=$ROOT $(_script("scripts", "probe_type_stability.jl"))`),
         job("probe_experiment_matrix", `julia --project=$ROOT $(_script("scripts", "probe_experiment_matrix.jl"))`),
         job("probe_orbit_propagator_matrix", `julia --project=$ROOT $(_script("scripts", "probe_orbit_propagator_matrix.jl"))`),
+        job("probe_orbit_real_tle_unified_entry", `julia --project=$ROOT $(_script("scripts", "probe_orbit_real_tle_unified_entry.jl"))`),
+        job("probe_orbit_tle_source_registry_entry", `julia --project=$ROOT $(_script("scripts", "probe_orbit_tle_source_registry_entry.jl"))`),
         job("probe_topology_strategy_matrix", `julia --project=$ROOT $(_script("scripts", "probe_topology_strategy_matrix.jl"))`),
         job("probe_routing_algorithm_matrix", `julia --project=$ROOT $(_script("scripts", "probe_routing_algorithm_matrix.jl"))`),
         job("probe_traffic_aon_power", `julia --project=$ROOT $(_script("scripts", "probe_traffic_aon_power.jl"))`),
+        job("probe_traffic_minload_sequential", `julia --project=$ROOT $(_script("scripts", "probe_traffic_minload_sequential.jl"))`),
+        job("probe_traffic_evaluation_minload_bridge", `julia --project=$ROOT $(_script("scripts", "probe_traffic_evaluation_minload_bridge.jl"))`),
         job("probe_lab_integration_boundaries", `julia --project=$ROOT $(_script("scripts", "probe_lab_integration_boundaries.jl"))`),
+        job("probe_lab_run_experiment_minload_aon_semantics", `julia --project=$ROOT $(_script("scripts", "probe_lab_run_experiment_minload_aon_semantics.jl"))`),
         job("probe_ai_offline_react_planner", `julia --project=$ROOT $(_script("scripts", "probe_ai_offline_react_planner.jl"))`),
-        job("probe_ai_llm_provider_fake_http", `julia --project=$(_script("src", "lab")) $(_script("scripts", "probe_ai_llm_provider_fake_http.jl"))`),
-        job("probe_ai_llm_provider_tool_loop", `julia --project=$(_script("src", "lab")) $(_script("scripts", "probe_ai_llm_provider_tool_loop.jl"))`),
+        job("probe_ai_run_simulation_traffic_aon", `julia --project=$ROOT $(_script("scripts", "probe_ai_run_simulation_traffic_aon.jl"))`),
+        job("probe_ai_run_simulation_sgp4_traffic_aon", `julia --project=$ROOT $(_script("scripts", "probe_ai_run_simulation_sgp4_traffic_aon.jl"))`),
+        job("probe_ai_run_study_plan_traffic_aon", `julia --project=$ROOT $(_script("scripts", "probe_ai_run_study_plan_traffic_aon.jl"))`),
+        job("probe_ai_team_graph_run_simulation", `julia --project=$ROOT $(_script("scripts", "probe_ai_team_graph_run_simulation.jl"))`),
+        job("probe_ai_team_graph_traffic_aon", `julia --project=$ROOT $(_script("scripts", "probe_ai_team_graph_traffic_aon.jl"))`),
+        job("probe_cli_command_matrix", `julia --project=$ROOT $(_script("scripts", "probe_cli_command_matrix.jl"))`),
         job("probe_viz_czml_artifact", `julia --project=$(_script("src", "viz")) $(_script("scripts", "probe_viz_czml_artifact.jl"))`),
         job("probe_dynamic_topology_churn", `julia --project=$ROOT $(_script("scripts", "probe_dynamic_topology_churn.jl"))`),
         job("probe_lab_net_routing_vertical", `julia --project=$ROOT $(_script("scripts", "probe_lab_net_routing_vertical.jl"))`),
+        job("probe_lab_dynamic_topology_temporal", `julia --project=$ROOT $(_script("scripts", "probe_lab_dynamic_topology_temporal.jl"))`),
+        job("probe_lab_temporal_flow_route_traffic", `julia --project=$ROOT $(_script("scripts", "probe_lab_temporal_flow_route_traffic.jl"))`),
         job("probe_revise_hot_reload", `julia --project=$ROOT $(_script("scripts", "probe_revise_hot_reload.jl"))`),
+    ]
+
+    local_service_jobs = [
+        job("probe_ai_llm_provider_fake_http", `julia --project=$(_script("src", "lab")) $(_script("scripts", "probe_ai_llm_provider_fake_http.jl"))`),
+        job("probe_ai_llm_provider_tool_loop", `julia --project=$(_script("src", "lab")) $(_script("scripts", "probe_ai_llm_provider_tool_loop.jl"))`),
     ]
 
     package_jobs = ValidationJob[]
@@ -233,20 +270,30 @@ function main()
     RUN_GMAT && push!(isolated_jobs, job("gmat_pkg_test", `julia --project=$ROOT -e "using Pkg; Pkg.test(\"GMAT\")"`))
     if RUN_VIZ
         push!(isolated_jobs, job("viz_png_artifact", `julia --startup-file=no --project=$(_script("src", "viz")) $(_script("scripts", "probe_viz_png_artifact.jl"))`))
+        push!(isolated_jobs, job("viz_temporal_route_artifact", `julia --project=$ROOT $(_script("scripts", "probe_viz_temporal_route_artifact.jl"))`))
+        push!(isolated_jobs, job("viz_traffic_load_artifact", `julia --project=$ROOT $(_script("scripts", "probe_viz_traffic_load_artifact.jl"))`))
         push!(isolated_jobs, job("viz_pkg_test", `julia --project=$ROOT -e "using Pkg; Pkg.test(\"SatelliteSimViz\")"`))
     end
     RUN_SERVER && push!(isolated_jobs, job("server_pkg_test", `julia --project=$(_script("src", "server")) -e "using Pkg; Pkg.test()"`))
+    if RUN_REAL_DATA
+        push!(isolated_jobs, job("real_data_sources", `python3 $(_script("scripts", "probe_real_data_sources.py"))`))
+        push!(isolated_jobs, job("real_traffic_demands", `python3 $(_script("scripts", "probe_real_traffic_demands.py"))`))
+        push!(isolated_jobs, job("real_traffic_calibration_samples", `python3 $(_script("scripts", "probe_real_traffic_calibration_samples.py"))`))
+        push!(isolated_jobs, job("real_scenario_sgp4_traffic_demands", `julia --project=$ROOT $(_script("scripts", "probe_real_scenario_sgp4_traffic_demands.jl"))`))
+        push!(isolated_jobs, job("ns3_stk_exporters", `julia --project=$ROOT $(_script("scripts", "probe_ns3_stk_exporters.jl"))`))
+    end
 
     println("=" ^ 88)
     println("SATELLITESIMJULIA — PARALLEL VALIDATION")
     println("=" ^ 88)
     println("max_jobs=$MAX_JOBS child_threads=$CHILD_THREADS precompile=$(RUN_PRECOMPILE ? "yes" : "no")")
-    println("package=$(RUN_PACKAGE_TESTS ? "yes" : "no") viz=$(RUN_VIZ ? "yes" : "no") gmat=$(RUN_GMAT ? "yes" : "no") server=$(RUN_SERVER ? "yes" : "no")")
+    println("package=$(RUN_PACKAGE_TESTS ? "yes" : "no") viz=$(RUN_VIZ ? "yes" : "no") gmat=$(RUN_GMAT ? "yes" : "no") server=$(RUN_SERVER ? "yes" : "no") real_data=$(RUN_REAL_DATA ? "yes" : "no")")
     println("=" ^ 88)
 
     results = NamedTuple[]
     append!(results, run_serial_stage("precompile", precompile_jobs))
     append!(results, run_parallel_stage("core validation", core_jobs))
+    append!(results, run_serial_stage("local service validation", local_service_jobs))
     append!(results, run_serial_stage("package tests", package_jobs))
     append!(results, run_serial_stage("isolated heavy/external groups", isolated_jobs))
 
