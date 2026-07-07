@@ -13,6 +13,14 @@ SatelliteSimNet = "e40ae7a9-b545-48ee-92d2-18cbe9a7d82b"
 SatelliteSimCore = "99f6b6c7-c40f-4eb3-8423-ddc96d839c0b"
 SatelliteSimFoundation = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
+[sources]
+SatelliteSimCore = {path = "../core"}
+SatelliteSimFoundation = {path = "../foundation"}
+SatelliteSimLink = {path = "../link"}
+SatelliteSimMetrics = {path = "../metrics"}
+SatelliteSimNet = {path = "../net"}
+SatelliteSimTraffic = {path = "../traffic"}
+
 [compat]
 julia = "1.12"
 
