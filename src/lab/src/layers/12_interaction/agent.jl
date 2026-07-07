@@ -275,6 +275,8 @@ function _tool_run_simulation(args::AbstractDict)
     duration = get(args, "duration_s", 600)
     steps = get(args, "steps", 2)
     traffic = lowercase(strip(String(get(args, "traffic", "none"))))
+    routing = lowercase(strip(String(get(args, "routing", "shortest_path"))))
+    routing_algorithm = parse_ai_routing(routing)
     ground_stations = _parse_ai_ground_stations(get(args, "ground_stations", []))
     ground_pairs = _parse_ai_ground_pairs(get(args, "ground_pairs", []), ground_stations)
     traffic_arg = _ai_traffic_arg(args, traffic)
@@ -299,6 +301,7 @@ function _tool_run_simulation(args::AbstractDict)
         propagator = propagator,
         tspan = tspan,
         topology_strategy = strategy,
+        routing_algorithm = routing_algorithm,
         traffic = traffic_arg,
         ground_stations = ground_stations,
         ground_pairs = ground_pairs,
@@ -311,6 +314,8 @@ function _tool_run_simulation(args::AbstractDict)
         "constellation" => constellation,
         "n_satellites" => T,
         "propagator" => prop,
+        "routing" => routing,
+        "routing_evaluation_scope" => traffic_evaluation === nothing ? "matrix_shortest_path_summary" : "traffic_aon_per_flow",
         "coverage_ratio" => round(result.coverage.coverage_ratio, digits=4),
         "avg_latency_ms" => round(result.latency.avg_latency_ms, digits=2),
         "max_latency_ms" => round(result.latency.max_latency_ms, digits=2),
@@ -425,6 +430,8 @@ end
 function _run_sgp4_simulation(args::AbstractDict, constellation::AbstractString,
                                topo::AbstractString, duration::Real, steps::Integer)
     traffic = lowercase(strip(String(get(args, "traffic", "none"))))
+    routing = lowercase(strip(String(get(args, "routing", "shortest_path"))))
+    routing_algorithm = parse_ai_routing(routing)
     ground_stations = _parse_ai_ground_stations(get(args, "ground_stations", []))
     ground_pairs = _parse_ai_ground_pairs(get(args, "ground_pairs", []), ground_stations)
     traffic_arg = _ai_traffic_arg(args, traffic)
@@ -459,6 +466,7 @@ function _run_sgp4_simulation(args::AbstractDict, constellation::AbstractString,
         tspan = tspan,
         constraints = constraints,
         topology_strategy = strategy,
+        routing_algorithm = routing_algorithm,
         traffic = traffic_arg,
         ground_stations = ground_stations,
         ground_pairs = ground_pairs,
@@ -482,6 +490,8 @@ function _run_sgp4_simulation(args::AbstractDict, constellation::AbstractString,
         "constellation" => constellation,
         "n_satellites" => n,
         "propagator" => "tle_based",
+        "routing" => routing,
+        "routing_evaluation_scope" => traffic_evaluation === nothing ? "matrix_shortest_path_summary" : "traffic_aon_per_flow",
         "tle_source" => length(tle_elements),
         "coverage_ratio" => 0.0,   # SGP4 路径无 GSL 地面站输入，覆盖不适用
         "avg_latency_ms" => round(latency.avg_latency_ms, digits=2),
@@ -614,7 +624,7 @@ end
 
 # 工具：列出可用资源
 function _tool_list_available(args::AbstractDict)
-    what = get(args, "what", "all")
+    what = String(get(args, "what", "all"))
     result = Dict{String,Any}()
     if what in ("constellations", "all")
         result["constellations"] = ai_constellation_names()
@@ -624,6 +634,29 @@ function _tool_list_available(args::AbstractDict)
     end
     if what in ("propagators", "all")
         result["propagators"] = ai_propagator_terms()
+    end
+    if what in ("routing", "all")
+        result["routing"] = ai_routing_terms()
+        result["routing_catalog"] = [
+            Dict("id" => string(id), "description" => SatelliteSimCore.describe_routing(id))
+            for id in SatelliteSimCore.list_routing()
+        ]
+        result["routing_note"] = "routing catalog 仅用于发现说明；执行时通过 Lab routing intent / ExperimentConfig 解析。"
+    end
+    if what in ("traffic", "all")
+        result["traffic"] = ai_traffic_terms()
+        result["traffic_catalog"] = [
+            Dict("id" => string(id), "description" => SatelliteSimCore.describe_traffic(id))
+            for id in SatelliteSimCore.list_traffic()
+        ]
+    end
+    if what in ("intents", "all")
+        result["intents"] = Dict(
+            "routing" => ai_routing_terms(),
+            "traffic" => ai_traffic_terms(),
+            "topology" => ai_topology_terms(),
+            "propagator" => ai_propagator_terms(),
+        )
     end
     return result
 end

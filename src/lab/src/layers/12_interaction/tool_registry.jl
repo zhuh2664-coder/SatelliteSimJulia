@@ -49,15 +49,56 @@ end
 function _register_core_ai_tools!()
     register_ai_tool!(AIToolSpec(
         "run_simulation",
-        "运行星座网络仿真。可指定星座规模、网络拓扑特性、传播精度、仿真时长等参数。",
+        "运行星座网络仿真。可指定星座规模、拓扑、传播器、路由策略、流量场景、TLE/SGP4 等参数。",
         Dict{String,Any}(
             "type" => "object",
             "properties" => Dict{String,Any}(
                 "constellation" => Dict("type" => "string", "description" => "星座名或 'walker T/P/F'，如 'iridium' 或 'walker 66/6/2'"),
-                "topology" => Dict("type" => "string", "enum" => ["balanced", "robust", "minimal", "adaptive"], "default" => "balanced"),
-                "propagator" => Dict("type" => "string", "enum" => ["fast", "balanced", "precise", "tle_based"], "default" => "fast"),
+                "topology" => Dict("type" => "string", "enum" => ai_topology_terms(), "default" => "balanced"),
+                "propagator" => Dict("type" => "string", "enum" => ai_propagator_terms(), "default" => "fast"),
+                "routing" => Dict("type" => "string", "enum" => ai_routing_terms(), "default" => "shortest_path", "description" => "路由意图；load_balanced 在 traffic AON 逐流评估中体现负载均衡语义。"),
                 "duration_s" => Dict("type" => "number", "default" => 600),
                 "steps" => Dict("type" => "integer", "default" => 2),
+                "traffic" => Dict("type" => "string", "enum" => ai_traffic_terms(), "default" => "none"),
+                "tle" => Dict("type" => "string", "description" => "TLE 文件路径或 TLE 文本；仅在 propagator=tle_based 且 catalog 无对应 TLE 时使用。"),
+                "max_sats" => Dict("type" => "integer", "default" => 24, "description" => "限制 TLE 载入卫星数，避免真实 TLE 文件全量仿真。"),
+                "traffic_demands" => Dict(
+                    "type" => "array",
+                    "description" => "显式 OD traffic demand 列表；提供后优先于 traffic intent。",
+                    "items" => Dict(
+                        "type" => "object",
+                        "properties" => Dict(
+                            "id" => Dict("type" => "integer"),
+                            "source_ground_id" => Dict("type" => "integer"),
+                            "destination_ground_id" => Dict("type" => "integer"),
+                            "start_elapsed_s" => Dict("type" => "integer"),
+                            "end_elapsed_s" => Dict("type" => "integer"),
+                            "rate_mbps" => Dict("type" => "number"),
+                        ),
+                        "required" => ["source_ground_id", "destination_ground_id", "rate_mbps"],
+                    ),
+                ),
+                "ground_stations" => Dict(
+                    "type" => "array",
+                    "items" => Dict(
+                        "type" => "object",
+                        "properties" => Dict(
+                            "id" => Dict("type" => "integer"),
+                            "name" => Dict("type" => "string"),
+                            "lat" => Dict("type" => "number"),
+                            "lon" => Dict("type" => "number"),
+                            "alt_km" => Dict("type" => "number"),
+                        ),
+                        "required" => ["lat", "lon"],
+                    ),
+                ),
+                "ground_pairs" => Dict(
+                    "type" => "array",
+                    "items" => Dict(
+                        "type" => "array",
+                        "items" => Dict("type" => "integer"),
+                    ),
+                ),
             ),
             "required" => ["constellation"],
         ),
@@ -94,11 +135,11 @@ function _register_core_ai_tools!()
 
     register_ai_tool!(AIToolSpec(
         "list_available",
-        "列出可用的星座预设、拓扑词表、传播器词表等。",
+        "列出可用的星座预设、拓扑词表、传播器词表、路由/流量意图等。",
         Dict{String,Any}(
             "type" => "object",
             "properties" => Dict{String,Any}(
-                "what" => Dict("type" => "string", "enum" => ["constellations", "topologies", "propagators", "all"], "default" => "all"),
+                "what" => Dict("type" => "string", "enum" => ["constellations", "topologies", "propagators", "routing", "traffic", "intents", "all"], "default" => "all"),
             ),
         ),
         _tool_list_available,

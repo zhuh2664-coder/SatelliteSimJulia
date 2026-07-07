@@ -47,6 +47,10 @@ include(joinpath(@__DIR__, "test_helpers.jl"))
         include(joinpath(@__DIR__, "test_cgr.jl"))
     end
 
+    @testset "AI" begin
+        include(joinpath(@__DIR__, "ai", "runtests.jl"))
+    end
+
     @testset "Metrics" begin
         include(joinpath(@__DIR__, "test_metrics.jl"))
     end
