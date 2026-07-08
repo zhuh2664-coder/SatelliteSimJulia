@@ -47,6 +47,8 @@ function plot_orbit_snapshot(positions::Array{Float64,3};
         figure[1, 1],
         title = config.title,
         aspect = :data,
+        # :fit 让立方体填满单元格（默认 :fitzoom 会为旋转留白，导致画面偏小）
+        viewmode = :fit,
         xlabel = "ECEF x (km)",
         ylabel = "ECEF y (km)",
         zlabel = "ECEF z (km)",
@@ -105,9 +107,18 @@ function plot_orbit_snapshot(positions::Array{Float64,3};
         label = "Satellite",
     )
 
-    # 图例
+    # 图例：叠加在坐标轴单元格内（tellwidth/tellheight=false），
+    # 避免与 Axis3 争抢同一 grid cell 的空间而把立方体挤小。
     if config.show_isl || config.show_route || config.show_ground_stations
-        Legend(figure[1, 1], axis)
+        Legend(figure[1, 1], axis;
+            tellwidth = false,
+            tellheight = false,
+            halign = :right,
+            valign = :top,
+            margin = (8, 8, 8, 8),
+            framevisible = true,
+            backgroundcolor = (:white, 0.7),
+        )
     end
 
     return figure
