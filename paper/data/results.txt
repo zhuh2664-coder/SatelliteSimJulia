@@ -1,0 +1,26 @@
+======================================================================
+PAPER EXPERIMENTS — SatelliteSimJulia
+======================================================================
+
+[A] Constellation-scale sweep (P=6 planes, alt=780km, inc=86.4°, +Grid)
+  T= 24  ISL_avail= 12.5% (6)  conn=  2.9%  avg_lat= 17.26 ms
+  T= 48  ISL_avail= 18.8% (18)  conn=  3.7%  avg_lat= 21.07 ms
+  T= 66  ISL_avail= 68.9% (91)  conn=100.0%  avg_lat= 58.16 ms
+  T= 72  ISL_avail= 72.2% (104)  conn=100.0%  avg_lat= 56.04 ms
+  T= 96  ISL_avail= 72.9% (140)  conn=100.0%  avg_lat= 53.02 ms
+  T=132  ISL_avail= 72.7% (192)  conn=100.0%  avg_lat= 51.19 ms
+  saved fig_isl_scale.png
+
+[B] Propagator divergence: TwoBody vs J2 (Iridium 66/6, 24h)
+  divergence @1h: mean=34.2 km; @12h: mean=410.9 km; @24h: mean=821.5 km, max=822.4 km
+  saved fig_propagator_divergence.png
+
+[C] End-to-end gradient verification (TLE->SGP4->ISL->soft route loss)
+  loss=7.768724e-01  n_params=21
+  |grad| forward=9.069664e+02 reverse=9.069664e+02 fd=9.069666e+02
+  relerr fwd-vs-fd=9.234e-06  reverse-vs-fwd=4.145e-15
+
+[D] Differentiable coverage optimization (Enzyme + Adam, soft coverage R1/R2)
+  init coverage = 38.4%  final coverage = 77.3%  (Δ=+38.9 pts, 100 steps)
+  coverage-opt: init=38.4%  final=77.3%  steps=100
+  saved fig_coverage_opt.png
