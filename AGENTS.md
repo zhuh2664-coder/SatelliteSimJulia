@@ -28,3 +28,21 @@ root project.
   `julia --project=. test/test_metrics.jl` or `julia --project=. test/test_topology_strategies.jl`.
 - `test/Project.toml` adds `GLMakie` (needs a display); `runtests.jl` guards it behind
   `HAS_GLMAKIE`, so its absence only skips Makie-related testsets.
+
+### Experiment / regression scripts (`scripts/`)
+
+- Numerical experiment scripts run against the root project and all pass:
+  `julia --project=. scripts/probe_e2e.jl` (Core bare-array pipeline; note the 24/6 case
+  yields 0 usable ISL by design — too sparse — while the Iridium 66/6 case gives ~91/132),
+  `scripts/probe_opt.jl` and `scripts/verify_end_to_end_gradient.jl` (three-way
+  Forward/Reverse/finite-diff gradient agreement), and `scripts/smoke_core_net_lab_experiment.jl`
+  (full Lab experiment).
+- `julia --project=. scripts/run_regression.jl` is the unified regression entry (quick_validate
+  + integration_test + smoke + probe_e2e + probe_opt). `integration_test.jl` does
+  `Pkg.activate("src/lab")`, so the `src/lab` subproject must be instantiated first
+  (`julia --project=src/lab -e 'using Pkg; Pkg.instantiate()'`) or that line fails; once done,
+  the suite reports 5/5.
+- `scripts/viz_demo.jl` currently errors in `SatelliteSimViz` `draw_coastlines!`
+  (`src/viz/src/earth.jl`): it iterates a `GeometryBasics.MultiLineString`, which the resolved
+  GeometryBasics/Makie version no longer supports. This is a viz-only (auxiliary) API-drift bug,
+  independent of the core simulation pipeline.
