@@ -264,3 +264,41 @@ end
     @test [load.link_id for load in isl_loads] == [1, 2]
     @test all(load -> isapprox(load.load_mbps, 100.0; atol = TRAFFIC_AON_ATOL), isl_loads)
 end
+
+@testset "capacity-aware AON caps link load via admission control" begin
+    grid = traffic_aon_grid()
+    # 单条 ISL 1-2 容量 100；两条 60Mbps 需求（合计 120 > 100）
+    isl_series = traffic_aon_isl_series(grid, Tuple{Int,Int}[(1, 2)]; capacity_mbps = 100.0)
+    access_table = traffic_aon_access_table(grid, Dict{Int,Union{Nothing,Int}}(1 => 1, 2 => 2))
+    demands = TrafficDemand[
+        TrafficDemand(id = 1, source_ground_id = 1, destination_ground_id = 2,
+                      start_elapsed_s = 0, end_elapsed_s = 60, rate_mbps = 60.0),
+        TrafficDemand(id = 2, source_ground_id = 1, destination_ground_id = 2,
+                      start_elapsed_s = 0, end_elapsed_s = 60, rate_mbps = 60.0),
+    ]
+
+    # 基线：两条都全额承载 → ISL 负载 120 > 100，拥塞、利用率 >1
+    base = evaluate_traffic(demands, isl_series, access_table)
+    base_isl = only(filter(l -> l.link_type == :isl, base.link_loads_by_time[1]))
+    @test isapprox(base_isl.load_mbps, 120.0; atol = TRAFFIC_AON_ATOL)
+    @test base_isl.utilization > 1.0
+    @test base_isl.congested
+
+    # 容量感知：仅一条 60 被准入（120>100），另一条整条 drop → 负载 60 ≤ 100
+    ca = evaluate_traffic_capacity_aware(demands, isl_series, access_table)
+    ca_isl = only(filter(l -> l.link_type == :isl, ca.link_loads_by_time[1]))
+    @test isapprox(ca_isl.load_mbps, 60.0; atol = TRAFFIC_AON_ATOL)
+    @test ca_isl.utilization <= 1.0 + TRAFFIC_AON_ATOL
+    @test !ca_isl.congested
+
+    carried = sort([a.carried_mbps for a in ca.assignments_by_time[1]])
+    @test carried == [0.0, 60.0]
+    # AoN 不变量：offered = carried + dropped
+    @test all(
+        a -> isapprox(a.offered_mbps, a.carried_mbps + a.dropped_mbps; atol = TRAFFIC_AON_ATOL),
+        ca.assignments_by_time[1],
+    )
+    # 因容量被拒的需求，拓扑上仍可达（route.reachable），仅 carried=0
+    dropped = only(filter(a -> a.carried_mbps == 0.0, ca.assignments_by_time[1]))
+    @test dropped.route.reachable
+end

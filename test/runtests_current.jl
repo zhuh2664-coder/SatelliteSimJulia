@@ -68,6 +68,7 @@ include(joinpath(@__DIR__, "test_helpers.jl"))
 
     @testset "Metrics" begin
         include(joinpath(@__DIR__, "test_metrics.jl"))
+        include(joinpath(@__DIR__, "test_max_flow_capacity.jl"))
     end
 
     @testset "Optimization" begin

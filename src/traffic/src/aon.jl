@@ -8,7 +8,7 @@ using SatelliteSimCore
 using SatelliteSimNet
 
 export TrafficDemand, TrafficAssignment, LinkLoadSample, TrafficEvaluation,
-       evaluate_traffic
+       evaluate_traffic, evaluate_traffic_capacity_aware
 
 """
     TrafficDemand
@@ -504,6 +504,134 @@ function evaluate_traffic(
                 demand.destination_ground_id,
                 route.destination_access_satellite_id,
                 carried_mbps,
+            )
+            for link_id in route.isl_link_ids
+                add_isl_load!(loads, metadata, isl_samples[link_id], carried_mbps)
+            end
+        end
+
+        push!(assignments_by_time, assignments)
+        push!(link_loads_by_time, build_link_load_samples(time_index, elapsed_s, loads, metadata))
+    end
+
+    return TrafficEvaluation(isl_series.time_grid, demands, assignments_by_time, link_loads_by_time)
+end
+
+"""
+    evaluate_traffic_capacity_aware(demands, isl_series, access_table;
+                                    admission_order=:offered_desc)::TrafficEvaluation
+
+带**准入控制**的 AoN 流量评估。与基线 `evaluate_traffic` 的差别：
+基线可达即整额承载（超容只在 `LinkLoadSample.congested`/`utilization>1` 里体现，
+carried 仍全额，会高估吞吐）；本入口在每个时隙内维护各链路（GSL + 途经 ISL）的
+**残余容量**，逐需求做 All-or-Nothing 准入：路径上任一链路残余容量 < 需求速率
+则整条需求 **drop**（carried=0），否则承载并从沿途残余中扣除。
+
+保证任意时隙内每条链路 `load ≤ capacity`（不再出现 utilization>1）。
+`offered = carried + dropped` 不变量仍成立；因容量不足被拒的需求 route.reachable
+仍为 true（拓扑可达），仅 carried=0，可据此与"拓扑不可达"区分。
+
+# 参数
+- `admission_order::Symbol`：时隙内需求准入顺序。
+  `:offered_desc`（默认，大需求优先）/`:offered_asc`（小需求优先，通常准入更多对）
+  /`:as_given`（按传入顺序）。
+"""
+function evaluate_traffic_capacity_aware(
+    demands::Vector{TrafficDemand},
+    isl_series::ISLPhysicalLinkSeries,
+    access_table::AccessDecisionTable;
+    admission_order::Symbol = :offered_desc,
+)::TrafficEvaluation
+    isl_series.time_grid === access_table.time_grid ||
+        throw(ArgumentError("ISL series and access table must share the same time_grid object"))
+    length(unique(demand.id for demand in demands)) == length(demands) ||
+        throw(ArgumentError("traffic demand ids must be unique"))
+    admission_order in (:offered_desc, :offered_asc, :as_given) ||
+        throw(ArgumentError("admission_order must be :offered_desc, :offered_asc or :as_given"))
+
+    assignments_by_time = Vector{Vector{TrafficAssignment}}()
+    link_loads_by_time = Vector{Vector{LinkLoadSample}}()
+
+    for time_index in 1:time_count(isl_series.time_grid)
+        elapsed_s = timeslot_offsets(isl_series.time_grid)[time_index]
+        assignments = TrafficAssignment[]
+        loads = Dict{Tuple,Float64}()
+        metadata = Dict{Tuple,NamedTuple}()
+        isl_samples = link_samples_at(isl_series, time_index)
+
+        # 时隙内残余容量：ISL 按 link_id，GSL 按 (ground_id, satellite_id)
+        isl_residual = Dict{Int,Float64}()
+        gsl_residual = Dict{Tuple{Int,Int},Float64}()
+
+        active = TrafficDemand[demand for demand in demands if is_active(demand, elapsed_s)]
+        if admission_order == :offered_desc
+            sort!(active; by = d -> d.rate_mbps, rev = true)
+        elseif admission_order == :offered_asc
+            sort!(active; by = d -> d.rate_mbps)
+        end
+
+        for demand in active
+            route = route_path_at(route_request(demand), isl_series, access_table, time_index)
+            rate = demand.rate_mbps
+
+            admitted = route.reachable
+            if admitted
+                source_access = access_decisions_at(access_table, demand.source_ground_id, time_index)
+                destination_access = access_decisions_at(access_table, demand.destination_ground_id, time_index)
+                src_key = (demand.source_ground_id, route.source_access_satellite_id)
+                dst_key = (demand.destination_ground_id, route.destination_access_satellite_id)
+                src_cap = source_access.selected_sample === nothing ?
+                    Inf : source_access.selected_sample.capacity_mbps
+                dst_cap = destination_access.selected_sample === nothing ?
+                    Inf : destination_access.selected_sample.capacity_mbps
+                src_res = get!(gsl_residual, src_key, src_cap)
+                dst_res = get!(gsl_residual, dst_key, dst_cap)
+
+                admitted = src_res >= rate && dst_res >= rate
+                if admitted
+                    for link_id in route.isl_link_ids
+                        isl_res = get!(isl_residual, link_id, isl_samples[link_id].capacity_mbps)
+                        if isl_res < rate
+                            admitted = false
+                            break
+                        end
+                    end
+                end
+
+                if admitted
+                    gsl_residual[src_key] -= rate
+                    gsl_residual[dst_key] -= rate
+                    for link_id in route.isl_link_ids
+                        isl_residual[link_id] -= rate
+                    end
+                end
+            end
+
+            carried_mbps = admitted ? rate : 0.0
+            dropped_mbps = rate - carried_mbps
+            push!(
+                assignments,
+                TrafficAssignment(
+                    demand_id = demand.id,
+                    time_index = time_index,
+                    elapsed_s = elapsed_s,
+                    route = route,
+                    offered_mbps = rate,
+                    carried_mbps = carried_mbps,
+                    dropped_mbps = dropped_mbps,
+                ),
+            )
+
+            admitted || continue
+            source_access = access_decisions_at(access_table, demand.source_ground_id, time_index)
+            destination_access = access_decisions_at(access_table, demand.destination_ground_id, time_index)
+            add_gsl_load!(
+                loads, metadata, source_access.selected_sample,
+                demand.source_ground_id, route.source_access_satellite_id, carried_mbps,
+            )
+            add_gsl_load!(
+                loads, metadata, destination_access.selected_sample,
+                demand.destination_ground_id, route.destination_access_satellite_id, carried_mbps,
             )
             for link_id in route.isl_link_ids
                 add_isl_load!(loads, metadata, isl_samples[link_id], carried_mbps)

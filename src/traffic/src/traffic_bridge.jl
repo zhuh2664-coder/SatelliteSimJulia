@@ -265,6 +265,9 @@ end
 - `gsl_delay_ms_by_time`: 可选 GSL delay 矩阵序列；提供时优先于 distance/c
 - `routing_algorithm`: 可选 Net 路由算法；未提供时保持旧的 shortest-delay AON 语义
 - `handover_policy`: 可选 GSL 接入/切换策略；未提供时保持旧 max-elevation 语义
+- `capacity_aware`: 为 true 时走 `evaluate_traffic_capacity_aware`（准入控制，
+  路径瓶颈残余容量不足则整条 drop，保证 load ≤ capacity）；此时忽略
+  `routing_algorithm`（准入路径用基线 shortest-delay 路由）。
 
 # 返回
 - `TrafficEvaluation`: 完整流量评估（含 assignments、link_loads、拥塞、dropped）
@@ -285,6 +288,8 @@ function evaluate_traffic_from_bare_arrays(
     constellation_name::String = "bridge",
     routing_algorithm = nothing,
     handover_policy = nothing,
+    capacity_aware::Bool = false,
+    admission_order::Symbol = :offered_desc,
 )::TrafficEvaluation
     time_count(time_grid) == size(positions, 2) ||
         throw(ArgumentError("time_grid length must match positions time dimension"))
@@ -307,7 +312,13 @@ function evaluate_traffic_from_bare_arrays(
         handover_policy = handover_policy,
     )
 
-    # 4. 调用完整 AON。未传算法时保持旧 shortest-delay 语义。
+    # 4. 调用完整 AON。
+    #    capacity_aware=true 走准入控制；否则未传算法保持旧 shortest-delay 语义。
+    if capacity_aware
+        return evaluate_traffic_capacity_aware(
+            demands, isl_series, access_table; admission_order = admission_order,
+        )
+    end
     return routing_algorithm === nothing ?
         evaluate_traffic(demands, isl_series, access_table) :
         evaluate_traffic(demands, isl_series, access_table, routing_algorithm)
