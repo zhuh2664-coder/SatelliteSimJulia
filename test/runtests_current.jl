@@ -49,6 +49,7 @@ include(joinpath(@__DIR__, "test_helpers.jl"))
         include(joinpath(@__DIR__, "test_topology_metrics.jl"))
         include(joinpath(@__DIR__, "net", "test_routing.jl"))
         include(joinpath(@__DIR__, "net", "test_core_routing_paths.jl"))
+        include(joinpath(@__DIR__, "net", "test_routing_improvements.jl"))
         include(joinpath(@__DIR__, "test_cgr.jl"))
     end
 
