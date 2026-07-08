@@ -140,11 +140,12 @@ function draw_coastlines!(axis;
             lines!(axis, pts; color = color, linewidth = linewidth)
         end
     else
-        # GeoMakie MultiLineString 格式
+        # GeoMakie 返回 Vector{MultiLineString}；新版 GeometryBasics 里
+        # MultiLineString/LineString 不再可直接迭代，需经 .linestrings/.points 访问。
         for multiline in coast
-            for line in multiline
+            for line in multiline.linestrings
                 pts = Point3f[]
-                for p in line
+                for p in line.points
                     x, y, z = latlon_to_xyz(p[2], p[1])  # GeoMakie: p[1]=lon, p[2]=lat
                     push!(pts, Point3f(x, y, z))
                 end
