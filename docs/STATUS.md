@@ -30,6 +30,6 @@
 
 ## 文档导航
 
-- [`GAME_PLAN.md`](GAME_PLAN.md) — 完整计划（选型、架构、风险）
-- [`milestones/`](milestones/) — 每个 M 单独文档
-- [`STATUS.md`](STATUS.md) — 本文件，进度表
+- [`README.md`](README.md) — docs/ 全量索引（分类 + 时效标注）
+- [`GAME_PLAN.md`](GAME_PLAN.md) — 完整计划（选型、架构、风险；已执行完毕，作历史记录）
+- [`STATUS.md`](STATUS.md) — 本文件，进度表（milestones/ 明细文档已随完工清理，细节见 git 历史）

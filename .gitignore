@@ -34,6 +34,7 @@ experiments/
 outputs/
 notebooks/
 benchmark_suite/
+research_store/
 
 # Data (not source code)
 data/
@@ -45,11 +46,8 @@ CLAUDE.md
 LAYERS.md
 REFACTOR_STATUS.md
 
-# Top-level docs and papers (not source code)
-docs/
+# Papers and stray top-level notes (docs/ is tracked normally)
 paper/
-*.md
-!/README.md
 实施手册.md
 调研.md
 重复代码清理报告.md

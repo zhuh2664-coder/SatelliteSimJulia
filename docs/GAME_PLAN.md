@@ -2,7 +2,7 @@
 
 > 目标：基于 `SatelliteSimCore/Lab` 物理仿真，做一个 LEO 卫星星座 3D 沙盒游戏。
 > 后端：Julia WebSocket 服务（已就绪）。前端：Godot 4 客户端。
-> 状态：**计划阶段**，等待审核后开始实施。
+> 状态：**已执行完毕**（M0–M10 全部完成，实时进度见 [`STATUS.md`](STATUS.md)）。本文保留作选型与架构决策记录，里程碑表为立项时快照，不再更新。
 
 ---
 
@@ -108,7 +108,7 @@ godot-sandbox/
 | 物理同步 | 主线程 + Task | `_process` + 信号 |
 | 状态 | 已废（WS 兼容性坑） | **正式采用** |
 
-**Unity 客户端 `unity-scripts/` 不删**：作为协议参考实现（已被 Julia e2e_client.jl + Godot 客户端交叉验证），但不再维护。
+**Unity 客户端 `unity-scripts/` 已于 2026-07-08 删除**（git 历史可回溯）：协议参考职责由 Julia `e2e_client.jl` + Godot 客户端承担。
 
 ---
 
