@@ -27,13 +27,41 @@ from .config import (
 from . import store
 
 
-def _http_get(url: str, headers: Optional[Dict[str, str]] = None, timeout: int = 45) -> bytes:
+def _http_get(
+    url: str,
+    headers: Optional[Dict[str, str]] = None,
+    timeout: int = 90,
+    *,
+    retries: int = 4,
+) -> bytes:
     hdrs = {"User-Agent": USER_AGENT}
     if headers:
         hdrs.update(headers)
-    req = urllib.request.Request(url, headers=hdrs)
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read()
+    last_err: Optional[BaseException] = None
+    for attempt in range(retries + 1):
+        req = urllib.request.Request(url, headers=hdrs)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return resp.read()
+        except urllib.error.HTTPError as e:
+            last_err = e
+            # Retry rate limits / transient gateway errors.
+            if e.code in (429, 500, 502, 503, 504) and attempt < retries:
+                retry_after = e.headers.get("Retry-After") if e.headers else None
+                try:
+                    wait_s = float(retry_after) if retry_after else (3.0 * (2**attempt))
+                except ValueError:
+                    wait_s = 3.0 * (2**attempt)
+                time.sleep(min(max(wait_s, 1.0), 60.0))
+                continue
+            raise
+        except (TimeoutError, urllib.error.URLError) as e:
+            last_err = e
+            if attempt < retries:
+                time.sleep(3.0 * (2**attempt))
+                continue
+            raise
+    raise RuntimeError(f"HTTP GET failed after retries: {last_err}")
 
 
 def fetch_arxiv_query(
@@ -54,7 +82,7 @@ def fetch_arxiv_query(
     }
     url = ARXIV_API + "?" + urllib.parse.urlencode(params)
     try:
-        xml_data = _http_get(url).decode("utf-8")
+        xml_data = _http_get(url, timeout=90, retries=4).decode("utf-8")
     except Exception as e:
         return [{"_error": str(e), "query_id": query_def["id"]}]
 
@@ -134,7 +162,7 @@ def collect_papers(*, days: int = DEFAULT_PAPER_DAYS, max_per_query: int = DEFAU
     errors: List[str] = []
     for q in queries:
         batch = fetch_arxiv_query(q, max_results=max_per_query, days=days)
-        time.sleep(1.1)  # arXiv courtesy
+        time.sleep(3.0)  # arXiv courtesy; HTTPS + retries still need spacing
         if batch and "_error" in batch[0]:
             errors.append(f"{q['id']}: {batch[0]['_error']}")
             stats[q["id"]] = 0
@@ -284,9 +312,16 @@ def run_collect(
 
     meta = store.read_meta()
     meta["last_collect_at"] = store.utc_now()
+    prev_stats = meta.get("stats") or {}
+    papers_total = report.get("papers", {}).get("total")
+    repos_total = report.get("repos", {}).get("total")
+    if papers_total is None:
+        papers_total = prev_stats.get("papers_total", len(store.load_papers()))
+    if repos_total is None:
+        repos_total = prev_stats.get("repos_total", len(store.load_repos()))
     meta["stats"] = {
-        "papers_total": report.get("papers", {}).get("total"),
-        "repos_total": report.get("repos", {}).get("total"),
+        "papers_total": papers_total,
+        "repos_total": repos_total,
     }
     store.write_meta(meta)
     report["finished_at"] = store.utc_now()

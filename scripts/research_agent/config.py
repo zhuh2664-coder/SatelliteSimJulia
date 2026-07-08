@@ -15,7 +15,7 @@ REPOS_JSONL = STORE_DIR / "repos.jsonl"
 META_JSON = STORE_DIR / "meta.json"
 RUNS_DIR = STORE_DIR / "runs"
 
-ARXIV_API = "http://export.arxiv.org/api/query"
+ARXIV_API = "https://export.arxiv.org/api/query"
 GITHUB_API = "https://api.github.com"
 
 DEFAULT_PAPER_DAYS = 14
