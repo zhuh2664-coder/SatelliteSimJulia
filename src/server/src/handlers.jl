@@ -13,6 +13,7 @@
 using JSON3
 using WebSockets
 using SatelliteSimCore
+using SatelliteSimLab
 using Base.Threads
 
 # ── 单条请求的处理逻辑：返回响应对象 + 可选副作用（启动/停止会话） ──
@@ -40,13 +41,45 @@ end
 处理 start_simulation：启动会话并返回响应。
 推流由 ws_handler 负责（拿到响应后开始推 frame）。
 """
+function _constellation_metadata(name::AbstractString, config::WalkerConstellationConfig)
+    return Dict{String,Any}(
+        "name" => String(name),
+        "T" => config.T,
+        "P" => config.P,
+        "F" => config.F,
+        "alt_km" => config.alt_km,
+        "inc_deg" => config.inc_deg,
+    )
+end
+
+function _shell_metadata(name::AbstractString, config::WalkerConstellationConfig)
+    shell = _constellation_metadata(name, config)
+    shell["id"] = 1
+    return [shell]
+end
+
+function _walker_config(spec::WalkerSpec)
+    return WalkerConstellationConfig(
+        T = spec.T,
+        P = spec.P,
+        F = spec.F,
+        alt_km = spec.alt_km,
+        inc_deg = spec.inc_deg,
+    )
+end
+
 function handle_start_simulation(req::StartSimulationReq)
+    config = req.walker === nothing ? nothing : _walker_config(req.walker)
     session = start_session(;
         name = req.name,
+        config = config,
         tspan = req.tspan,
         step_s = req.step_s,
         propagator = req.propagator,
         fps = req.fps,
+        ground_stations = req.ground_stations,
+        include_gsl = req.include_gsl,
+        include_coverage = req.include_coverage,
     )
     return session, StartSimulationResp(
         session_id = session.id,
@@ -55,6 +88,11 @@ function handle_start_simulation(req::StartSimulationReq)
         fps = session.fps,
         step_s = session.step_s,
         tspan = session.tspan,
+        n_ground_stations = length(session.ground_stations),
+        gsl_enabled = session.include_gsl && !isempty(session.ground_stations),
+        coverage_enabled = session.include_coverage && !isempty(session.ground_stations),
+        constellation = _constellation_metadata(session.name, session.constellation),
+        shells = _shell_metadata(session.name, session.constellation),
     )
 end
 
@@ -63,6 +101,26 @@ function handle_stop_simulation(req::StopSimulationReq)
     ok = stop_session!(req.session_id)
     ok || throw(ArgumentError("session not found: $(req.session_id)"))
     return StopSimulationResp(session_id = req.session_id)
+end
+
+"""处理 ai_trace：返回 AI ledger timeline 或 replay plan。"""
+function handle_ai_trace(req::AITraceReq)
+    trace = SatelliteSimLab.load_agent_trace(req.session_id)
+    items = if req.mode == "timeline"
+        SatelliteSimLab.trace_timeline(trace)
+    elseif req.mode == "replay_plan"
+        [JSON3.write(item) for item in SatelliteSimLab.tool_replay_plan(trace)]
+    else
+        throw(ArgumentError("unknown ai_trace mode: $(req.mode)"))
+    end
+    return AITraceResp(session_id = req.session_id, mode = req.mode, items = String.(items))
+end
+
+"""处理 ai_checkpoint：返回 TeamGraph checkpoint 摘要 JSON。"""
+function handle_ai_checkpoint(req::AICheckpointReq)
+    path = joinpath("data", "sessions", req.session_id, "team_graph_checkpoint.json")
+    summary = SatelliteSimLab.checkpoint_summary(path)
+    return AICheckpointResp(session_id = req.session_id, summary_json = JSON3.write(summary))
 end
 
 # ── 主分发：把 Request 路由到 handler ────────────────────────
@@ -82,6 +140,10 @@ function dispatch_request(req::Request)
         return resp, session
     elseif req isa StopSimulationReq
         return handle_stop_simulation(req), nothing
+    elseif req isa AITraceReq
+        return handle_ai_trace(req), nothing
+    elseif req isa AICheckpointReq
+        return handle_ai_checkpoint(req), nothing
     else
         throw(ArgumentError("unhandled request type: $(typeof(req))"))
     end
@@ -125,10 +187,10 @@ end
 
 每个 WS 连接进入此函数。循环读请求 → 分发 → 响应。
 若是 start_simulation，写完响应后立即开始推流；
-推流期间不再接受新请求（沙盒场景：一连接一会话）。
+推流期间不再接受新请求，推完后回到消息循环等待下一条请求。
 """
 function ws_handler(ws)
-    @info "WebSocket connected" target=WebSockets.target(ws)
+    @info "WebSocket connected" uri=string(ws)
     try
         while !eof(ws)
             data, ok = WebSockets.readguarded(ws)
@@ -151,11 +213,10 @@ function ws_handler(ws)
             ok2 = WebSockets.writeguarded(ws, resp_json)
             ok2 || break
 
-            # 若是 start_simulation，开始推流
+            # 若是 start_simulation，开始推流；推完后继续等下一条请求
             if session_to_stream !== nothing
-                stream_session!(ws, session_to_stream)
-                # 推流结束，连接使命完成
-                break
+                ok3 = stream_session!(ws, session_to_stream)
+                ok3 || break
             end
         end
     catch e

@@ -20,6 +20,9 @@ export MakieViewerConfig, EarthViewerConfig
 - `orbit_linewidth::Float64` — 轨迹线宽
 - `isl_linewidth::Float64` — ISL 链路线宽
 - `route_linewidth::Float64` — 路由路径线宽
+- `dark_theme::Bool` — 深空黑底风格（陆地填充 + 大气辉光）
+- `show_beams::Bool` — 绘制卫星波束足迹
+- `beam_angle_deg::Float64` — 波束半锥角（度）
 """
 Base.@kwdef struct MakieViewerConfig
     title::String = "Satellite Network Viewer"
@@ -34,6 +37,9 @@ Base.@kwdef struct MakieViewerConfig
     orbit_linewidth::Float64 = 1.0
     isl_linewidth::Float64 = 0.8
     route_linewidth::Float64 = 3.0
+    dark_theme::Bool = true
+    show_beams::Bool = false
+    beam_angle_deg::Float64 = 30.0
 end
 
 function MakieViewerConfig(title::AbstractString, time_index::Int)

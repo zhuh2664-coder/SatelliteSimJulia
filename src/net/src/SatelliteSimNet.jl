@@ -16,11 +16,12 @@ include("layers/03_topology/mesh.jl")
 include("layers/03_topology/nearest_neighbor.jl")
 
 include("layers/04_routing/abstract.jl")
-include("layers/04_routing/access.jl")
 include("layers/04_routing/handover_policy.jl")
+include("layers/04_routing/access.jl")
 include("layers/04_routing/core_routing.jl")
 include("layers/04_routing/dijkstra.jl")
 include("layers/04_routing/advanced_routing.jl")
 include("layers/04_routing/pinn_routing.jl")
+include("layers/04_routing/cgr.jl")
 
 end # module

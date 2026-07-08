@@ -116,16 +116,14 @@ function compute_network_capacity(
     end
 
     # 4. 统计
-    total_mbps = 0.0
     saturated = 0
-    for (e, cap) in edge_cap
-        total_mbps += (link_capacity_mbps - cap)
+    for (_, cap) in edge_cap
         cap < step_mbps && (saturated += 1)
     end
 
     # total_capacity = sum of carried bandwidth across all pairs
     total_mbps = sum(allocations)
-    avg_mbps = sum(allocations) / count(>=(0), allocations)
+    avg_mbps = total_mbps / n_pairs
 
     return NetworkCapacityResult(
         total_mbps / 1000.0,  # Gbps

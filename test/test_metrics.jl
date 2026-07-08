@@ -2,7 +2,7 @@
 
 using Test
 
-using SatelliteSimCore: compute_coverage, compute_latency,
+using SatelliteSimJulia: compute_coverage, compute_latency,
     compute_network_metrics, compute_link_utilization
 
 @testset "指标计算" begin

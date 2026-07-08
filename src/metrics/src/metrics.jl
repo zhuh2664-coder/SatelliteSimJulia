@@ -183,7 +183,6 @@ function compute_network_metrics(distance_matrix::AbstractMatrix{Float64})::Netw
     # 统计有限值
     finite_mask = isfinite.(distance_matrix)
     finite_count = count(finite_mask) - n  # 排除对角线
-    finite_vals = distance_matrix[finite_mask]
 
     # 过滤掉对角线
     non_diag = Float64[]

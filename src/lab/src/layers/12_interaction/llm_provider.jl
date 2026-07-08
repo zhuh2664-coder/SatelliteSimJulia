@@ -7,37 +7,45 @@
 using HTTP
 using JSON
 
-export LLMProvider, ToolCall, AssistantMessage,
+export AbstractLLMProvider, LLMProvider, ToolCall, AssistantMessage,
        chat, build_tool_schemas, llm_tool_schema
+
+abstract type AbstractLLMProvider end
 
 """
     LLMProvider
 
 LLM 提供者配置。兼容 OpenAI 格式的 API（DeepSeek/GPT/任何 OpenAI 兼容端点）。
 """
-struct LLMProvider
+struct LLMProvider <: AbstractLLMProvider
     api_key::String
     model::String
     base_url::String
+    readtimeout_s::Int
 end
 
+LLMProvider(api_key::String, model::String, base_url::String) =
+    LLMProvider(api_key, model, base_url, 120)
+
 """
-    LLMProvider(; key, model, url)
+    LLMProvider(; key, model, url, readtimeout_s)
 
 构造 LLM Provider。默认从环境变量读 DeepSeek API key。
 
 ```julia
 provider = LLMProvider()  # 自动读 DEEPSEEK_API_KEY
-provider = LLMProvider(key="sk-xxx", model="gpt-4o", url="https://api.openai.com/v1")
+provider = LLMProvider(key="sk-xxx", model="gpt-4o", url="https://api.openai.com/v1", readtimeout_s=300)
 ```
 """
 function LLMProvider(;
     key::String = get(ENV, "DEEPSEEK_API_KEY", ""),
     model::String = "deepseek-chat",
     url::String = "https://api.deepseek.com/v1",
+    readtimeout_s::Int = 120,
 )
     isempty(key) && @warn "LLM API key 为空，设置 DEEPSEEK_API_KEY 或传 key= 参数"
-    return LLMProvider(key, model, url)
+    readtimeout_s > 0 || error("readtimeout_s must be positive")
+    return LLMProvider(key, model, url, readtimeout_s)
 end
 
 """
@@ -91,7 +99,7 @@ function chat(provider::LLMProvider, messages::Vector, tools::Vector = Dict[])
         ["Authorization" => "Bearer $(provider.api_key)",
          "Content-Type" => "application/json"],
         JSON.json(body);
-        readtimeout = 120,
+        read_idle_timeout = provider.readtimeout_s,
     )
 
     data = JSON.parse(String(resp.body))
@@ -132,70 +140,10 @@ end
 每个 goal 变成一个工具，LLM 可以通过 function-calling 调用。
 """
 function build_tool_schemas()
-    schemas = Dict{String,Any}[]
-
-    # run_study 工具——通用仿真入口
-    push!(schemas, Dict(
-        "name" => "run_simulation",
-        "description" => "运行星座网络仿真。可指定星座规模、网络拓扑特性、传播精度、仿真时长等参数。",
-        "input_schema" => Dict(
-            "type" => "object",
-            "properties" => Dict(
-                "constellation" => Dict("type" => "string", "description" => "星座名或 'walker T/P/F'，如 'iridium' 或 'walker 66/6/2'"),
-                "topology" => Dict("type" => "string",
-                    "enum" => ["balanced", "robust", "minimal", "adaptive"],
-                    "default" => "balanced",
-                    "description" => "网络拓扑特性：balanced=均衡网格(默认) | robust=高鲁棒蜂窝 | minimal=最小链路环 | adaptive=自适应最近邻"),
-                "propagator" => Dict("type" => "string",
-                    "enum" => ["fast", "balanced", "precise", "tle_based"],
-                    "default" => "fast",
-                    "description" => "轨道传播精度：fast=快速二体(默认) | balanced=含J2摄动 | precise=高精度J4 | tle_based=真实TLE/SGP4"),
-                "duration_s" => Dict("type" => "number", "default" => 600, "description" => "仿真时长（秒）"),
-                "steps" => Dict("type" => "integer", "default" => 2),
-            ),
-            "required" => ["constellation"],
-        ),
-    ))
-
-    # scan_parameter 工具——参数扫描
-    push!(schemas, Dict(
-        "name" => "scan_parameter",
-        "description" => "扫描单一参数对网络性能的影响（如高度、倾角、面数）。",
-        "input_schema" => Dict(
-            "type" => "object",
-            "properties" => Dict(
-                "base_constellation" => Dict("type" => "string", "default" => "walker 24/6/1"),
-                "param" => Dict("type" => "string", "enum" => ["alt_km", "inc_deg", "P", "T"], "description" => "扫描参数"),
-                "values" => Dict("type" => "array", "items" => Dict("type" => "number"), "description" => "参数值列表"),
-            ),
-            "required" => ["param", "values"],
-        ),
-    ))
-
-    # compare_constellations 工具——星座对比
-    push!(schemas, Dict(
-        "name" => "compare_constellations",
-        "description" => "对比多个星座的网络性能（覆盖、时延、连通性）。",
-        "input_schema" => Dict(
-            "type" => "object",
-            "properties" => Dict(
-                "constellations" => Dict("type" => "array", "items" => Dict("type" => "string"), "description" => "星座名列表，如 ['iridium','starlink_gen1','oneweb']"),
-            ),
-            "required" => ["constellations"],
-        ),
-    ))
-
-    # list_available 工具——列出可用资源
-    push!(schemas, Dict(
-        "name" => "list_available",
-        "description" => "列出可用的星座预设、拓扑策略、传播器等。",
-        "input_schema" => Dict(
-            "type" => "object",
-            "properties" => Dict(
-                "what" => Dict("type" => "string", "enum" => ["constellations", "topologies", "propagators", "all"], "default" => "all"),
-            ),
-        ),
-    ))
-
-    return schemas
+    if isdefined(@__MODULE__, :ensure_default_ai_tools!)
+        ensure_default_ai_tools!()
+        return build_registered_tool_schemas()
+    end
+    # tool_registry.jl 尚未 include 时的保守 fallback。正常模块加载完成后不会走到这里。
+    return Dict{String,Any}[]
 end

@@ -83,8 +83,7 @@ end
 ground_ids(table::AccessDecisionTable)::Vector{Int} = sort(collect(keys(table.decisions_by_ground)))
 
 function _best_access_sample(samples::Vector{GSLPhysicalLinkSample})::Union{Nothing,GSLPhysicalLinkSample}
-    isempty(samples) && return nothing
-    return samples[argmax(sample -> sample.elevation_deg, samples)]
+    return select_satellite(ElevationThreshold(), samples)
 end
 
 function build_access_decision_table(

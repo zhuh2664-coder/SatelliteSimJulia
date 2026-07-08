@@ -3,7 +3,7 @@
 
 using Test
 
-using SatelliteSimNet: AbstractTopologyStrategy, TopologyOutput,
+using SatelliteSimJulia: AbstractTopologyStrategy, TopologyOutput,
     GridPlusStrategy, TShapeStrategy, generate_topology,
     SpiralStrategy, HoneycombStrategy, RingStrategy, MeshStrategy,
     NearestNeighborStrategy, isl_neighbors, num_isl
