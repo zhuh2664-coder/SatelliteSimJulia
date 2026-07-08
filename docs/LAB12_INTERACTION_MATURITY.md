@@ -9,17 +9,17 @@
 
 `lab/12_interaction` 已经不是“规则骨架/未接 LLM”：源码中已有 `llm_provider`、`agent`、`multiagent`、`team_graph`、`tool_registry`、`planner_tools` 等接线实现，并且多个 `scripts/probe_ai_*.jl` 已跑通 fake HTTP / mock provider / tool loop / team graph 路径。
 
-但它也不能整体视为稳定：正式 `src/lab/test/runtests.jl` 只覆盖 `tool_registry` + `run_simulation` 工具主路径；LLM/agent/multiagent/planner 主要依赖 probe 脚本，尚未纳入包测试；若干观测、回放、事件运行和权限校验组件仍缺少直接测试证据。
+但它也不能整体视为稳定：正式 `src/lab/test/runtests.jl` 现已覆盖 `tool_registry` + `run_simulation` 主路径，并新增了 `LLMProvider` fake HTTP 协议桥接与 `SimAgent` tool loop（fake HTTP）两条确定性测试；但 multiagent/team_graph/planner 仍主要依赖 probe 脚本，真实 LLM provider 调用也仍未纳入默认包测试；若干观测、回放、事件运行和权限校验组件仍缺少直接测试证据。
 
 ## 成熟度分层
 
 | 成熟度 | 组件 | 当前判断 | 证据 |
 |---|---|---|---|
 | 已稳定 | `tool_registry.jl`、默认 AI tools、`execute_tool("run_simulation", ...)` | 已进入 `src/lab/test/runtests.jl`，能通过正式包测试路径验证 SGP4 `run_simulation` | `src/lab/test/runtests.jl` 的 `registered AI tools and SGP4 path` testset |
-| 已稳定 | `run_simulation` tool 的 traffic / SGP4 基础路径 | 有正式测试覆盖 SGP4 路径，并有多个 probe 覆盖 traffic / AON 路径 | `src/lab/test/runtests.jl`、`scripts/probe_ai_run_simulation_sgp4_traffic_aon.jl`、`scripts/probe_ai_run_simulation_traffic_aon.jl` |
+| 已稳定 | `run_simulation` tool 的 traffic / SGP4 基础路径 | 有正式测试覆盖 SGP4 路径与 traffic AON 桥接路径；另有多个 probe 覆盖 traffic / AON | `src/lab/test/runtests.jl` 的 `AI run_simulation traffic AON bridge` testset、`scripts/probe_ai_run_simulation_sgp4_traffic_aon.jl`、`scripts/probe_ai_run_simulation_traffic_aon.jl` |
 | 已稳定 | `mock_provider.jl` | 作为 AI probe 的测试基础设施，逻辑简单，多个 mock-based probe 依赖它 | `scripts/probe_ai_offline_react_planner.jl`、`scripts/probe_ai_team_graph_run_simulation.jl`、`scripts/probe_ai_team_graph_traffic_aon.jl` |
-| 半成品 | `llm_provider.jl` | 已有真实 OpenAI-compatible HTTP 调用代码；自动验证主要是 fake HTTP，本地真 provider 不在默认测试内 | `src/lab/src/layers/12_interaction/llm_provider.jl`、`scripts/probe_ai_llm_provider_fake_http.jl` |
-| 半成品 | `agent.jl` (`SimAgent` / `run_agent`) | ReAct tool loop 已实现，fake HTTP 和 MockProvider probe 跑通；未进入 `src/lab/test/runtests.jl` | `src/lab/src/layers/12_interaction/agent.jl`、`scripts/probe_ai_llm_provider_tool_loop.jl`、`scripts/probe_ai_offline_react_planner.jl` |
+| 正式测试覆盖（fake HTTP 协议路径） | `llm_provider.jl` | 请求/响应协议路径已进入 `src/lab/test/runtests.jl`（fake HTTP，确定性，无真实 API key）；真实第三方 provider 调用仍为 opt-in，不在默认测试内 | `src/lab/src/layers/12_interaction/llm_provider.jl`、`src/lab/test/runtests.jl` 的 `AI LLMProvider fake HTTP bridge` testset、`scripts/probe_ai_llm_provider_fake_http.jl` |
+| 正式测试覆盖（fake HTTP 协议路径） | `agent.jl` (`SimAgent` / `run_agent`) | ReAct tool loop 的 fake HTTP 路径已进入 `src/lab/test/runtests.jl`（确定性：一次工具调用后给出最终答复）；真实 LLM 长循环仍需 opt-in 验证 | `src/lab/src/layers/12_interaction/agent.jl`、`src/lab/test/runtests.jl` 的 `AI SimAgent tool loop fake HTTP bridge` testset、`scripts/probe_ai_llm_provider_tool_loop.jl`、`scripts/probe_ai_offline_react_planner.jl` |
 | 半成品 | `multiagent.jl`、`team_graph.jl` | `planner -> runner -> reviewer` 多智能体图已被 mock provider probe 验证；仍是 scripts/probe 层，不是正式包测试 | `scripts/probe_ai_team_graph_run_simulation.jl`、`scripts/probe_ai_team_graph_traffic_aon.jl` |
 | 半成品 | `planner/planner.jl`、`planner_tools.jl`、`studies.jl`、`goals.jl`、`study_dsl.jl` | 有 plan/study/tool 接线和 probe，但既有审计指出 planner -> study handoff 仍有参数语义风险 | `scripts/probe_ai_run_study_plan_traffic_aon.jl`、`docs/audits/2026-07-07_50_agent_audit/dimensions/24_satellitesimjulia-lab-orchestration-layers-10-12-audit.md` |
 | 半成品 | `memory.jl`、`hooks.jl`、`ledger.jl` | 有独立脚本或间接 probe 覆盖基础行为；仍未系统纳入 `src/lab/test/runtests.jl` | `scripts/test_memory.jl`、`scripts/test_hooks.jl`、AI tool loop / team graph probes |
@@ -36,11 +36,14 @@
 - `registered_ai_tools()`
 - `execute_tool("run_simulation", ...)`
 - SGP4 / TLE-based `run_simulation` 结果字段断言
+- `run_simulation` traffic AON 桥接路径（`AI run_simulation traffic AON bridge` testset）
+- `LLMProvider` 请求/响应协议（`AI LLMProvider fake HTTP bridge` testset，fake HTTP，无真实 API key）
+- `SimAgent` / `run_agent` 的 ReAct tool loop（`AI SimAgent tool loop fake HTTP bridge` testset，fake HTTP，一次工具调用后收敛到最终答复）
 
 它没有直接覆盖：
 
-- `LLMProvider` 的真实 provider 调用
-- `SimAgent` / `run_agent`
+- `LLMProvider` 对真实第三方 provider 的调用（默认测试只覆盖 fake HTTP）
+- `SimAgent` / `run_agent` 的真实 LLM 长循环（默认测试只覆盖 fake HTTP 单次工具调用路径）
 - `multiagent` / `team_graph`
 - `planner` / `run_study_plan` 全链路
 - `trace` / `replay` / `evals` / `ai_runs` / `agent_worker`
@@ -58,7 +61,7 @@ AI 层已有较多 probe，说明接线不是空壳：
 - `scripts/probe_ai_team_graph_run_simulation.jl`：验证 team graph 驱动 `run_simulation`。
 - `scripts/probe_ai_team_graph_traffic_aon.jl`：验证 team graph 驱动带 traffic 的 AON 仿真。
 
-这些 probe 价值很高，但成熟度解释要谨慎：它们主要证明“能跑通/接线存在”，还不等同于“已进入稳定包测试或 CI 门禁”。
+其中 `run_simulation` traffic AON、`LLMProvider` fake HTTP、`SimAgent` tool loop 三条已镜像进 `src/lab/test/runtests.jl`（对应 probe 脚本保留为诊断入口）；其余 probe 价值仍很高，但成熟度解释要谨慎：它们主要证明“能跑通/接线存在”，还不等同于“已进入稳定包测试或 CI 门禁”。
 
 ### 相关报告
 
@@ -100,7 +103,7 @@ AI 层已有较多 probe，说明接线不是空壳：
 ## 推荐下一步
 
 1. 把 deterministic 的 AI probe 迁入或镜像到 `src/lab/test/runtests.jl`，优先顺序：
-   `run_simulation traffic AON` -> `LLMProvider fake HTTP` -> `SimAgent tool loop` -> `team_graph run_simulation`。
+   `run_simulation traffic AON`（已完成）-> `LLMProvider fake HTTP`（已完成）-> `SimAgent tool loop`（已完成）-> `team_graph run_simulation`（待办）。
 2. 给 planner/study handoff 增加最小 regression：覆盖 `create_plan -> build_study -> run_study_plan`，并确认参数语义没有被丢弃。
 3. 给 `trace` / `replay` / `evals` / `ai_runs` 各加一个不依赖真实 LLM 的最小测试。
 4. 将 `scripts/probe_ai_*.jl` 标注为 regression / diagnostic / external 三类，避免把“能运行的诊断脚本”误当成稳定门禁。
