@@ -17,6 +17,9 @@ RUNS_DIR = STORE_DIR / "runs"
 
 ARXIV_API = "https://export.arxiv.org/api/query"
 GITHUB_API = "https://api.github.com"
+OPENALEX_API = "https://api.openalex.org/works"
+CROSSREF_API = "https://api.crossref.org/works"
+S2_API = "https://api.semanticscholar.org/graph/v1/paper/search"
 
 DEFAULT_PAPER_DAYS = 14
 DEFAULT_PAPER_MAX_PER_QUERY = 40
@@ -80,6 +83,17 @@ ARXIV_QUERIES = [
         ),
         "categories": ["cs.NI", "cs.PF"],
     },
+]
+
+# Plain keyword queries for OpenAlex / Crossref / Semantic Scholar
+# (these APIs don't support arXiv fielded syntax).
+PAPER_KEYWORD_QUERIES = [
+    {"id": "kw_leo_network", "name": "LEO 卫星网络", "q": "LEO satellite constellation network"},
+    {"id": "kw_isl", "name": "星间链路", "q": "inter-satellite link"},
+    {"id": "kw_routing", "name": "卫星路由", "q": "satellite network routing"},
+    {"id": "kw_topology", "name": "星座拓扑", "q": "satellite constellation topology"},
+    {"id": "kw_traffic", "name": "流量/时延", "q": "LEO satellite latency throughput"},
+    {"id": "kw_sim", "name": "星座仿真", "q": "satellite network simulation emulation"},
 ]
 
 GITHUB_QUERIES = [
