@@ -1,5 +1,7 @@
 # SatelliteSim Godot 客户端 — 进度跟踪
 
+> **范围声明**：本文档只跟踪 **Godot 客户端**的 milestone（M0–M10），不代表后端（Core/Orbit/Link/Metrics）、server、实验编排层或 AI 交互层的整体进度。判断全项目状态请结合 `docs/PLATFORM_STATUS_REPORT.md`、各子包 `test/` 及相关设计文档综合看。
+
 > 每个 milestone 一个 commit。状态变化时更新本文档 + 一个 commit。
 
 ## 当前进度
