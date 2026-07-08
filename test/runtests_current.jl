@@ -40,6 +40,7 @@ include(joinpath(@__DIR__, "test_helpers.jl"))
 
     @testset "Link" begin
         include(joinpath(@__DIR__, "link", "test_gsl.jl"))
+        include(joinpath(@__DIR__, "link", "test_rain_attenuation.jl"))
         include(joinpath(@__DIR__, "test_isl_constraints.jl"))
     end
 

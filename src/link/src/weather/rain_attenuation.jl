@@ -244,28 +244,52 @@ end
 """
     effective_path_length_km(rp::RainParameters) -> Float64
 
-ITU-R P.618 有效路径长度（LE, km），含水平缩减因子 r。
+ITU-R P.618-13 §2.2.1 有效路径长度（L_E，km，对应 0.01% 超越概率），
+含**水平缩减因子** r_0.01 与**垂直调整因子** v_0.01。
 
-r = 1 / (1 + LS·γ_R / (0.78·LS + 1.05))   (θ > 5°)
-LE = LS · r
+# 算法（P.618-13 §2.2.1 step 4-7）
+- 步骤4 水平投影：`L_G = L_S · cos θ`
+- 步骤5 水平缩减因子：
+  `r_0.01 = 1 / (1 + 0.78·√(L_G·γ_R/f) − 0.38·(1 − e^(−2·L_G)))`
+- 步骤6 垂直调整因子（含纬度项 χ 与仰角项 ζ）：
+  `ζ = arctan((h_R − h_S) / (L_G·r_0.01))`
+  若 `ζ > θ`：`L_R = L_G·r_0.01 / cos θ`；否则 `L_R = (h_R − h_S) / sin θ`
+  `χ = 36 − |φ|`（|φ|<36°，否则 0）
+  `v_0.01 = 1 / (1 + √(sin θ)·(31·(1 − e^(−θ/(1+χ)))·√(L_R·γ_R)/f² − 0.45))`
+- 步骤7 有效路径长度：`L_E = L_R · v_0.01`
 
-对于仰角 < 5°，使用 P.618 §2.2.1.1 的低仰角修正。
+其中 f 为频率（GHz），θ 为仰角（度/弧度视式而定），φ 为地面站纬度（度），
+h_R 为雨顶高度，h_S 为地面站海拔（km）。
 """
 function effective_path_length_km(rp::RainParameters)::Float64
-    LS = slant_path_length_km(rp)
-    LS <= 0 && return 0.0
+    L_S = slant_path_length_km(rp)
+    L_S <= 0 && return 0.0
 
+    h_R = rain_height_km(rp.latitude_deg)
+    h_S = rp.altitude_km
+    θ_deg = rp.elevation_deg
+    θ = deg2rad(θ_deg)
+    f = rp.frequency_ghz
     γ_R = rain_specific_attenuation(rp)
 
-    # 水平缩减因子（P.618 §2.2.1.3）
-    if rp.elevation_deg > 5
-        r = 1 / (1 + LS * γ_R / (0.78 * LS + 1.05))
-    else
-        # 低仰角使用垂直缩减因子近似
-        r = 1 / (1 + LS * γ_R / (0.78 * LS + 1.05))
-    end
+    # 步骤4：水平投影长度 L_G
+    L_G = L_S * cos(θ)
 
-    return LS * r
+    # 步骤5：水平缩减因子 r_0.01
+    r = 1 / (1 + 0.78 * sqrt(L_G * γ_R / f) - 0.38 * (1 - exp(-2 * L_G)))
+
+    # 步骤6：垂直调整因子 v_0.01
+    #   ζ：从地面站看雨顶的仰角（对比链路仰角 θ 决定 L_R 取法）
+    ζ_deg = rad2deg(atan((h_R - h_S) / (L_G * r)))
+    L_R = ζ_deg > θ_deg ? (L_G * r / cos(θ)) : ((h_R - h_S) / sin(θ))
+    #   χ：纬度修正项
+    φ = abs(rp.latitude_deg)
+    χ = φ < 36 ? (36 - φ) : 0.0
+    v = 1 / (1 + sqrt(sin(θ)) *
+        (31 * (1 - exp(-(θ_deg / (1 + χ)))) * sqrt(L_R * γ_R) / f^2 - 0.45))
+
+    # 步骤7：有效路径长度 L_E = L_R · v_0.01
+    return L_R * v
 end
 
 # ════════════════════════════════════════════════════════════
@@ -275,23 +299,28 @@ end
 """
     rain_attenuation_db(rp::RainParameters; availability_pct) -> Float64
 
-ITU-R P.618 雨衰预测（dB）。
+ITU-R P.618-13 §2.2.1 雨衰预测（dB）。
 
 # 参数
-- `rp::RainParameters`: 雨衰参数（含频率/仰角/降雨率/纬度）
-- `availability_pct::Float64`: 可用度百分比（如 99.5 表示 99.5% 时间雨衰不超过此值）
+- `rp::RainParameters`: 雨衰参数（含频率/仰角/降雨率/纬度）。其中 `rain_rate_mm_h`
+  应为 0.01% 超越概率对应的点降雨率 R_0.01（即 P.837 给出的 R_0.01）。
+- `availability_pct::Float64`: 目标可用度百分比（如 99.9 表示 99.9% 时间雨衰不超过
+  返回值）。对应年度超越时间百分比 `p = 100 − availability_pct`（%）。
 
-# 算法（P.618 §2.2.1）
-1. γ_R = k·R^α  (比衰减)
-2. h_R = 雨顶高度
-3. LS = 斜路径长度
-4. LE = 有效路径长度（含缩减因子）
-5. A = γ_R · LE  (预测雨衰)
+# 算法（P.618-13 §2.2.1）
+1. γ_R = k·R_0.01^α  (比衰减，step 1)
+2. h_R = 雨顶高度      (step 2)
+3. L_S = 斜路径长度    (step 3)
+4. L_E = 有效路径长度（含水平缩减因子 r_0.01 + 垂直调整因子 v_0.01，step 4-7）
+5. A_0.01 = γ_R · L_E  (0.01% 超越概率雨衰，step 8)
+6. 其它百分比 p 的外推（step 9）：
+   `A_p = A_0.01 · (p/0.01)^(−(0.655 + 0.033·ln p − 0.045·ln A_0.01 − β(1−p)·sin θ))`
+   其中 β 由 p、纬度 φ、仰角 θ 决定：
+   - p ≥ 1% 或 |φ| ≥ 36°：β = 0
+   - 否则且 θ ≥ 25°：β = −0.005·(|φ| − 36)
+   - 否则：β = −0.005·(|φ| − 36) + 1.8 − 4.25·sin θ
 
-# 高可用度修正
-对于可用度 > 99%（即年度时间百分比 p < 1%），ITU-R 提供经验修正。
-本实现直接使用输入的降雨率（已对应某可用度），不做额外 p% 修正。
-如需 p% 转换，用户应先用 ITU-R P.837 将可用度转为对应降雨率。
+外推公式的有效范围为 0.001% ≤ p ≤ 5%，超出则按边界截断。
 
 # 返回
 雨衰（dB），晴空时为 0。
@@ -303,9 +332,29 @@ function rain_attenuation_db(
     rp.rain_rate_mm_h <= 0 && return 0.0
 
     γ_R = rain_specific_attenuation(rp)
-    LE = effective_path_length_km(rp)
+    L_E = effective_path_length_km(rp)
+    A_001 = γ_R * L_E            # step 8: 0.01% 超越概率雨衰
 
-    return γ_R * LE
+    # 目标超越时间百分比 p（%）：availability 99.99% ↔ p = 0.01%
+    p = 100.0 - availability_pct
+    # 基准点（0.01%）直接返回；A_0.01 非正时无可外推
+    (isapprox(p, 0.01; atol = 1e-9) || A_001 <= 0) && return A_001
+
+    # step 9: 从 A_0.01 外推到任意 p%（有效范围 0.001% ≤ p ≤ 5%）
+    p = clamp(p, 0.001, 5.0)
+    φ = abs(rp.latitude_deg)
+    θ = deg2rad(rp.elevation_deg)
+    if p >= 1.0 || φ >= 36
+        β = 0.0
+    elseif rp.elevation_deg >= 25
+        β = -0.005 * (φ - 36)
+    else
+        β = -0.005 * (φ - 36) + 1.8 - 4.25 * sin(θ)
+    end
+
+    exponent = -(0.655 + 0.033 * log(p) - 0.045 * log(A_001) -
+                 β * (1 - p) * sin(θ))
+    return A_001 * (p / 0.01)^exponent
 end
 
 # ════════════════════════════════════════════════════════════
