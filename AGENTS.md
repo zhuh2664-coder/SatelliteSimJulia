@@ -42,7 +42,8 @@ root project.
   `Pkg.activate("src/lab")`, so the `src/lab` subproject must be instantiated first
   (`julia --project=src/lab -e 'using Pkg; Pkg.instantiate()'`) or that line fails; once done,
   the suite reports 5/5.
-- `scripts/viz_demo.jl` currently errors in `SatelliteSimViz` `draw_coastlines!`
-  (`src/viz/src/earth.jl`): it iterates a `GeometryBasics.MultiLineString`, which the resolved
-  GeometryBasics/Makie version no longer supports. This is a viz-only (auxiliary) API-drift bug,
-  independent of the core simulation pipeline.
+- `julia --project=. scripts/viz_demo.jl` runs headless (CairoMakie) and writes 3 PNGs to
+  `outputs/viz/` (3D orbit snapshot, 3D route highlight, 2D ground track). Note: with current
+  GeometryBasics, `GeoMakie.coastlines()` returns `Vector{MultiLineString}` whose
+  `MultiLineString`/`LineString` are not directly iterable — access `.linestrings` then
+  `.points` (see `SatelliteSimViz` `draw_coastlines!` in `src/viz/src/earth.jl`).
