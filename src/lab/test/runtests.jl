@@ -248,6 +248,103 @@ end
         end
     end
 
+    @testset "AI SimAgent tool loop fake HTTP bridge" begin
+        # 复现 probe 的两轮工具循环：第 1 轮 fake server 返回 tool_call(list_available)，
+        # SimAgent 真实执行该工具，把结果作为 tool 消息回传；第 2 轮返回最终文本答案。
+        # handler 只按请求序号返回对应响应并捕获 body，全部断言放在主 task。
+        received = Vector{Dict{String,Any}}()
+        headers = Vector{Union{Nothing,String}}()
+        methods = String[]
+        targets = String[]
+
+        server = HTTP.serve!("127.0.0.1", 0; listenany = true) do request::HTTP.Request
+            push!(methods, request.method)
+            push!(targets, String(request.target))
+            push!(headers, HTTP.header(request, "Authorization"))
+            body = JSON.parse(String(request.body))
+            push!(received, body)
+
+            if length(received) == 1
+                # 第 1 轮：要求调用 list_available(propagators)
+                response = Dict(
+                    "choices" => [
+                        Dict(
+                            "message" => Dict(
+                                "content" => nothing,
+                                "tool_calls" => [
+                                    Dict(
+                                        "id" => "call_list_available_1",
+                                        "type" => "function",
+                                        "function" => Dict(
+                                            "name" => "list_available",
+                                            "arguments" => JSON.json(Dict("what" => "propagators")),
+                                        ),
+                                    ),
+                                ],
+                            ),
+                        ),
+                    ],
+                )
+                return HTTP.Response(200, ["Content-Type" => "application/json"], JSON.json(response))
+            elseif length(received) == 2
+                # 第 2 轮：工具结果已回传，返回最终答案
+                response = Dict(
+                    "choices" => [
+                        Dict("message" => Dict("content" => "传播器包括 fast/balanced/precise/tle_based。")),
+                    ],
+                )
+                return HTTP.Response(200, ["Content-Type" => "application/json"], JSON.json(response))
+            end
+            return HTTP.Response(500, JSON.json(Dict("error" => "unexpected request")))
+        end
+
+        session_id = "test_fake_openai_tool_loop_$(rand(UInt))"
+        try
+            port = HTTP.port(server)
+            provider = LLMProvider(
+                key = "fake-key",
+                model = "fake-model",
+                url = "http://127.0.0.1:$port/v1",
+                readtimeout_s = 5,
+            )
+            agent = SimAgent(provider; session_id = session_id)
+            reply = run_agent(agent, "列出可用传播器")
+
+            # 最终答案 + 工具循环发生
+            @test reply == "传播器包括 fast/balanced/precise/tle_based。"
+            @test length(received) == 2
+            @test count(m -> get(m, "role", "") == "tool", agent.messages) == 1
+
+            # 两轮请求都命中 OpenAI 兼容端点 + Authorization
+            @test methods == ["POST", "POST"]
+            @test targets == ["/v1/chat/completions", "/v1/chat/completions"]
+            @test headers == ["Bearer fake-key", "Bearer fake-key"]
+
+            # 第 1 轮请求格式：system + user 消息、tools 字段、tool_choice
+            first_body = received[1]
+            @test first_body["messages"][1]["role"] == "system"
+            @test first_body["messages"][2]["role"] == "user"
+            @test first_body["messages"][2]["content"] == "列出可用传播器"
+            @test first_body["tools"][1]["type"] == "function"
+            @test first_body["tool_choice"] == "auto"
+
+            # 第 2 轮请求：assistant tool_call + tool 结果消息（含真实工具输出 tle_based）
+            second_msgs = received[2]["messages"]
+            assistant_msg = second_msgs[end - 1]
+            tool_msg = second_msgs[end]
+            @test assistant_msg["role"] == "assistant"
+            @test assistant_msg["tool_calls"][1]["id"] == "call_list_available_1"
+            @test tool_msg["role"] == "tool"
+            @test tool_msg["tool_call_id"] == "call_list_available_1"
+            @test occursin("tle_based", tool_msg["content"])
+        finally
+            close(server)
+            session_dir = dirname(SessionMemory(session_id = session_id).transcript_path)
+            isdir(session_dir) && rm(session_dir; recursive = true, force = true)
+            clear_hooks!()
+        end
+    end
+
     @testset "Traffic bridge uses GroundStation positions" begin
         ground_stations = [
             GroundStation(
