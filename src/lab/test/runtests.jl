@@ -2,6 +2,7 @@ using SatelliteSimCore
 using SatelliteSimLab
 using SatelliteSimNet
 using JSON
+using HTTP
 using Test
 
 function _small_config(; name="lab-smoke")
@@ -161,6 +162,90 @@ end
         @test default_data["traffic_enabled"] == false
         @test default_data["traffic_demands"] == 0
         @test default_data["traffic_evaluation_ran"] == false
+    end
+
+    @testset "AI LLMProvider fake HTTP bridge" begin
+        # 起本地 fake server，拦截 OpenAI 兼容 /chat/completions 请求。
+        # handler 里不写 @test（它跑在 server 的 task 上，@testset 无法收集断言），
+        # 改为把请求四要素捕获到共享容器，chat() 返回后在主 task 里统一断言。
+        captured = Dict{String,Any}()
+
+        server = HTTP.serve!("127.0.0.1", 0; listenany = true) do request::HTTP.Request
+            captured["method"] = request.method
+            captured["target"] = String(request.target)
+            captured["authorization"] = HTTP.header(request, "Authorization")
+            captured["body"] = JSON.parse(String(request.body))
+
+            response = Dict(
+                "choices" => [
+                    Dict(
+                        "message" => Dict(
+                            "content" => "fake-ok",
+                            "tool_calls" => [
+                                Dict(
+                                    "id" => "call_1",
+                                    "type" => "function",
+                                    "function" => Dict(
+                                        "name" => "run_simulation",
+                                        "arguments" => JSON.json(Dict("duration_s" => 60)),
+                                    ),
+                                ),
+                            ],
+                        ),
+                    ),
+                ],
+            )
+            return HTTP.Response(200, ["Content-Type" => "application/json"], JSON.json(response))
+        end
+
+        try
+            port = HTTP.port(server)
+            provider = LLMProvider(
+                key = "fake-key",
+                model = "fake-model",
+                url = "http://127.0.0.1:$port/v1",
+                readtimeout_s = 5,
+            )
+
+            messages = [Dict("role" => "user", "content" => "hello fake")]
+            tools = [
+                Dict(
+                    "name" => "run_simulation",
+                    "description" => "fake tool",
+                    "input_schema" => Dict(
+                        "type" => "object",
+                        "properties" => Dict("duration_s" => Dict("type" => "integer")),
+                        "required" => ["duration_s"],
+                    ),
+                ),
+            ]
+
+            message = chat(provider, messages, tools)
+
+            # 响应解析
+            @test message.content == "fake-ok"
+            @test length(message.tool_calls) == 1
+            @test message.tool_calls[1].id == "call_1"
+            @test message.tool_calls[1].name == "run_simulation"
+            @test message.tool_calls[1].args["duration_s"] == 60
+
+            # 请求格式 + Authorization header（主 task 断言，可靠计入 testset）
+            @test captured["method"] == "POST"
+            @test captured["target"] == "/v1/chat/completions"
+            @test captured["authorization"] == "Bearer fake-key"
+
+            body = captured["body"]
+            @test body["model"] == "fake-model"
+            @test body["messages"][1]["role"] == "user"
+            @test body["messages"][1]["content"] == "hello fake"
+
+            # tools 字段（OpenAI function 格式）
+            @test body["tools"][1]["type"] == "function"
+            @test body["tools"][1]["function"]["name"] == "run_simulation"
+            @test body["tool_choice"] == "auto"
+        finally
+            close(server)
+        end
     end
 
     @testset "Traffic bridge uses GroundStation positions" begin
