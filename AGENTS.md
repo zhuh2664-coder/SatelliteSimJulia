@@ -42,6 +42,15 @@ root project.
   `Pkg.activate("src/lab")`, so the `src/lab` subproject must be instantiated first
   (`julia --project=src/lab -e 'using Pkg; Pkg.instantiate()'`) or that line fails; once done,
   the suite reports 5/5.
+- `julia --project=. scripts/paper_experiments.jl` runs the paper's quantitative experiments
+  (constellation-scale sweep, TwoBody-vs-J2 divergence, three-way gradient check, and an
+  Enzyme+Adam coverage optimization) and writes figures to `paper/figures/` + numbers to
+  `paper/data/results.txt`. Note: the project's `coverage_loss` is Enzyme-friendly but NOT
+  ForwardDiff-friendly (its `SoftCoverage` struct has concrete `Float64` fields), so optimize
+  it via `optimize_coverage` (Enzyme), not `ForwardDiff.gradient`.
+- The LaTeX paper lives in `paper/` (gitignored dir, force-added). Build with
+  `cd paper && latexmk -pdf main.tex` (needs `texlive-latex-extra`; uses the `article` class,
+  no external `.bib`). Figures must be generated first via the two scripts above.
 - `julia --project=. scripts/viz_demo.jl` runs headless (CairoMakie) and writes 3 PNGs to
   `outputs/viz/` (3D orbit snapshot, 3D route highlight, 2D ground track). Note: with current
   GeometryBasics, `GeoMakie.coastlines()` returns `Vector{MultiLineString}` whose
