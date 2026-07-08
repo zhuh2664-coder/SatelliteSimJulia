@@ -524,8 +524,10 @@ end
 
 旧的三参数入口保持 AON shortest-delay 语义。本入口用于把 Net 路由算法
 落到正式的 `TrafficAssignment` 和 `LinkLoadSample` 产物中：
-`DijkstraRouting`/`ECMPRouting` 走 `route(...)` 分派，`MinLoadRouting`
-按时间步内已分配负载逐流选择 min-load path。
+`DijkstraRouting`/`ECMPRouting`/`PINNRoutingAlgorithm` 走 `route(...)` 分派
+（PINN 用预测时延选路、Dijkstra 重建具体转发路径），`MinLoadRouting`
+按时间步内已分配负载逐流选择 min-load path。`CGRRouting` 需时间展开的接触
+计划语义，暂不支持（见 `_assert_aon_algorithm_supported`）。
 """
 function evaluate_traffic(
     demands::Vector{TrafficDemand},
@@ -604,12 +606,10 @@ function _assert_aon_algorithm_supported(algorithm::AbstractRoutingAlgorithm)::N
             "CGRRouting requires CGRContactPlan/time-expanded contact semantics and cannot be used " *
             "with Traffic AON RoutingInput. Add a CGR-specific traffic adapter before using it here.",
         ))
-    elseif algorithm isa PINNRoutingAlgorithm
-        throw(ArgumentError(
-            "PINNRoutingAlgorithm currently predicts latency without returning a satellite path, " *
-            "so it cannot generate Traffic AON LinkLoadSample. Add path semantics before using it here.",
-        ))
     end
+    # PINNRoutingAlgorithm 现在会用 Dijkstra 在同一邻接矩阵上重建具体路径
+    # （见 net/pinn_routing.jl route），因此可正常产出 AON LinkLoadSample：
+    # 路径来自重建结果，链路负载沿该路径累加。
     return nothing
 end
 

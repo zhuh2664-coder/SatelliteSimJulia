@@ -178,7 +178,7 @@ end
     @test isempty(evaluation.link_loads_by_time[1])
 end
 
-@testset "AON rejects algorithms without path semantics" begin
+@testset "AON rejects only CGR (needs contact-plan semantics)" begin
     grid = traffic_aon_grid()
     isl_series = traffic_aon_isl_series(grid, Tuple{Int,Int}[(1, 2)])
     access_table = traffic_aon_access_table(grid, Dict{Int,Union{Nothing,Int}}(1 => 1, 2 => 2))
@@ -190,8 +190,77 @@ end
         end_elapsed_s = 60,
         rate_mbps = 100.0,
     )
-    fake_pinn = PINNRoutingAlgorithm(nothing, (_, __, ___, ____) -> 1.0)
 
-    @test_throws ArgumentError evaluate_traffic(TrafficDemand[demand], isl_series, access_table, fake_pinn)
     @test_throws ArgumentError evaluate_traffic(TrafficDemand[demand], isl_series, access_table, CGRRouting())
+end
+
+@testset "AON supports PINN routing via Dijkstra path reconstruction" begin
+    grid = traffic_aon_grid()
+    # 三角拓扑：1→2→3 时延 2.0 优于直连 1→3 时延 5.0
+    edges = Tuple{Int,Int}[(1, 2), (2, 3), (1, 3)]
+    delays = Dict((1, 2) => 1.0, (2, 3) => 1.0, (1, 3) => 5.0)
+    links = [
+        TRAFFIC_AON_LINK.SatelliteLink(
+            id = link_id,
+            endpoint_a = TRAFFIC_AON_LINK.LinkEndpoint(src),
+            endpoint_b = TRAFFIC_AON_LINK.LinkEndpoint(dst),
+            delay_s = delays[(src, dst)],
+            capacity_mbps = 100.0,
+        )
+        for (link_id, (src, dst)) in enumerate(edges)
+    ]
+    topology = TRAFFIC_AON_LINK.ConstellationTopology("pinn-test", links)
+    offsets = timeslot_offsets(grid)
+    samples_by_time = [
+        [
+            ISLPhysicalLinkSample(
+                link_id = link_id,
+                time_index = time_index,
+                elapsed_s = offsets[time_index],
+                endpoint_a_id = src,
+                endpoint_b_id = dst,
+                distance_km = 1000.0,
+                propagation_delay_s = delays[(src, dst)],
+                capacity_mbps = 100.0,
+                state = LinkAvailable(),
+                line_of_sight = true,
+            )
+            for (link_id, (src, dst)) in enumerate(edges)
+        ]
+        for time_index in 1:time_count(grid)
+    ]
+    isl_series = ISLPhysicalLinkSeries(topology, grid, samples_by_time)
+    access_table = traffic_aon_access_table(grid, Dict{Int,Union{Nothing,Int}}(1 => 1, 3 => 3))
+    demand = TrafficDemand(
+        id = 1,
+        source_ground_id = 1,
+        destination_ground_id = 3,
+        start_elapsed_s = 0,
+        end_elapsed_s = 60,
+        rate_mbps = 100.0,
+    )
+    # PINN 预测固定时延；路径由 Dijkstra 在同一邻接矩阵上重建
+    pinn = PINNRoutingAlgorithm(nothing, (_, __, ___, ____) -> 42.0)
+
+    evaluation = evaluate_traffic(TrafficDemand[demand], isl_series, access_table, pinn)
+
+    @test evaluation isa TrafficEvaluation
+    assignment = only(evaluation.assignments_by_time[1])
+    @test assignment.route.reachable
+    @test assignment.route.reason == :routing_algorithm
+    # Dijkstra 重建的最短时延路径（不是直连高时延边）
+    @test assignment.route.satellite_path == [1, 2, 3]
+    @test isapprox(
+        assignment.offered_mbps,
+        assignment.carried_mbps + assignment.dropped_mbps;
+        atol = TRAFFIC_AON_ATOL,
+    )
+    @test isapprox(assignment.carried_mbps, 100.0; atol = TRAFFIC_AON_ATOL)
+    # 负载落在 (1,2) 和 (2,3) 两条边上
+    isl_loads = sort(
+        filter(load -> load.link_type == :isl, evaluation.link_loads_by_time[1]);
+        by = load -> load.link_id,
+    )
+    @test [load.link_id for load in isl_loads] == [1, 2]
+    @test all(load -> isapprox(load.load_mbps, 100.0; atol = TRAFFIC_AON_ATOL), isl_loads)
 end
