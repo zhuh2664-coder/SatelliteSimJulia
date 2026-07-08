@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "satellitesimjulia-research": {
+      "command": "python3",
+      "args": [
+        "scripts/research_mcp_server.py"
+      ],
+      "env": {
+        "GH_TOKEN": "${env:GH_TOKEN}"
+      }
+    }
+  }
+}
