@@ -36,6 +36,9 @@ notebooks/
 benchmark_suite/
 research_store/
 
+# Illustration/media assets (kept on disk, not versioned)
+assets/
+
 # Data (not source code)
 data/
 

@@ -15,6 +15,7 @@
 | [`VALIDATION_LADDER.md`](VALIDATION_LADDER.md) | L0–L6 分层验证阶梯：从 syntax/load 到 stress/nightly，含提交前推荐组合 | 验证命令的权威参考 |
 | [`SatelliteSimJulia_MCP_TOOLS.md`](SatelliteSimJulia_MCP_TOOLS.md) | MCP 安全工具面契约：默认只读两个 safe tools，硬边界清单 | 改 MCP/AgentOS 面前必读 |
 | [`AI_ORCHESTRATION.md`](AI_ORCHESTRATION.md) | AI 编排层产品级架构验收参考：能力矩阵、artifact 契约、CLI/API 示例、遗留 gap | 英文；描述的是设计目标与验收门 |
+| [`../scripts/README.md`](../scripts/README.md) | scripts/ 索引：37 个 probe 按 regression / opt-in / diagnostic 三档分类 + 维护纪律 | 在 scripts 目录下，随脚本演进维护 |
 
 ## 二、状态快照（带日期，时效有限）
 
