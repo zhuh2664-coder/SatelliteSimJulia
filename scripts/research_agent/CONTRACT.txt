@@ -1,0 +1,57 @@
+SatelliteSimJulia Research Agent — MCP tool contract (v0.1)
+
+Purpose
+  Collect and serve LEO / satellite-network papers (arXiv) and related GitHub repos
+  for other agents via MCP tools.
+
+Store (local, gitignored)
+  research_store/
+    papers.jsonl
+    repos.jsonl
+    meta.json
+    runs/run_*.json
+
+CLI
+  python3 scripts/research_collect.py status
+  python3 scripts/research_collect.py collect [--days 14] [--papers-only|--repos-only]
+  python3 scripts/research_collect.py search-papers "routing LEO" --limit 10
+  python3 scripts/research_collect.py search-repos "hypatia" --limit 10
+  python3 scripts/research_collect.py latest --kind all --limit 10
+  python3 scripts/research_collect.py get 2403.19736
+  python3 scripts/research_collect.py get snkas/hypatia --kind repo
+
+MCP server
+  python3 scripts/research_mcp_server.py
+  (stdio JSON-RPC; Content-Length framed)
+
+Tools
+  research_status            {} -> store counts / last_collect_at
+  research_collect           {days?, max_per_query?, per_page?, papers?, repos?}
+                             side effect: writes research_store
+  research_search_papers     {query?, limit?, since?}
+  research_search_repos      {query?, limit?, since?}
+  research_get_latest        {kind?: papers|repos|all, limit?}
+  research_get_item          {id, kind?: auto|paper|repo}
+
+Auth
+  GitHub: set GH_TOKEN or GITHUB_TOKEN in the environment (optional but recommended).
+  arXiv: no key required.
+
+Cursor mcp.json example (project or user)
+  {
+    "mcpServers": {
+      "satellitesimjulia-research": {
+        "command": "python3",
+        "args": ["scripts/research_mcp_server.py"],
+        "cwd": "/Users/zhuhai/Research/SatelliteSimJulia",
+        "env": {
+          "GH_TOKEN": "${env:GH_TOKEN}"
+        }
+      }
+    }
+  }
+
+Non-goals (v0.1)
+  - No upstream issue/PR tracking (deferred; user chose papers+repos only)
+  - No PDF download / full-text index
+  - No push to remote GitHub
