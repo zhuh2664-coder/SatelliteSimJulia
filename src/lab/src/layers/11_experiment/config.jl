@@ -85,7 +85,13 @@ function ExperimentConfig(;
     # 先解析 tspan（流量翻译依赖它）
     resolved_tspan = resolve_time_horizon(tspan, ctx)
     # 流量翻译：依赖 ground 数据 + tspan（端点不足时降级为空需求）
-    ground_ids = isempty(ground_pairs) ? Int[] : unique!(sort(vcat(first.(ground_pairs), last.(ground_pairs))))
+    ground_ids = if !isempty(ground_pairs)
+        unique!(sort(vcat(first.(ground_pairs), last.(ground_pairs))))
+    elseif !isempty(ground_stations)
+        unique!(sort([station.id for station in ground_stations]))
+    else
+        Int[]
+    end
     tctx = TrafficResolutionContext(base=ctx, ground_ids=ground_ids, tspan=resolved_tspan)
     resolved_traffic = traffic isa Vector{TrafficDemand} ? traffic :
                        traffic isa TrafficIntent ? resolve_traffic_intent(traffic, tctx) :

@@ -48,7 +48,7 @@ _make_propagator(el::KeplerianElements, ::J4Propagator) = init(Val(:J4), el)
 `(N_sat, N_time, 3)` 矩阵，`pos[i, j, :]` 为第 i 颗卫星第 j 个时间步的 (x, y, z) km
 """
 function propagate_positions(
-    elems::Vector{KeplerianElements},
+    elems::Vector{<:KeplerianElements},
     tspan::Vector{Float64};
     propagator=TwoBodyPropagator(),
 )
@@ -75,7 +75,7 @@ end
 
 传播并转 ECEF（用 SatelliteToolbox 官方 r_eci_to_ecef，含岁差章动极移修正）。
 """
-function propagate_to_ecef(elems::Vector{KeplerianElements}, tspan::Vector{Float64};
+function propagate_to_ecef(elems::Vector{<:KeplerianElements}, tspan::Vector{Float64};
                             propagator=TwoBodyPropagator())
     N = length(elems)
     M = length(tspan)
@@ -108,12 +108,29 @@ function propagate_to_ecef(elems::Vector{KeplerianElements}, tspan::Vector{Float
 end
 
 """
+    propagate_to_ecef(elems, time_grid; propagator=TwoBodyPropagator()) -> Array{Float64,3}
+
+设计星座入口：用标准时间网格驱动 Keplerian 传播器，输出 ECEF 位置矩阵。
+"""
+function propagate_to_ecef(
+    elems::Vector{<:KeplerianElements},
+    time_grid::SimulationTimeGrid;
+    propagator=TwoBodyPropagator(),
+)
+    return propagate_to_ecef(
+        elems,
+        Float64.(timeslot_offsets(time_grid));
+        propagator = propagator,
+    )
+end
+
+"""
     propagate_to_ecef_with_vel(elems, tspan; kwargs...) -> (pos, vel)
 
 传播并转 ECEF，同时返回位置 (N×M×3) 和速度 (N×M×3) km/(km/s)。
 速度已包含地球自转修正。
 """
-function propagate_to_ecef_with_vel(elems::Vector{KeplerianElements}, tspan::Vector{Float64};
+function propagate_to_ecef_with_vel(elems::Vector{<:KeplerianElements}, tspan::Vector{Float64};
                                      propagator=TwoBodyPropagator())
     N = length(elems)
     M = length(tspan)

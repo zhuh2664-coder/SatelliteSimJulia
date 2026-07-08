@@ -4,10 +4,10 @@
 using Test
 using Graphs
 using Random: MersenneTwister
-using SatelliteSimMetrics
+using SatelliteSimJulia
 # 注意：degree_histogram / betweenness_centrality 等与 Graphs.jl 重名，
-# 用 SatelliteSimMetrics 限定命名空间避免歧义。
-const M = SatelliteSimMetrics
+# 用 SatelliteSimJulia 限定命名空间避免歧义。
+const M = SatelliteSimJulia
 
 @testset "图论指标：路径图 P5 (1-2-3-4-5)" begin
     g = path_graph(5)

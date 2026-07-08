@@ -95,6 +95,7 @@ function demo()
       下一步：
         • run_examples()  — 跑 3 个预编排实验
         • agent_repl(LLMProvider())  — AI 对话仿真
+        • voice_agent_repl(LLMProvider())  — 语音友好对话
         • optimize_coverage(loss, x0)  — 可微优化
 
       文档：docs/PLATFORM_STATUS_REPORT.md
