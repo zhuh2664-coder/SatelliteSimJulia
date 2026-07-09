@@ -20,7 +20,7 @@ function demo()
     println("""
     ╔══════════════════════════════════════════════════╗
     ║         SatelliteSimJulia 一键演示               ║
-    ║    LEO 卫星星座仿真 + 网络 + 可微优化 + AI        ║
+    ║    LEO 卫星星座仿真 + 网络 + Lab 交互         ║
     ╚══════════════════════════════════════════════════╝
     """)
 
@@ -74,18 +74,18 @@ function demo()
         end
     end
 
-    # ── 步骤 6：可微优化展示 ──
+    # ── 步骤 6：传播器对比展示 ──
     println("\n【步骤 6】多传播器对比展示")
     pos_j2 = propagate_positions(elems, [0.0, 60.0]; propagator=J2Propagator())
     drift = sqrt(sum(abs2, positions_at_last(pos) .- positions_at_last(pos_j2)))
     @printf("  ✓ TwoBody vs J2 位置差: %.2f km\n", drift)
-    @printf("  ✓ 可用传播器: TwoBody / J2 / J4 / SGP4 / HPOP\n")
+    println("  ✓ 日常仿真可通过 ExperimentConfig 选择传播器意图")
 
     # ── 步骤 7：AI 工具展示 ──
     println("\n【步骤 7】AI 适配展示")
     schemas = build_tool_schemas()
     @printf("  ✓ AI 工具数: %d (run_simulation/scan_parameter/compare/list)\n", length(schemas))
-    println("  ✓ 启动 AI 助手: agent_repl(LLMProvider())")
+    println("  ✓ 显式入口: SatelliteSimLab.agent_repl(SatelliteSimLab.LLMProvider())")
 
     elapsed = time() - t0
     println("""
@@ -94,11 +94,13 @@ function demo()
 
       下一步：
         • run_examples()  — 跑 3 个预编排实验
-        • agent_repl(LLMProvider())  — AI 对话仿真
-        • voice_agent_repl(LLMProvider())  — 语音友好对话
-        • optimize_coverage(loss, x0)  — 可微优化
+        • SatelliteSimLab.agent_repl(SatelliteSimLab.LLMProvider())
+          — 显式启用 AI 对话仿真
+        • SatelliteSimLab.voice_agent_repl(SatelliteSimLab.LLMProvider())
+          — 显式启用语音友好对话
+        • 高级优化请显式导入 SatelliteSimOpt；它不属于根包 API
 
-      文档：docs/PLATFORM_STATUS_REPORT.md
+      架构与入口说明：phase.md
     ════════════════════════════════════════════════════
     """)
 end

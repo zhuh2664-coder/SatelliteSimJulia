@@ -49,6 +49,7 @@ REFACTOR_STATUS.md
 docs/
 paper/
 *.md
+!phase.md
 !/README.md
 实施手册.md
 调研.md

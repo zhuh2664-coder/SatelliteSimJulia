@@ -41,6 +41,10 @@ using Test
         # 编排层按时间片取位置时使用 SubArray；链接口必须接受该零拷贝视图。
         results_view = evaluate_isl_batch(@view(pos[:, 1, :]), links; constraints=LEO_DEFAULTS)
         @test length(results_view) == 2
+
+        # GSL 同样必须接受编排层传入的零拷贝时间片视图。
+        gsl = evaluate_gsl_batch(@view(pos[:, 1, :]), [(0.0, 0.0, 0.0)]; constraints=LEO_DEFAULTS)
+        @test size(gsl[1]) == (6, 1)
     end
 
     @testset "天气/雨衰模型存在性" begin

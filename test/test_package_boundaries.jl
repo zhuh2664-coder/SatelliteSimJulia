@@ -8,6 +8,7 @@ using TOML
 using SatelliteSimNet
 using SatelliteSimTraffic
 using SatelliteSimSecurity
+using SatelliteSimLab
 
 const _REFACTOR_ROOT = normpath(joinpath(@__DIR__, ".."))
 
@@ -21,10 +22,17 @@ end
     @test isdefined(SatelliteSimTraffic, :TrafficDemand)
     @test isdefined(SatelliteSimSecurity, :AbstractAttack)
 
-    # 高级功能不应因 `using SatelliteSimJulia` 而被隐式载入。
+    # 根包只暴露日常编排门面；高级、交互和低层能力均须显式导入。
     @test !isdefined(SatelliteSimJulia, :aon_throughput)
     @test !isdefined(SatelliteSimJulia, :propagate_with_gradient)
     @test !isdefined(SatelliteSimJulia, :AbstractAttack)
+    @test !isdefined(SatelliteSimJulia, :agent_repl)
+    @test !isdefined(SatelliteSimJulia, :LLMProvider)
+    @test !isdefined(SatelliteSimJulia, :GridPlusStrategy)
+    @test isdefined(SatelliteSimJulia, :run_experiment)
+    @test isdefined(SatelliteSimJulia, :run_study)
+    @test isdefined(SatelliteSimLab, :agent_repl)
+    @test isdefined(SatelliteSimLab, :LLMProvider)
 
     # 这些层各自声明下游依赖，而不是把 Core 当作万能转发站。
     @test !haskey(_package_dependencies("net"), "SatelliteSimCore")

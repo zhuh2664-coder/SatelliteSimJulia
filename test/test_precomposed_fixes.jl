@@ -3,6 +3,7 @@
 using Test
 using SatelliteSimLab
 using SatelliteSimNet: build_routing_graph
+using SatelliteSimTraffic: TrafficDemand
 using SatelliteSimCore: WalkerConstellationConfig, TwoBodyPropagator, J2Propagator,
     GroundStation, GeodeticPosition, LEO_DEFAULTS
 
