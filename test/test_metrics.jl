@@ -29,6 +29,14 @@ using SatelliteSimCore: compute_coverage, compute_latency,
         @test isempty(result.covered_users)
     end
 
+    @testset "覆盖率 — 无用户" begin
+        gsl = zeros(Bool, 3, 0)
+        result = compute_coverage(gsl, String[])
+        @test result.coverage_ratio ≈ 0.0
+        @test isempty(result.covered_users)
+        @test result.total_users == 0
+    end
+
     @testset "覆盖率 — 用户数不匹配" begin
         @test_throws ArgumentError compute_coverage(trues(3, 2), ["u1"])
     end

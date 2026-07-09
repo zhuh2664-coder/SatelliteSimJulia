@@ -257,6 +257,7 @@ function _tool_run_simulation(args::AbstractDict)
         constellation = WalkerConstellationConfig(T=T, P=P, F=F, alt_km=alt, inc_deg=inc),
         tspan = tspan,
         topology_strategy = strategy,
+        propagator = propagator,
     )
     result = run_experiment(config)
 
