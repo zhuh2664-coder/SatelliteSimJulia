@@ -8,6 +8,9 @@
 #   SATSIM_RUN_LEGACY=1 julia --project=. test/runtests_legacy_runnable.jl  # 活跃 API 对齐子集
 #   SATSIM_RUN_LEGACY=1 julia --project=. test/runtests.jl
 #
+# 归档 API 段（StarPerf/testbed/旧 Satellite 模型）默认跳过；
+# 尝试运行：SATSIM_RUN_LEGACY=1 SATSIM_RUN_LEGACY_ARCHIVE=1 julia --project=. test/runtests_legacy.jl
+#
 # 直接运行本文件且未设置 SATSIM_RUN_LEGACY=1 时，仅输出跳过说明。
 
 push!(LOAD_PATH, "@stdlib")
