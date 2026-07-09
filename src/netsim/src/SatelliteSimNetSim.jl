@@ -3,14 +3,10 @@
 
 Packet-level discrete-event network simulation for SatelliteSimJulia.
 
-This package is the Phase-1 bridge between the analytical network layer
-(`SatelliteSimNet` / AoN traffic) and ns-3-style fidelity:
+Phase 1: DropTail queues + multi-hop path DES (`simulate_path`)
+Phase 2: ContactPlan / CGR, FlowMonitor, UDP helpers, simplified TCP Reno
 
-- Reuses analytical ISL topology and per-hop propagation delays
-- Adds queueing delay, drops, and latency distributions via ConcurrentSim
-- Kept separate from the differentiable optimization path (DES is not AD-safe)
-
-See `simulate_path` and `demo_netsim`.
+Kept separate from the differentiable optimization path (DES is not AD-safe).
 """
 module SatelliteSimNetSim
 
@@ -18,12 +14,18 @@ using ConcurrentSim
 using ResumableFunctions
 using Random
 using Statistics
+using Printf: @printf
 
 include("core/packet.jl")
 include("queue/queue.jl")
 include("queue/drop_tail.jl")
 include("des_path.jl")
 include("bridge_analytical.jl")
+include("dtn/contact_plan.jl")
+include("dtn/cgr.jl")
+include("monitor/flow_monitor.jl")
+include("transport/udp.jl")
+include("transport/tcp_reno.jl")
 include("demo.jl")
 
 end # module
