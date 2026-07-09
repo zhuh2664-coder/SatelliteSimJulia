@@ -1,13 +1,12 @@
 # test/lab/test_ground_traffic_precomposed.jl — Lab 地面端到端动态流量编排回归
 
-using SatelliteSimJulia
 using Test
 
 const LAB_GROUND_TRAFFIC_ATOL = 1e-9
 
 struct LabDiamondStrategy <: AbstractTopologyStrategy end
 
-function SatelliteSimJulia.generate_topology(::LabDiamondStrategy, T::Int, P::Int)
+function SatelliteSimNet.generate_topology(::LabDiamondStrategy, T::Int, P::Int)
     return TopologyOutput(Tuple{Int,Int}[], Tuple{Int,Int}[(1, 2), (2, 4), (1, 3), (3, 4)], "lab-diamond")
 end
 
@@ -16,7 +15,7 @@ struct LabTimeIndexedStrategy <: AbstractTopologyStrategy
     time_index::Int
 end
 
-function SatelliteSimJulia.generate_topology(strategy::LabTimeIndexedStrategy, T::Int, P::Int)
+function SatelliteSimNet.generate_topology(strategy::LabTimeIndexedStrategy, T::Int, P::Int)
     return TopologyOutput(Tuple{Int,Int}[], strategy.links_by_time[strategy.time_index], "lab-time-indexed")
 end
 

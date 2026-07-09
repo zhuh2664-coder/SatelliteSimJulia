@@ -1,6 +1,5 @@
 # test/traffic/test_traffic_bridge.jl — 裸数组流量桥接回归测试
 
-using SatelliteSimJulia
 using Test
 
 const TRAFFIC_BRIDGE_ATOL = 1e-9

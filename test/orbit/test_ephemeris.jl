@@ -1,10 +1,9 @@
 # test/orbit/test_ephemeris.jl — 星历容器不变量回归测试
 
-using SatelliteSimJulia
 using Test
 
 const ORBIT_EPHEMERIS_ATOL = 1e-9
-const ORBIT_EPHEMERIS = SatelliteSimJulia.SatelliteSimCore.SatelliteSimOrbit
+const ORBIT_EPHEMERIS = SatelliteSimOrbit
 
 orbit_ephemeris_cartesian(x::Real = 7000.0) = CartesianState(ECEF, (Float64(x), 0.0, 0.0), (0.0, 7.5, 0.0))
 

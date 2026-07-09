@@ -9,6 +9,13 @@ push!(LOAD_PATH, "@stdlib")
 
 using SatelliteSimJulia
 using SatelliteSimFoundation
+using SatelliteSimOrbit
+using SatelliteSimLink
+using SatelliteSimNet
+using SatelliteSimTraffic
+using SatelliteSimCore
+using SatelliteSimLab
+using SatelliteSimViz
 using Dates
 using Test
 

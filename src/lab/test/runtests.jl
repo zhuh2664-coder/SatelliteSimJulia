@@ -84,22 +84,28 @@ end
         ensure_default_ai_tools!()
         @test "run_simulation" in registered_ai_tools()
 
+        # Keep the package test self-contained: the production catalog's live
+        # Celestrak file is intentionally ignored and not guaranteed to exist
+        # in a fresh clone.  This small checked-in fixture exercises the same
+        # literal/file TLE path without a network or local data dependency.
+        tle_fixture = joinpath(@__DIR__, "fixtures", "starlink_sample.tle")
         result_json = execute_tool(
             "run_simulation",
             Dict(
                 "constellation" => "starlink_tle",
+                "tle" => tle_fixture,
                 "topology" => "balanced",
                 "propagator" => "tle_based",
                 "duration_s" => 60,
                 "steps" => 3,
-                "max_sats" => 8,
+                "max_sats" => 6,
             ),
         )
         result = JSON.parse(result_json)
         @test !haskey(result, "error")
         @test result["propagator"] == "tle_based"
-        @test result["n_satellites"] == 8
-        @test result["tle_source"] == 8
+        @test result["n_satellites"] == 6
+        @test result["tle_source"] == 6
         @test isfinite(result["avg_latency_ms"])
     end
 
