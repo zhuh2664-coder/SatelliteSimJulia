@@ -1,84 +1,36 @@
-# ===== LLM Provider — 统一 LLM 调用接口 =====
-# 整合自 project_docs/simagentcli + project_docs/cli 两份原型
-# 支持 OpenAI 格式（DeepSeek/GPT/Claude via proxy）
-#
-# 这是 AI 适配层的"最后一块拼图"——把 lab 包的 study 体系接到 LLM
+# ===== LLM Provider — OpenAI 兼容实现 =====
+# Phase 3：HTTP/JSON 下沉至此文件。
+# ToolCall/AssistantMessage/AbstractLLMProvider 定义在 llm_provider_trait.jl（先 include）。
 
 using HTTP
 using JSON
 
-export LLMProvider, ToolCall, AssistantMessage,
-       chat, build_tool_schemas, llm_tool_schema
+export LLMProvider, OpenAICompatibleProvider, chat, build_tool_schemas
 
 """
-    LLMProvider
+    OpenAICompatibleProvider <: AbstractLLMProvider
 
-LLM 提供者配置。兼容 OpenAI 格式的 API（DeepSeek/GPT/任何 OpenAI 兼容端点）。
+兼容 OpenAI 格式的 HTTP provider（DeepSeek / GPT / Claude proxy）。
+HTTP 依赖封装在此类型，不影响 MockProvider/CLIProvider 的加载。
 """
-struct LLMProvider
+struct OpenAICompatibleProvider <: AbstractLLMProvider
     api_key::String
     model::String
     base_url::String
 end
 
-"""
-    LLMProvider(; key, model, url)
-
-构造 LLM Provider。默认从环境变量读 DeepSeek API key。
-
-```julia
-provider = LLMProvider()  # 自动读 DEEPSEEK_API_KEY
-provider = LLMProvider(key="sk-xxx", model="gpt-4o", url="https://api.openai.com/v1")
-```
-"""
-function LLMProvider(;
+function OpenAICompatibleProvider(;
     key::String = get(ENV, "DEEPSEEK_API_KEY", ""),
     model::String = "deepseek-chat",
     url::String = "https://api.deepseek.com/v1",
 )
-    isempty(key) && @warn "LLM API key 为空，设置 DEEPSEEK_API_KEY 或传 key= 参数"
-    return LLMProvider(key, model, url)
+    isempty(key) && @warn "LLM API key 为空，请设置 DEEPSEEK_API_KEY 或传 key= 参数"
+    return OpenAICompatibleProvider(key, model, url)
 end
 
-"""
-    ToolCall
-
-LLM 返回的工具调用请求。
-"""
-struct ToolCall
-    id::String
-    name::String
-    args::Dict{String,Any}
-end
-
-"""
-    AssistantMessage
-
-LLM 返回的助手消息（可能包含文本 + 工具调用）。
-"""
-struct AssistantMessage
-    content::String
-    tool_calls::Vector{ToolCall}
-end
-
-"""
-    chat(provider, messages, tools) -> AssistantMessage
-
-调用 LLM，返回助手消息（可能含 tool_calls）。
-
-- `messages`: OpenAI 格式消息数组
-- `tools`: 工具 schema 数组（Dict 格式）
-
-```julia
-msg = chat(provider, [
-    Dict("role" => "system", "content" => "你是仿真助手"),
-    Dict("role" => "user", "content" => "帮我跑一个 66/6 星座的覆盖分析"),
-], tool_schemas)
-```
-"""
-function chat(provider::LLMProvider, messages::Vector, tools::Vector = Dict[])
-    body = Dict(
-        "model" => provider.model,
+function chat(p::OpenAICompatibleProvider, messages::Vector, tools::Vector = Dict[])
+    body = Dict{String,Any}(
+        "model" => p.model,
         "messages" => messages,
     )
     if !isempty(tools)
@@ -87,8 +39,8 @@ function chat(provider::LLMProvider, messages::Vector, tools::Vector = Dict[])
     end
 
     resp = HTTP.post(
-        "$(provider.base_url)/chat/completions",
-        ["Authorization" => "Bearer $(provider.api_key)",
+        "$(p.base_url)/chat/completions",
+        ["Authorization" => "Bearer $(p.api_key)",
          "Content-Type" => "application/json"],
         JSON.json(body);
         readtimeout = 120,
@@ -111,7 +63,9 @@ function chat(provider::LLMProvider, messages::Vector, tools::Vector = Dict[])
     return AssistantMessage(content, tool_calls)
 end
 
-# OpenAI 工具格式转换
+# backward-compat：旧代码 LLMProvider() 仍可用
+const LLMProvider = OpenAICompatibleProvider
+
 function _openai_tool(tool::Dict)
     return Dict(
         "type" => "function",
@@ -123,18 +77,14 @@ function _openai_tool(tool::Dict)
     )
 end
 
-# ─── 工具 Schema 构建（桥接 lab 的 study/goal 体系）───
-
 """
     build_tool_schemas() -> Vector{Dict}
 
 从 lab 的 goal/study 体系自动构建 LLM 工具 schema。
-每个 goal 变成一个工具，LLM 可以通过 function-calling 调用。
 """
 function build_tool_schemas()
     schemas = Dict{String,Any}[]
 
-    # run_study 工具——通用仿真入口
     push!(schemas, Dict(
         "name" => "run_simulation",
         "description" => "运行星座网络仿真。可指定星座规模、网络拓扑特性、传播精度、仿真时长等参数。",
@@ -157,7 +107,6 @@ function build_tool_schemas()
         ),
     ))
 
-    # scan_parameter 工具——参数扫描
     push!(schemas, Dict(
         "name" => "scan_parameter",
         "description" => "扫描单一参数对网络性能的影响（如高度、倾角、面数）。",
@@ -172,7 +121,6 @@ function build_tool_schemas()
         ),
     ))
 
-    # compare_constellations 工具——星座对比
     push!(schemas, Dict(
         "name" => "compare_constellations",
         "description" => "对比多个星座的网络性能（覆盖、时延、连通性）。",
@@ -185,7 +133,6 @@ function build_tool_schemas()
         ),
     ))
 
-    # list_available 工具——列出可用资源
     push!(schemas, Dict(
         "name" => "list_available",
         "description" => "列出可用的星座预设、拓扑策略、传播器等。",

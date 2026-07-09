@@ -11,7 +11,8 @@ include("layers/12_interaction/studies.jl")
 include("layers/12_interaction/goals.jl")
 include("layers/12_interaction/planner/planner.jl")
 include("layers/12_interaction/questionnaire/questionnaire.jl")
-include("layers/12_interaction/llm_provider.jl")
+include("layers/12_interaction/llm_provider_trait.jl")  # ToolCall/AssistantMessage/AbstractLLMProvider/Mock/CLI
+include("layers/12_interaction/llm_provider.jl")        # OpenAICompatibleProvider (HTTP) + LLMProvider alias
 include("layers/12_interaction/hooks.jl")
 include("layers/12_interaction/memory.jl")
 include("layers/12_interaction/agent.jl")
