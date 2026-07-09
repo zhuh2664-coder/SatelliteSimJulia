@@ -1,6 +1,10 @@
 module SatelliteSimOpt
 
-using SatelliteSimCore
+# Opt 直接依赖其使用的领域包，不通过 Core 的聚合 re-export 获取类型或常量。
+using SatelliteSimFoundation
+using SatelliteSimOrbit
+using SatelliteSimLink
+using SatelliteSimNet
 using Random
 using Statistics
 using Enzyme

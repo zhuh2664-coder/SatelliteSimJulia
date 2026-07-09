@@ -7,7 +7,7 @@ export EndToEndGradientReport,
     soft_route_loss,
     end_to_end_gradient_report
 
-const E2E_SPEED_OF_LIGHT_KM_S = SatelliteSimCore.SPEED_OF_LIGHT_KM_S  # → Core/L0
+const E2E_SPEED_OF_LIGHT_KM_S = SatelliteSimFoundation.SPEED_OF_LIGHT_KM_S  # → Foundation/L0
 const E2E_TLE_LINE1 = "1 00005U 58002B   00179.78495062  .00000023  00000-0  28098-4 0  4753"
 const E2E_TLE_LINE2S = [
     "2 00005  34.2682 331.5174 1859667 331.7664  19.3264 10.82419157413667",
