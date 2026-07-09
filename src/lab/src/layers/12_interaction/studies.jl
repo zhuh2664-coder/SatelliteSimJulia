@@ -135,9 +135,50 @@ export run_study
 
 把 Study 翻译成 ExperimentConfig 并执行。激活 Study→执行链。
 """
-function run_study(study::Study)
+function run_study(
+    study::Study;
+    ground_stations::Vector{GroundStation} = GroundStation[],
+    ground_pairs::Vector{Tuple{Int,Int}} = Tuple{Int,Int}[],
+)
     config = _study_to_config(study)
+    config = _with_study_runtime_context(
+        config;
+        traffic = _study_traffic(study),
+        ground_stations = ground_stations,
+        ground_pairs = ground_pairs,
+    )
     return run_experiment(config)
+end
+
+_study_traffic(s::RoutingStudy) = s.traffic
+_study_traffic(s::ConstellationStudy) = s.traffic
+_study_traffic(::CapacityStudy) = :hotspot
+_study_traffic(::CacheStudy) = :video
+_study_traffic(::CoverageStudy) = :uniform
+_study_traffic(::VulnerabilityStudy) = TrafficDemand[]
+
+function _with_study_runtime_context(
+    config;
+    traffic = config.traffic_demands,
+    ground_stations::Vector{GroundStation} = GroundStation[],
+    ground_pairs::Vector{Tuple{Int,Int}} = Tuple{Int,Int}[],
+)
+    isempty(ground_stations) && isempty(ground_pairs) && return config
+    return ExperimentConfig(;
+        name = config.name,
+        constellation = config.constellation,
+        propagator = config.propagator,
+        tspan = config.tspan,
+        constraints = config.constraints,
+        topology_strategy = config.topology_strategy,
+        routing_algorithm = config.routing_algorithm,
+        traffic = traffic,
+        ground_stations = isempty(ground_stations) ? config.ground_stations : ground_stations,
+        users = config.users,
+        random_seed = config.random_seed,
+        alpha = config.alpha,
+        ground_pairs = isempty(ground_pairs) ? config.ground_pairs : ground_pairs,
+    )
 end
 
 # RoutingStudy → Config（路由对比：固定星座，比路由算法）

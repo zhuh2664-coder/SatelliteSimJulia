@@ -19,18 +19,18 @@ function ExperimentRecord(config::ExperimentConfig, result::ExperimentResult; no
     id  = "exp_$(ts)"
     c = config.constellation
     return ExperimentRecord(id, ts,
-        Dict(:name => config.name, :T => c.T, :P => c.P,
-             :alt_km => c.alt_km, :inc_deg => c.inc_deg),
-        Dict(:coverage     => result.coverage.coverage_ratio,
-             :avg_lat_ms   => result.latency.avg_latency_ms,
-             :max_lat_ms   => result.latency.max_latency_ms,
-             :diameter_ms  => result.network.diameter,
-             :connectivity => result.network.connectivity_ratio,
-             :avg_util     => result.utilization.avg_utilization,
-             :hop_count    => result.routing_metrics.avg_hop_count,
-             :success_rate => result.routing_metrics.success_rate,
-             :fitness      => result.fitness,
-             :duration_s   => result.duration_s),
+        Dict{Symbol,Any}(:name => config.name, :T => c.T, :P => c.P,
+                         :alt_km => c.alt_km, :inc_deg => c.inc_deg),
+        Dict{Symbol,Any}(:coverage     => result.coverage.coverage_ratio,
+                         :avg_lat_ms   => result.latency.avg_latency_ms,
+                         :max_lat_ms   => result.latency.max_latency_ms,
+                         :diameter_ms  => result.network.diameter,
+                         :connectivity => result.network.connectivity_ratio,
+                         :avg_util     => result.utilization.avg_utilization,
+                         :hop_count    => result.routing_metrics.avg_hop_count,
+                         :success_rate => result.routing_metrics.success_rate,
+                         :fitness      => result.fitness,
+                         :duration_s   => result.duration_s),
         notes)
 end
 
