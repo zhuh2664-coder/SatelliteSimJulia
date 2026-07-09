@@ -112,6 +112,29 @@ save(path1, fig1)
 @printf("  ✓ 保存: %s\n", path1)
 
 # ════════════════════════════════════════════════════
+# 5b. 3D 轨道快照（带波束足迹）
+# ════════════════════════════════════════════════════
+println("\n【步骤 5b】绘制 3D 快照（带波束足迹）")
+fig1b = plot_orbit_snapshot(
+    pos;
+    isl_pairs = isl_pairs,
+    isl_available = isl_available,
+    config = MakieViewerConfig(;
+        title = "Iridium 66/6 — Beam Footprints (30°)",
+        time_index = 1,
+        show_orbits = true,
+        show_isl = true,
+        show_ground_stations = false,
+        show_beams = true,
+        beam_angle_deg = 30.0,
+        satellite_markersize = 4.0,
+    ),
+)
+path1b = joinpath(output_dir, "iridium_3d_beams.png")
+save(path1b, fig1b)
+@printf("  ✓ 保存: %s\n", path1b)
+
+# ════════════════════════════════════════════════════
 # 6. 3D 轨道快照（含路由路径高亮）
 # ════════════════════════════════════════════════════
 println("\n【步骤 6】绘制 3D 快照（含路由路径高亮）")
@@ -145,14 +168,90 @@ path3 = joinpath(output_dir, "iridium_ground_track.png")
 save(path3, fig3)
 @printf("  ✓ 保存: %s\n", path3)
 
+# ════════════════════════════════════════════════════
+# 8. 时间动画（MP4）
+# ════════════════════════════════════════════════════
+println("\n【步骤 8】生成时间动画 MP4（60 帧，10 fps）")
+anim_path = animate_orbit(
+    pos;
+    isl_pairs = isl_pairs,
+    isl_available = isl_available,
+    route_path = route_path,
+    output_path = joinpath(output_dir, "iridium_anim.mp4"),
+    fps = 10,
+    config = MakieViewerConfig(;
+        title = "Iridium 66/6 — Orbit Animation",
+        show_orbits = false,
+        show_isl = true,
+        show_route = true,
+        show_ground_stations = false,
+        satellite_markersize = 4.0,
+    ),
+)
+@printf("  ✓ 保存: %s\n", anim_path)
+
+# ════════════════════════════════════════════════════
+# 9. 覆盖热力图
+# ════════════════════════════════════════════════════
+println("\n【步骤 9】绘制覆盖热力图")
+fig4 = plot_coverage_heatmap(
+    pos;
+    time_index = 0,
+    grid_nlat = 90,
+    grid_nlon = 180,
+    min_elev_deg = 10.0,
+    title = "Iridium 66/6 Coverage Heatmap (1 hour aggregate)",
+    show_ground_track = true,
+)
+path4 = joinpath(output_dir, "iridium_coverage.png")
+save(path4, fig4)
+@printf("  ✓ 保存: %s\n", path4)
+
+# ════════════════════════════════════════════════════
+# 10. 多面板 Dashboard
+# ════════════════════════════════════════════════════
+println("\n【步骤 10】绘制多面板 Dashboard")
+fig5 = plot_dashboard(
+    pos;
+    time_index = 1,
+    isl_pairs = isl_pairs,
+    isl_available = isl_available,
+    route_path = route_path,
+    config = MakieViewerConfig(;
+        title = "Iridium 66/6 Dashboard",
+        show_orbits = true,
+        show_isl = true,
+        show_route = true,
+        show_ground_stations = false,
+        satellite_markersize = 3.0,
+        orbit_linewidth = 0.8,
+        isl_linewidth = 0.6,
+        route_linewidth = 2.5,
+        dark_theme = true,
+    ),
+    grid_nlat = 60,
+    grid_nlon = 120,
+    min_elev_deg = 10.0,
+    title = "Iridium 66/6 Multi-Panel Dashboard",
+)
+path5 = joinpath(output_dir, "iridium_dashboard.png")
+save(path5, fig5)
+@printf("  ✓ 保存: %s\n", path5)
+
 println("""
 ════════════════════════════════════════════════════
   可视化演示完成！
 
   产出图片：
     • $(path1)
+    • $(path1b)
     • $(path2)
     • $(path3)
+    • $(path4)
+    • $(path5)
+
+  产出动画：
+    • $(anim_path)
 
   交互模式（需要 GLMakie）：
     using GLMakie; GLMakie.activate!()

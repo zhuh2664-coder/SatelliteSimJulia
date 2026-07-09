@@ -741,23 +741,6 @@ distance_km(a::EphemerisSample, b::EphemerisSample) =
 propagation_delay_s(distance_km::Real) = distance_km / SPEED_OF_LIGHT_KM_S
 
 """
-    geodetic_to_ecef_km(position::GeodeticPosition)::Vector{Float64}
-
-将大地坐标（纬度、经度、海拔）转换为 ECEF 笛卡尔坐标（km）。
-
-# 依赖
-- 调用 `SatelliteToolbox.geodetic_to_ecef` 进行坐标转换。
-"""
-function geodetic_to_ecef_km(position::GeodeticPosition)::Vector{Float64}
-    ecef_m = SatelliteToolbox.geodetic_to_ecef(
-        deg2rad(position.latitude_deg),
-        deg2rad(position.longitude_deg),
-        position.altitude_km * 1000,
-    )
-    return collect(Float64(value / 1000) for value in ecef_m)
-end
-
-"""
     elevation_deg(
         ground_position::GeodeticPosition,
         satellite_ecef_km::AbstractVector{<:Real},

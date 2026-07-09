@@ -76,7 +76,7 @@ end
 # ────────────────────────────────────────────────────────────
 
 """
-    assess_routing(positions, T, P, strategy, constraints; ground_pairs) -> (D, available_isl, isl_results)
+    assess_routing(positions, T, P, strategy, constraints) -> (D, available_isl, isl_results)
 
 预编排：位置 → 拓扑生成 → ISL 批评估 → 邻接表 → 全对最短路径。
 
@@ -88,13 +88,17 @@ end
 
 返回距离矩阵 D、可用 ISL 列表、ISL 评估结果。
 """
+function _topology_isl_candidates(strategy, T::Int, P::Int)
+    topo_output = generate_topology(strategy, T, P)
+    return vcat(topo_output.static_links, topo_output.dynamic_candidates)
+end
+
 function assess_routing(
     positions::Array{Float64,3}, T::Int, P::Int,
-    strategy, constraints; ground_pairs = Tuple{Int,Int}[],
+    strategy, constraints,
 )
     last_pos = positions_at_last(positions)
-    topo_output = generate_topology(strategy, T, P)
-    all_links = vcat(topo_output.static_links, topo_output.dynamic_candidates)
+    all_links = _topology_isl_candidates(strategy, T, P)
 
     isl_results = evaluate_isl_batch(last_pos, all_links; constraints = constraints)
 
@@ -166,6 +170,123 @@ function assess_routing_temporal(
 end
 
 # ────────────────────────────────────────────────────────────
+# 地面站接入辅助（路由/流量降级共用）
+# ────────────────────────────────────────────────────────────
+
+"""从 GroundStation 或带 lat/lon 字段的对象提取 (lat, lon, alt) 元组。"""
+function _ground_station_tuple(gs)
+    if hasproperty(gs, :position)
+        pos = gs.position
+        return (pos.latitude_deg, pos.longitude_deg, pos.altitude_km)
+    elseif hasproperty(gs, :lat) && hasproperty(gs, :lon)
+        alt = hasproperty(gs, :alt) ? Float64(gs.alt) :
+              hasproperty(gs, :altitude) ? Float64(gs.altitude) : 0.0
+        return (Float64(gs.lat), Float64(gs.lon), alt)
+    end
+    throw(ArgumentError("ground station must have position or lat/lon fields"))
+end
+
+"""
+    _build_ground_access_map(positions, ground_stations, constraints)
+
+为每个地面站 ID（1-based 枚举顺序）选取仰角最高的接入卫星及 GSL 时延（ms）。
+"""
+function _build_ground_access_map(positions, ground_stations, constraints)
+    access_map = Dict{Int, NamedTuple{(:sat_id, :delay_ms), Tuple{Int, Float64}}}()
+    isempty(ground_stations) && return access_map
+
+    last_pos = positions_at_last(positions)
+    for (gid, gs) in enumerate(ground_stations)
+        tup = [_ground_station_tuple(gs)]
+        avail, _, elev, delay = evaluate_gsl_batch(last_pos, tup; constraints=constraints)
+        best_sat = 0
+        best_elev = -Inf
+        best_delay = Inf
+        for sat_id in 1:size(last_pos, 1)
+            if avail[sat_id, 1] && elev[sat_id, 1] > best_elev
+                best_elev = elev[sat_id, 1]
+                best_sat = sat_id
+                best_delay = delay[sat_id, 1]
+            end
+        end
+        best_sat > 0 && (access_map[gid] = (sat_id=best_sat, delay_ms=best_delay))
+    end
+    return access_map
+end
+
+"""解析路由端点对：返回 (pairs, use_ground)。"""
+function _resolve_routing_endpoint_pairs(config, T::Int)
+    if !isempty(config.ground_pairs)
+        return config.ground_pairs, true
+    elseif !isempty(config.ground_stations)
+        n_gs = length(config.ground_stations)
+        gs_ids = 1:n_gs
+        pairs = [(a, b) for (k, a) in enumerate(gs_ids) for b in gs_ids[k+1:end]]
+        return pairs, true
+    else
+        pairs = [(i, mod1(i + div(T, 2), T)) for i in 1:min(100, T)]
+        return pairs, false
+    end
+end
+
+"""在 ISL 邻接表上用 Dijkstra 重建卫星最短路径（返回节点序列）。"""
+function _dijkstra_sat_path(src::Int, dst::Int, D, N::Int, edge_index::Dict{Tuple{Int,Int},Int})
+    dist = fill(Inf, N)
+    prev = zeros(Int, N)
+    dist[src] = 0.0
+    visited = falses(N)
+    for _ in 1:N
+        u = 0
+        best = Inf
+        for v in 1:N
+            if !visited[v] && dist[v] < best
+                best = dist[v]
+                u = v
+            end
+        end
+        u == 0 && break
+        visited[u] = true
+        u == dst && break
+        for v in 1:N
+            if !visited[v] && haskey(edge_index, (u, v)) && isfinite(D[u, v])
+                alt = dist[u] + D[u, v]
+                if alt < dist[v]
+                    dist[v] = alt
+                    prev[v] = u
+                end
+            end
+        end
+    end
+    !isfinite(dist[dst]) && return Int[]
+    path = Int[]
+    v = dst
+    while v != 0
+        push!(path, v)
+        v == src && break
+        v = prev[v]
+        v == 0 && return Int[]
+    end
+    return reverse(path)
+end
+
+"""地面站对路由：GSL + 配置路由算法 ISL 路径 + GSL。"""
+function _route_ground_pair(
+    src_g::Int, dst_g::Int, access_map, routing_graph, alg,
+)
+    label = string(typeof(alg).name.name)
+    if !haskey(access_map, src_g) || !haskey(access_map, dst_g)
+        return RoutingOutput(Int[], Inf, label * "-no-access")
+    end
+    routing_graph === nothing && return RoutingOutput(Int[], Inf, label * "-unreachable")
+    src_sat = access_map[src_g].sat_id
+    dst_sat = access_map[dst_g].sat_id
+    isl_result = route(alg, RoutingInput(routing_graph, src_sat, dst_sat))
+    isempty(isl_result.path) && return RoutingOutput(Int[], Inf, isl_result.algorithm * "-unreachable")
+    total_ms = access_map[src_g].delay_ms + isl_result.total_weight + access_map[dst_g].delay_ms
+    return RoutingOutput(isl_result.path, total_ms, isl_result.algorithm)
+end
+
+# ────────────────────────────────────────────────────────────
 # 全套评估：覆盖 + 路由 + 容量 + 适应度
 # ────────────────────────────────────────────────────────────
 
@@ -188,65 +309,69 @@ function full_constellation_assessment(config)
     _, positions = propagate_constellation_positions(config)
     gsl_available, coverage = assess_coverage(positions, config.users, config.constraints)
     D, available_isl, isl_results = assess_routing(
-        positions, T, P, config.topology_strategy, config.constraints;
-        ground_pairs = config.ground_pairs,
+        positions, T, P, config.topology_strategy, config.constraints,
     )
+    traffic_isl_candidates = _topology_isl_candidates(config.topology_strategy, T, P)
+
+    access_map = _build_ground_access_map(positions, config.ground_stations, config.constraints)
 
     latency = compute_latency(D)
     network = compute_network_metrics(D)
 
-    # 路由结果（用于 routing_metrics）
-    # 注意：当前评估用全对最短路径距离矩阵 D（Floyd-Warshall）。
-    # routing_algorithm 字段记录用户意图，但 ECMP/MinLoad 的逐流 route() 接口
-    # 与矩阵模型不兼容，故此处标签反映意图，实际路径仍走最短路径。
-    # 完整的逐流路由评估（ECMP 分散/MLB 负载感知）待 route() 接口统一后接入。
-    route_label = string(typeof(config.routing_algorithm).name.name)
-    # 路由端点：优先 ground_pairs；否则若 ground_stations 非空，从它生成配对；
-    # 最后降级为默认对跖点配对
-    if !isempty(config.ground_pairs)
-        pairs = config.ground_pairs
-    elseif !isempty(config.ground_stations)
-        # ground_stations 作为端点：取前 min(10, n) 个两两配对
-        gs_ids = 1:min(length(config.ground_stations), T)
-        pairs = [(a, b) for (k, a) in enumerate(gs_ids) for b in gs_ids[k+1:end]]
-        pairs = isempty(pairs) ? [(1, mod1(1 + div(T, 2), T))] : pairs
-    else
-        pairs = [(i, mod1(i + div(T, 2), T)) for i in 1:min(100, T)]
-    end
+    # 路由结果：通过 RoutingGraph + config.routing_algorithm 逐对执行
+    isl_weights = isempty(available_isl) ? Float64[] :
+        Float64[r.latency_ms for r in isl_results if r.available]
+    routing_graph = isempty(available_isl) ? nothing :
+        build_routing_graph(T, available_isl, isl_weights)
+    alg = config.routing_algorithm
+
+    pairs, use_ground = _resolve_routing_endpoint_pairs(config, T)
     routing_results = RoutingOutput[]
     for (source, destination) in pairs
-        if isfinite(D[source, destination])
-            push!(routing_results, RoutingOutput([source, destination], D[source, destination], route_label))
+        if use_ground
+            push!(routing_results, _route_ground_pair(
+                source, destination, access_map, routing_graph, alg,
+            ))
+        elseif routing_graph === nothing
+            push!(routing_results, RoutingOutput(
+                Int[], Inf, string(typeof(alg).name.name) * "-unreachable",
+            ))
         else
-            push!(routing_results, RoutingOutput(Int[], Inf, route_label * "-unreachable"))
+            push!(routing_results, route(alg, RoutingInput(routing_graph, source, destination)))
         end
     end
 
     n_isl = length(available_isl)
-    # 流量评估：尝试完整 AON（多时间步），失败则降级到占位（向后兼容）
+    # 流量评估：尝试完整 AON（多时间步），失败则降级到占位（向后兼容）。
+    # AON 必须接收完整拓扑候选边，而不是 assess_routing 在最后一帧过滤出的
+    # available_isl；否则早期可用但最后一帧不可用的链路会被整段漏评估。
     traffic_evaluation = nothing
-    link_loads = if n_isl > 0 && !isempty(config.traffic_demands)
+    link_loads = if !isempty(traffic_isl_candidates) && !isempty(config.traffic_demands)
         traffic_evaluation = try
-            _evaluate_traffic_full(config, positions, available_isl)
+            _evaluate_traffic_full(config, positions, traffic_isl_candidates)
         catch
             nothing  # 降级
         end
         if traffic_evaluation === nothing
-            # 降级：旧占位路径
-            _assign_demands_to_isls(config.traffic_demands, available_isl, D, T)
+            # 降级：经地面接入卫星映射后再走 ISL 最短路径
+            _assign_demands_to_isls(
+                config.traffic_demands, available_isl, D, T;
+                access_map = access_map,
+                routing_graph = routing_graph,
+            )
         else
-            # 从真 AON 结果提取最后一步的 ISL 负载
-            _extract_last_isl_loads(traffic_evaluation, n_isl)
+            # 从真 AON 结果提取最后一步的 ISL 负载；link_id 对应完整候选边顺序。
+            _extract_last_isl_loads(traffic_evaluation, length(traffic_isl_candidates))
         end
     elseif n_isl > 0
         [config.constraints.isl_max_capacity_mbps * 0.5 for _ in 1:n_isl]
     else
         Float64[]
     end
-    utilization = if n_isl > 0
+    utilization = if !isempty(link_loads)
         compute_link_utilization(
             link_loads,
-            [config.constraints.isl_max_capacity_mbps for _ in 1:n_isl],
+            [config.constraints.isl_max_capacity_mbps for _ in eachindex(link_loads)],
         )
     else
         compute_link_utilization(Float64[], Float64[])
@@ -280,54 +405,41 @@ AoN（All-or-Nothing）分配：每条 demand 全量走其最短路径。
 - `D`: 全对最短路径距离矩阵（卫星索引）
 - `N`: 卫星总数
 """
-function _assign_demands_to_isls(demands, available_isl, D, N)
+function _assign_demands_to_isls(
+    demands, available_isl, D, N;
+    access_map=nothing, routing_graph=nothing,
+)
     loads = zeros(Float64, length(available_isl))
-    # 建 ISL 边 → 索引的快速查找表
     edge_index = Dict{Tuple{Int,Int},Int}()
     for (k, (i, j)) in enumerate(available_isl)
         edge_index[(i, j)] = k
         edge_index[(j, i)] = k
     end
-    # 简化路径重建：从 D 重建最短路径（用相邻卫星 hop 序列）
-    # 这里用 Dijkstra 重建路径（从 D 的前驱信息不可得，用贪婪 hop 重建）
     for demand in demands
-        src = clamp(demand.source_ground_id, 1, N)
-        dst = clamp(demand.destination_ground_id, 1, N)
+        src_g = demand.source_ground_id
+        dst_g = demand.destination_ground_id
+        if access_map !== nothing
+            haskey(access_map, src_g) || continue
+            haskey(access_map, dst_g) || continue
+            src = access_map[src_g].sat_id
+            dst = access_map[dst_g].sat_id
+        else
+            (src_g < 1 || src_g > N || dst_g < 1 || dst_g > N) && continue
+            src, dst = src_g, dst_g
+        end
         src == dst && continue
-        !isfinite(D[src, dst]) && continue   # 不可达，跳过
-        # 贪婪重建最短路径：每步选使剩余距离最小的邻居
-        path = _reconstruct_path(src, dst, D, N, edge_index)
+        path = if routing_graph !== nothing
+            route(DijkstraRouting(), RoutingInput(routing_graph, src, dst)).path
+        else
+            !isfinite(D[src, dst]) && continue
+            _dijkstra_sat_path(src, dst, D, N, edge_index)
+        end
         for k in 2:length(path)
             e = (path[k-1], path[k])
             haskey(edge_index, e) && (loads[edge_index[e]] += demand.rate_mbps)
         end
     end
     return loads
-end
-
-"""贪婪重建最短路径：每步选使 (当前到邻居) + (邻居到终点) 最小的下一跳。"""
-function _reconstruct_path(src::Int, dst::Int, D, N::Int, edge_index)
-    path = [src]
-    current = src
-    visited = Set([src])
-    for _ in 1:N
-        current == dst && break
-        best_next = 0
-        best_cost = Inf
-        for nb in 1:N
-            nb == current && continue
-            nb in visited && continue
-            haskey(edge_index, (current, nb)) || continue  # 必须有 ISL 直连
-            !isfinite(D[nb, dst]) && continue
-            cost = D[current, nb] + D[nb, dst]
-            cost < best_cost && (best_cost = cost; best_next = nb)
-        end
-        best_next == 0 && break   # 无路可走
-        push!(path, best_next)
-        push!(visited, best_next)
-        current = best_next
-    end
-    return path
 end
 
 # ────────────────────────────────────────────────────────────
@@ -346,8 +458,8 @@ function _evaluate_traffic_full(config, positions, isl_pairs)
     isempty(config.ground_stations) && return nothing
     isempty(isl_pairs) && return nothing
 
-    # 地面站经纬度
-    gs_tuples = [(gs.lat, gs.lon, 0.0) for gs in config.ground_stations]
+    # 地面站经纬高（统一经 _ground_station_tuple）
+    gs_tuples = [_ground_station_tuple(gs) for gs in config.ground_stations]
     ground_ids = collect(1:length(gs_tuples))
 
     # 构造时间网格

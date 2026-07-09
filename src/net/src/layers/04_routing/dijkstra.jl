@@ -1,24 +1,77 @@
 # Dijkstra 最短路径路由。
 
-export DijkstraRouting, build_adjacency, all_pairs_shortest_paths,
+export DijkstraRouting, build_adjacency, build_routing_graph, all_pairs_shortest_paths,
        shortest_path_from_adjacency
 
 struct DijkstraRouting <: AbstractRoutingAlgorithm end
 
-function route(::DijkstraRouting, input::RoutingInput)::RoutingOutput
-    g = input.graph
-    src = input.source
-    dst = input.destination
+"""
+    build_routing_graph(n_nodes, edges, weights; node_labels) -> RoutingGraph
 
-    # 使用 RoutingGraph 中的实际权重，而非 Graphs.jl 默认单位权重
-    A = fill(Inf, g.n_nodes, g.n_nodes)
-    for i in 1:g.n_nodes; A[i, i] = 0.0; end
-    for (u, nbrs) in g.adj
-        for (v, w) in nbrs
-            A[u, v] = w
-        end
+从边列表与权重构造 `RoutingGraph`，供 `route(DijkstraRouting(), RoutingInput(...))` 使用。
+无向 ISL：每条边双向写入邻接表与 `SimpleDiGraph`。
+"""
+function build_routing_graph(
+    n_nodes::Int,
+    edges::Vector{Tuple{Int,Int}},
+    weights::Vector{Float64};
+    node_labels::Vector{String} = String[],
+)::RoutingGraph
+    length(edges) == length(weights) ||
+        throw(ArgumentError("edges and weights must have the same length"))
+    if isempty(node_labels)
+        node_labels = ["node$i" for i in 1:n_nodes]
+    else
+        length(node_labels) == n_nodes ||
+            throw(ArgumentError("node_labels length must equal n_nodes"))
     end
 
+    g = SimpleDiGraph(n_nodes)
+    adj = Dict{Int, Vector{Tuple{Int, Float64}}}()
+    for i in 1:n_nodes
+        adj[i] = Tuple{Int, Float64}[]
+    end
+
+    seen = Set{Tuple{Int, Int}}()
+    for (k, (u, v)) in enumerate(edges)
+        (1 <= u <= n_nodes && 1 <= v <= n_nodes) ||
+            throw(ArgumentError("edge ($u, $v) out of range 1:$n_nodes"))
+        canonical = u < v ? (u, v) : (v, u)
+        canonical in seen && continue
+        push!(seen, canonical)
+        w = weights[k]
+        add_edge!(g, u, v)
+        u != v && add_edge!(g, v, u)
+        push!(adj[u], (v, w))
+        u != v && push!(adj[v], (u, w))
+    end
+
+    return RoutingGraph(n_nodes, adj, node_labels, g)
+end
+
+function _routing_graph_adjacency_matrix(graph::RoutingGraph)::Matrix{Float64}
+    A = fill(Inf, graph.n_nodes, graph.n_nodes)
+    for i in 1:graph.n_nodes
+        A[i, i] = 0.0
+    end
+    for (u, neighbors) in graph.adj
+        1 <= u <= graph.n_nodes || throw(ArgumentError("edge source must be in 1:n_nodes"))
+        for (v, weight) in neighbors
+            1 <= v <= graph.n_nodes || throw(ArgumentError("edge destination must be in 1:n_nodes"))
+            isfinite(weight) || throw(ArgumentError("edge weights must be finite"))
+            weight >= 0 || throw(ArgumentError("edge weights must be non-negative"))
+            A[u, v] = min(A[u, v], Float64(weight))
+        end
+    end
+    return A
+end
+
+function route(::DijkstraRouting, input::RoutingInput)::RoutingOutput
+    src = input.source
+    dst = input.destination
+    src == dst && return RoutingOutput([src], 0.0, "Dijkstra")
+
+    A = _routing_graph_adjacency_matrix(input.graph)
     path, cost = shortest_path_from_adjacency(A, src, dst)
     isempty(path) && return RoutingOutput(Int[], Inf, "Dijkstra-unreachable")
     return RoutingOutput(path, cost, "Dijkstra")

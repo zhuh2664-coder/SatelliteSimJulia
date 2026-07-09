@@ -3,7 +3,7 @@
 
 using Test
 
-using SatelliteSimNet: AbstractTopologyStrategy, TopologyOutput,
+using SatelliteSimJulia: AbstractTopologyStrategy, TopologyOutput,
     GridPlusStrategy, TShapeStrategy, generate_topology,
     SpiralStrategy, HoneycombStrategy, RingStrategy, MeshStrategy,
     NearestNeighborStrategy, isl_neighbors, num_isl
@@ -77,6 +77,9 @@ end
     @test length(topo_nn.dynamic_candidates) > 0  # 候选非空
     # 每星连最近 3 个，去重后边数应在 [k*N/2, k*N] 之间
     @test length(topo_nn.dynamic_candidates) <= nn.k * N
+    neighbors = isl_neighbors(nn, 1, N, 2)
+    @test !isempty(neighbors)
+    @test all(1 .<= neighbors .<= N)
 
     println("✅ 5 个新拓扑策略全部通过")
 end

@@ -4,6 +4,8 @@ using SatelliteSimFoundation
 using SatelliteSimOrbit
 using LinearAlgebra
 
+import SatelliteSimFoundation: geodetic_to_ecef_km
+
 include("geometry.jl")
 include("constraints.jl")
 include("link_topology_types.jl")
