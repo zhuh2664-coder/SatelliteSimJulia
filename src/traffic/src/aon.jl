@@ -4,7 +4,6 @@
 
 using SatelliteSimFoundation
 using SatelliteSimLink
-using SatelliteSimCore
 using SatelliteSimNet
 
 export TrafficDemand, TrafficAssignment, LinkLoadSample, TrafficEvaluation,

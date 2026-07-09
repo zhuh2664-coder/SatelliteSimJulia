@@ -64,7 +64,9 @@ julia --project=. scripts/validate_phase4.jl   # 双档 + M/D/1 + GMAT + ns-3 JS
 
 ## 包结构
 
-项目由 `SatelliteSimJulia` 这个聚合包统一 re-export，普通用户 `using SatelliteSimJulia` 即可拿到全部符号。底层按依赖方向拆成 9 个子包：
+`SatelliteSimJulia` 是日常仿真的轻量伞包，默认 re-export Core、Net、Lab 与 Traffic。
+
+`SatelliteSimOpt`、`SatelliteSimViz`、`SatelliteSimSecurity`、`SatelliteSimDistributed` 是显式选择的高级/适配包：需要时请分别 `using SatelliteSimOpt` 等，不把它们隐式加载进日常仿真入口。底层按依赖方向拆成 9 个子包：
 
 | 包 (`src/<dir>`) | 领域 | 一句话说明 |
 |---|---|---|

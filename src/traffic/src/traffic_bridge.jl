@@ -11,7 +11,6 @@
 
 using SatelliteSimFoundation
 using SatelliteSimLink
-using SatelliteSimCore
 using SatelliteSimNet
 
 using SatelliteSimLink:

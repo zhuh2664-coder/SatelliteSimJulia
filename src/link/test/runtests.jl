@@ -37,6 +37,10 @@ using Test
         @test length(results) == 2
         @test all(r -> hasproperty(r, :available), results)
         @test all(r -> hasproperty(r, :latency_ms), results)
+
+        # 编排层按时间片取位置时使用 SubArray；链接口必须接受该零拷贝视图。
+        results_view = evaluate_isl_batch(@view(pos[:, 1, :]), links; constraints=LEO_DEFAULTS)
+        @test length(results_view) == 2
     end
 
     @testset "天气/雨衰模型存在性" begin
