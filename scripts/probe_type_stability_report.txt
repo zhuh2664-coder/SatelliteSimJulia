@@ -1,0 +1,204 @@
+Julia Dispatch and Type-Stability Check
+=======================================
+
+This report records the current evidence for Julia-specific design health in
+SatelliteSimJulia: multiple dispatch boundaries, inference stability, and known
+dynamic-dispatch tradeoffs.
+
+Scope
+-----
+
+Checked representative single-machine simulation modules:
+
+- src/orbit: propagator selection, Walker constellation generation.
+- src/net: topology strategies and routing primitives.
+- src/traffic: rate profiles and solar power profiles.
+- src/opt: differentiable coverage and routing kernels.
+
+Out of scope for this pass:
+
+- Platform, API, Docker, Kubernetes, Godot, and distributed/runtime modules.
+- Full JET/Aqua static analysis, because adding those dependencies would expand
+  the current task scope.
+- Benchmarking allocations or latency. This pass checks dispatch and return type
+  inference, not performance budgets.
+
+Evidence Command
+----------------
+
+Run:
+
+    JULIA_NUM_THREADS=6 julia --project=. scripts/probe_type_stability.jl
+
+Current result:
+
+    PASS/INFO: 28
+    WARN:      0
+    FAIL:      0
+
+INFO entries are intentional design notes. They are not failures.
+
+Multiple Dispatch Map
+---------------------
+
+Orbit
+~~~~~
+
+Main dispatch surfaces:
+
+- AbstractKeplerianPropagator
+- TwoBodyPropagator
+- J2Propagator
+- J4Propagator
+- resolve_keplerian_propagator
+- propagate_to_ecef
+- AbstractPropagator
+- Sgp4PropagatorAdapter
+- EarthFixedNodePropagator
+- AbstractConstellationBuilder
+- DesignConstellationBuilder
+- TLEConstellationBuilder
+
+Current assessment:
+
+- Concrete propagator objects are a good dispatch shape for hot paths.
+- Val(:two_body), Val(:j2), and Val(:j4) resolve to concrete propagator types.
+- resolve_keplerian_propagator(::Symbol) is intentionally flexible at the API
+  boundary and returns a small union by type-only analysis.
+
+Recommendation:
+
+- Keep Symbol as a user-facing convenience.
+- Prefer Val(...) or concrete propagator objects inside tight propagation loops.
+
+Net
+~~~
+
+Main dispatch surfaces:
+
+- AbstractTopologyStrategy
+- GridPlusStrategy
+- RingStrategy
+- TShapeStrategy
+- SpiralStrategy
+- HoneycombStrategy
+- MeshStrategy
+- NearestNeighborStrategy
+- AbstractRoutingAlgorithm
+- DijkstraRouting
+- ECMPRouting
+- MinLoadRouting
+- PINNRoutingAlgorithm
+- CGRRouting
+
+Current assessment:
+
+- Topology strategy dispatch follows the intended Julia pattern:
+  new topology = new type + generate_topology method.
+- Representative topology and routing primitives infer concrete return types.
+- This is a strong fit for the project's "new strategy via dispatch" design.
+
+Recommendation:
+
+- Keep strategy structs lightweight.
+- When adding a topology, implement generate_topology; specialize isl_neighbors
+  and num_isl only when the default path becomes expensive.
+
+Traffic
+~~~~~~~
+
+Main dispatch surfaces:
+
+- AbstractRateProfile
+- ConstantRate
+- SampledRate
+- FunctionalRate
+- TimeVaryingDemand
+- AbstractSolarProfile
+- UniformSolar
+- EclipseSolar
+
+Current assessment:
+
+- rate_at(::ConstantRate, ::Int) and rate_at(::SampledRate, ::Int) infer
+  Float64.
+- rate_at(::FunctionalRate, ::Int) currently infers Float64.
+- rate_at(::TimeVaryingDemand, ::Int) currently infers Float64.
+- _evolve_one_step(..., ::AbstractSolarProfile, ...) returns concrete
+  PowerState.
+
+Known dynamic fields:
+
+- FunctionalRate.func::Function
+- TimeVaryingDemand.rate_profile::AbstractRateProfile
+
+These are currently acceptable because they are orchestration/configuration
+hooks. If either becomes a hot-loop bottleneck, parameterize them:
+
+    struct FunctionalRate{F} <: AbstractRateProfile
+        func::F
+    end
+
+    struct TimeVaryingDemand{P <: AbstractRateProfile}
+        id::Int
+        source_ground_id::Int
+        destination_ground_id::Int
+        start_elapsed_s::Int
+        end_elapsed_s::Int
+        rate_profile::P
+    end
+
+Do not make this change until profiling shows a real bottleneck, because it can
+increase type proliferation in higher-level experiment code.
+
+Opt
+~~~
+
+Main dispatch surfaces:
+
+- AbstractCoverageRelaxation
+- SoftCoverage
+- NoisyORCoverage
+- LeakyRevisit
+- LogSumExpMax
+- relax
+- soft_coverage
+- noisy_or_coverage
+- leaky_revisit
+- logsumexp_max
+- soft_route_loss
+- coverage_loss
+
+Current assessment:
+
+- Representative differentiable kernels infer concrete Float64 return types for
+  Float64 inputs.
+- The core kernels are written with where T <: Number, which is the right shape
+  for ForwardDiff/Enzyme/Zygote-compatible numerical code.
+
+Recommendation:
+
+- Keep numeric kernels type-generic.
+- Avoid forcing Float64 inside differentiable hot paths unless the function is
+  explicitly non-differentiable or external-library-bound.
+
+Overall Result
+--------------
+
+The first Julia-specific health pass is green:
+
+- Multiple dispatch is used in the intended places.
+- Representative hot kernels infer concrete return types.
+- Dynamic dispatch exists only in flexible orchestration hooks identified above.
+- No immediate implementation fix is required from the current evidence.
+
+Next Checks
+-----------
+
+If this audit continues, the next useful layers are:
+
+- Add a small @allocated allocation probe for representative hot kernels.
+- Add optional JET checks in a separate environment or script if dependency
+  expansion is acceptable.
+- Add a documentation section for how to add a new propagator/topology/rate
+  profile/coverage relaxation using the dispatch contracts above.

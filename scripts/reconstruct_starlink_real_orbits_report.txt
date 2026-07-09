@@ -1,0 +1,119 @@
+Starlink Real Orbit Reconstruction
+==================================
+
+Goal
+----
+
+Reconstruct real Starlink satellite trajectories in a StarPerf-like way:
+
+1. Load real Starlink TLE/GP records.
+2. Recover launch metadata from the TLE international designator and, when
+   available, CelesTrak SATCAT.
+3. Propagate the satellites with SGP4.
+4. Export ECEF position arrays and a metadata summary.
+
+Implemented entrypoint
+----------------------
+
+Run:
+
+    JULIA_NUM_THREADS=6 julia --project=. scripts/reconstruct_starlink_real_orbits.jl \
+      --max-sats 32 \
+      --duration-s 120 \
+      --step-s 60 \
+      --download-satcat \
+      --write-positions
+
+Default source:
+
+    data/tle/celestrak/starlink_gp_latest.tle
+
+This file currently contains 31,485 lines, or 10,495 three-line Starlink TLE
+records.
+
+Output files
+------------
+
+The script writes outputs under:
+
+    outputs/starlink_real_orbits/
+
+Main outputs:
+
+    starlink_real_orbits_summary.json
+    starlink_real_ecef_positions.jls
+
+The position tensor has shape:
+
+    N satellites x T timesteps x 3 coordinates
+
+Coordinate frame:
+
+    ECEF
+
+Unit:
+
+    km
+
+Verified run
+------------
+
+The current validation run produced:
+
+    records available: 10495
+    satellites reconstructed: 32
+    epoch UTC: 2026-06-08T03:39:32.782
+    positions shape: (32, 3, 3) ECEF km
+    launch groups: 3
+    satcat loaded: true (12340 Starlink rows)
+
+Launch metadata
+---------------
+
+For each satellite, the script records:
+
+- name
+- NORAD catalog id
+- OBJECT_ID from the TLE international designator
+- launch group, e.g. 2019-074
+- launch year
+- launch number
+- launch piece
+- launch date from SATCAT, when available
+- launch site from SATCAT, when available
+- ops status code
+- decay date
+
+The sample validation recovered launch groups such as:
+
+    2019-074 -> launch date 2019-11-11
+    2020-001 -> launch date 2020-01-07
+    2020-006 -> launch date 2020-01-29
+
+Why this matches the StarPerf-style workflow
+--------------------------------------------
+
+StarPerf-style reconstruction starts from real TLE/GP orbital elements instead
+of synthetic Walker slots. This script does the same:
+
+    real TLE records -> TLEOrbitElementSet -> SGP4 -> ECEF position tensor
+
+The downstream output is the same simple array contract used by the rest of
+SatelliteSimJulia:
+
+    Array{Float64,3}  # N x T x 3
+
+So the restored real Starlink positions can be consumed by existing link,
+topology, routing, metric, and visualization tools.
+
+Notes and limits
+----------------
+
+- The default run is intentionally small. Use --max-sats 0 to reconstruct every
+  available Starlink TLE record.
+- The TLE file is a snapshot. For an up-to-date reconstruction, refresh the TLE
+  file from CelesTrak or Space-Track first.
+- The --download-gp-json path is supported for local/available GP JSON files,
+  but CelesTrak may reject automated JSON downloads with HTTP 403. The local TLE
+  path is therefore the stable default.
+- SATCAT is used only for launch metadata. Orbit propagation uses TLE + SGP4.

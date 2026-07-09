@@ -1,5 +1,7 @@
 # SatelliteSimJulia
 
+> **AgentOS/MCP 安全边界（默认）**：本仓库的 `agentos_app.py`、`scripts/mcp_tool_runner.jl` 与 `scripts/mcp_stdio_server.jl` 默认只暴露只读 safe tools：`list_constellations` 与 `describe_constellation`。仿真/传播、测试、`frame_payload_once`、PNG/CZML/JLD2/export、写文件与公网监听均不在默认 dispatch 中；AgentOS 强制绑定 `127.0.0.1` 且不启用 AgentOS API key。需要高风险或有副作用能力时，请离开默认 AgentOS/MCP 面，在本地 CLI 中显式手动运行。
+
 **LEO 卫星星座仿真 + 可微优化 + AI 适配**——用 Julia 的类型系统、多重分派和裸数组构建的一条端到端卫星网络仿真流水线。
 
 从「Walker 星座生成 → 轨道传播 → ISL/GSL 链路评估 → 拓扑/路由 → 流量/容量 → 指标」，全链路用裸 `Array{Float64,3}` 衔接、用多重分派扩展、并可微分以做梯度优化。上方再叠一层 AI 适配层，把自然语言请求翻译成仿真工具调用。
@@ -15,6 +17,30 @@ julia --project=. -e 'using SatelliteSimJulia; demo()'
 ```
 
 `demo()` 会依次演示：Walker 星座生成、二体传播、+Grid 拓扑、ISL 物理评估、最短时延路由、覆盖率计算、GSL 可见性、TwoBody/J2 传播器对比，最后列出可用的 AI 工具。全程无需任何外部数据。
+
+## 部署与 CLI 快速验证
+
+```bash
+# 1. 部署依赖
+julia --project=. -e 'using Pkg; Pkg.instantiate()'
+
+# 2. 查看 CLI
+julia --project=. bin/satnet.jl --help
+
+# 3. 生成 Walker 星座位置矩阵
+julia --project=. bin/satnet.jl propagate --T 12 --P 3 --steps 3 --duration 120 --output outputs/cli/positions.jld2
+
+# 4. 生成 3D 快照 PNG
+julia --project=. bin/satnet.jl viz snapshot outputs/cli/positions.jld2 --output outputs/cli/snapshot.png
+
+# 5. 导出 Cesium CZML
+julia --project=. bin/satnet.jl viz czml outputs/cli/positions.jld2 --output outputs/cli/constellation.czml
+
+# 6. 回归测试
+julia --project=. test/runtests_current.jl
+```
+
+> 注：可视化会优先尝试下载 NaturalEarth 海岸线数据；离线/网络失败时自动使用内嵌简化海岸线，不影响 PNG/CZML 产物生成。
 
 如果想跑预编排实验或交互式 AI 助手：
 
