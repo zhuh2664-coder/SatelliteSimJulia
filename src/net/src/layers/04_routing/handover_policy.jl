@@ -55,18 +55,18 @@ struct NearestDistance <: AbstractHandoverPolicy end
 """
 function select_satellite(
     policy::ElevationThreshold,
-    samples::Vector{GSLPhysicalLinkSample},
+    samples::Vector{<:GSLPhysicalLinkSample},
     prev_satellite_id::Union{Nothing,Int}=nothing,
 )
     isempty(samples) && return nothing
     filtered = filter(s -> s.elevation_deg >= policy.min_elevation_deg, samples)
     isempty(filtered) && return nothing
-    return filtered[argmax(s -> s.elevation_deg, filtered)]
+    return argmax(s -> s.elevation_deg, filtered)
 end
 
 function select_satellite(
     policy::LongestVisible,
-    samples::Vector{GSLPhysicalLinkSample},
+    samples::Vector{<:GSLPhysicalLinkSample},
     prev_satellite_id::Union{Nothing,Int}=nothing,
 )
     isempty(samples) && return nothing
@@ -80,16 +80,16 @@ function select_satellite(
 
     # 否则切换到仰角最高的
     isempty(filtered) && return nothing
-    return filtered[argmax(s -> s.elevation_deg, filtered)]
+    return argmax(s -> s.elevation_deg, filtered)
 end
 
 function select_satellite(
     policy::NearestDistance,
-    samples::Vector{GSLPhysicalLinkSample},
+    samples::Vector{<:GSLPhysicalLinkSample},
     prev_satellite_id::Union{Nothing,Int}=nothing,
 )
     isempty(samples) && return nothing
-    return samples[argmin(s -> s.distance_km, samples)]
+    return argmin(s -> s.distance_km, samples)
 end
 
 # ────────────────────────────────────────────────────────────

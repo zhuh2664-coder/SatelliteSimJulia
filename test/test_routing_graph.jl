@@ -3,6 +3,7 @@
 using Test
 using SatelliteSimNet: build_routing_graph, DijkstraRouting, ECMPRouting,
     MinLoadRouting, route, RoutingInput, RoutingOutput
+import SatelliteSimNet
 
 @testset "RoutingGraph builder" begin
     edges = [(1, 2), (2, 3), (1, 3)]
@@ -35,7 +36,9 @@ end
 
     d = route(DijkstraRouting(), RoutingInput(graph, 1, 4))
     e = route(ECMPRouting(), RoutingInput(graph, 1, 4))
+    SatelliteSimNet._MINLOAD_STATIC_FALLBACK_WARNED[] = false
     m = route(MinLoadRouting(), RoutingInput(graph, 1, 4))
+    @test SatelliteSimNet._MINLOAD_STATIC_FALLBACK_WARNED[]
 
     @test d.total_weight ≈ 2.0
     @test e.total_weight ≈ 2.0

@@ -84,9 +84,21 @@ end
     MinLoadRouting
 
 最小负载路由策略：选当前链路负载最低的路径。
-迭代式：Dijkstra → 累加负载 → 边权改拥塞加权 → 重算。
+
+**注意**：`route(::MinLoadRouting, ::RoutingInput)` 不含实时 `current_loads` 时，
+会发出一次性运行时警告，并退化为基于 `RoutingGraph` 静态边权的最短路（与 Dijkstra 等价）。
+有负载数据时请直接调用 `min_load_path(..., current_loads, capacities)`。
 """
 struct MinLoadRouting <: AbstractRoutingAlgorithm end
+
+const _MINLOAD_STATIC_FALLBACK_WARNED = Ref(false)
+
+function _warn_once(ref::Ref{Bool}, msg::String)
+    if !ref[]
+        ref[] = true
+        printstyled(stderr, "[MinLoadRouting] ", msg, "\n"; color = :yellow)
+    end
+end
 
 # ────────────────────────────────────────────────────────────
 # route() 方法：让 ECMP/MinLoad 真正实现 AbstractRoutingAlgorithm 接口
@@ -131,17 +143,59 @@ function route(::ECMPRouting, input::RoutingInput)::RoutingOutput
     return RoutingOutput(best, min_w, "ECMP")
 end
 
+function _extract_graph_edges(g::RoutingGraph)
+    edges = Tuple{Int,Int}[]
+    weights = Float64[]
+    seen = Set{Tuple{Int,Int}}()
+    for (u, nbrs) in g.adj
+        for (v, w) in nbrs
+            canonical = u < v ? (u, v) : (v, u)
+            canonical in seen && continue
+            push!(seen, canonical)
+            push!(edges, canonical)
+            push!(weights, w)
+        end
+    end
+    return edges, weights
+end
+
 """
     route(::MinLoadRouting, input) -> RoutingOutput
 
-MinLoad 路由：无实时负载信息时退化为最短路径（与 Dijkstra 等价）。
-有负载信息时应配合 current_loads/capacities 使用 min_load_path。
+MinLoad 路由：有 `current_loads`/`capacities` 时用拥塞感知 `min_load_path`；
+否则退化为静态权重最短路（Dijkstra 等价）。
 """
 function route(::MinLoadRouting, input::RoutingInput)::RoutingOutput
     g = input.graph
     src, dst = input.source, input.destination
     src == dst && return RoutingOutput([src], 0.0, "MinLoad")
-    # 无实时负载信息 → 退化为 Dijkstra 最短路（使用 RoutingGraph 权重）
+
+    if input.current_loads !== nothing && input.capacities !== nothing
+        edges, weights = _extract_graph_edges(g)
+        loads = input.current_loads
+        caps = input.capacities
+        length(loads) == length(edges) ||
+            throw(ArgumentError("current_loads length must match graph edge count"))
+        length(caps) == length(edges) ||
+            throw(ArgumentError("capacities length must match graph edge count"))
+        path = min_load_path(g.n_nodes, edges, weights, src, dst, loads, caps)
+        isempty(path) && return RoutingOutput(Int[], Inf, "MinLoad-unreachable")
+        cost = let s = 0.0
+            for k in 1:length(path)-1
+                idx = findfirst(j -> edges[j] == (path[k], path[k+1]) || edges[j] == (path[k+1], path[k]), eachindex(edges))
+                idx === nothing && return RoutingOutput(Int[], Inf, "MinLoad-unreachable")
+                cw = weights[idx] * (1 + loads[idx] / max(caps[idx], 1e-6))
+                s += cw
+            end
+            s
+        end
+        return RoutingOutput(path, cost, "MinLoad-congestion")
+    end
+
+    if !_MINLOAD_STATIC_FALLBACK_WARNED[]
+        _warn_once(_MINLOAD_STATIC_FALLBACK_WARNED,
+            "无实时链路负载，退化为静态权重最短路（Dijkstra）。有负载时请传入 RoutingInput(..., current_loads=..., capacities=...)。")
+    end
     distmx = fill(Inf, g.n_nodes, g.n_nodes)
     for i in 1:g.n_nodes
         distmx[i, i] = 0.0

@@ -12,10 +12,20 @@ struct RoutingGraph
     g::SimpleDiGraph
 end
 
-struct RoutingInput
+Base.@kwdef struct RoutingInput
     graph::RoutingGraph
     source::Int
     destination::Int
+    current_loads::Union{Nothing,Vector{Float64}} = nothing
+    capacities::Union{Nothing,Vector{Float64}} = nothing
+end
+
+function RoutingInput(
+    graph::RoutingGraph, source::Int, destination::Int;
+    current_loads::Union{Nothing,Vector{Float64}} = nothing,
+    capacities::Union{Nothing,Vector{Float64}} = nothing,
+)
+    RoutingInput(graph, source, destination, current_loads, capacities)
 end
 
 struct RoutingOutput

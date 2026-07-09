@@ -1,8 +1,11 @@
 # ===== PINN 路由模型 — 神经网络 + 特征编码 =====
 
-export create_pinn_model, encode_routing_features
+export create_pinn_model, encode_routing_features, reset_pinn_bfs_cache!
 
 const CACHE_BFS = Dict{Tuple{Int,Int,Int},Int}()
+
+"""清空 BFS 跳数缓存（拓扑变化后调用）。"""
+reset_pinn_bfs_cache!() = empty!(CACHE_BFS)
 
 """
 create_pinn_model(input_dim, hidden_dim) -> Lux.Chain

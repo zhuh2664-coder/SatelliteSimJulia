@@ -4,7 +4,7 @@
 using LinearAlgebra: norm
 using SatelliteToolbox: SatelliteToolbox
 
-export evaluate_isl_batch, evaluate_gsl_batch
+export evaluate_isl, evaluate_isl_batch, evaluate_gsl_batch
 
 # ═══════════════════════════════════════════════
 # ISL 评估

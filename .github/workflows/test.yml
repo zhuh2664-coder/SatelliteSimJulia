@@ -27,6 +27,9 @@ jobs:
       - name: Run test suite
         run: julia --project=. test/runtests.jl
 
+      - name: Run legacy runnable subset
+        run: SATSIM_RUN_LEGACY=1 julia --project=. test/runtests_legacy_runnable.jl
+
       - name: Run integration test
         run: |
           julia --project=src/lab -e 'using Pkg; Pkg.instantiate()'

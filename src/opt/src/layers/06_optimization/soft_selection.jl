@@ -13,7 +13,8 @@
     det = a11*(a22*a33 - a23*a23) -
           a12*(a12*a33 - a23*a13) +
           a13*(a12*a23 - a22*a13)
-    return log(det)
+    det_safe = max(det, eps(T))
+    return log(det_safe)
 end
 
 # ── Visibility precompute (Float64, outside AD) ──────────────────────────────
@@ -28,11 +29,11 @@ function build_visibility(pos::Matrix{Float64}, ground_pts::Matrix{Float64};
     cell_ptr[1] = 1
     for g in 1:G
         gx, gy, gz = ground_pts[g,1], ground_pts[g,2], ground_pts[g,3]
-        gr = sqrt(gx*gx + gy*gy + gz*gz)
+        gr = max(sqrt(gx*gx + gy*gy + gz*gz), eps())
         upx, upy, upz = gx/gr, gy/gr, gz/gr
         for i in 1:N
             dx = pos[i,1]-gx; dy = pos[i,2]-gy; dz = pos[i,3]-gz
-            d = sqrt(dx*dx + dy*dy + dz*dz)
+            d = max(sqrt(dx*dx + dy*dy + dz*dz), eps())
             ux, uy, uz = dx/d, dy/d, dz/d
             el = asind(clamp(ux*upx + uy*upy + uz*upz, -1.0, 1.0))
             if el >= min_el

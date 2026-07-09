@@ -35,7 +35,12 @@ function route(alg::PINNRoutingAlgorithm, input::RoutingInput)::RoutingOutput
     end
 
     latency_ms = alg.predict(alg.pinn, adj, src, dst)
-    return RoutingOutput(Int[], Float64(latency_ms), "PINNRouting")
+    fallback = route(DijkstraRouting(), input)
+    if isempty(fallback.path)
+        return RoutingOutput(Int[], Inf, "PINNRouting-unreachable")
+    end
+    cost = isfinite(latency_ms) && latency_ms >= 0 ? Float64(latency_ms) : fallback.total_weight
+    return RoutingOutput(fallback.path, cost, "PINNRouting")
 end
 
 function pinn_predict_all_pairs(alg::PINNRoutingAlgorithm, adj::Matrix{Float64})::Matrix{Float64}

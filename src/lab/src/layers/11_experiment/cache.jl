@@ -5,7 +5,13 @@
 using JSON
 using Printf
 
-export cached_experiment, compare_results
+export cached_experiment, compare_results, config_hash, CACHE_SCHEMA_VERSION
+
+const CACHE_SCHEMA_VERSION = 1
+const _CACHE_REQUIRED_KEYS = (
+    "cache_version", "coverage_ratio", "avg_latency_ms", "max_latency_ms",
+    "p95_latency_ms", "connectivity_ratio", "diameter_ms", "fitness", "duration_s",
+)
 
 # ────────────────────────────────────────────────────────────
 # P2: 实验缓存
@@ -18,8 +24,18 @@ _cache_dir() = joinpath("data", "cache")
 
 根据 ExperimentConfig 生成唯一 hash（用于缓存文件名）。
 """
+function _traffic_signature(config::ExperimentConfig)::UInt64
+    parts = String[]
+    for d in config.traffic_demands
+        push!(parts, "$(d.id):$(d.source_ground_id)->$(d.destination_ground_id):$(d.rate_mbps)")
+    end
+    return hash(join(parts, "|"))
+end
+
 function config_hash(config::ExperimentConfig)::String
     key = join(Any[
+        CACHE_SCHEMA_VERSION,
+        config.name,
         config.constellation.T,
         config.constellation.P,
         config.constellation.F,
@@ -34,6 +50,7 @@ function config_hash(config::ExperimentConfig)::String
         length(config.ground_stations),
         length(config.users),
         length(config.traffic_demands),
+        _traffic_signature(config),
         config.ground_pairs,
         config.random_seed,
         config.alpha,
@@ -62,9 +79,13 @@ function cached_experiment(config::ExperimentConfig; force::Bool=false)
 
     # 缓存命中
     if !force && isfile(path)
-        data = JSON.parsefile(path)
-        @printf("[Cache] 命中: %s\n", path)
-        return _dict_to_result(data, config)
+        try
+            data = JSON.parsefile(path)
+            @printf("[Cache] 命中: %s\n", path)
+            return _dict_to_result(data, config)
+        catch err
+            println(stderr, "[Cache] 校验失败，重新执行仿真: ", err, " (", path, ")")
+        end
     end
 
     # 缓存未命中：跑实验
@@ -82,6 +103,7 @@ end
 # Result → Dict 序列化（处理 NaN）
 function _result_to_dict(r::ExperimentResult)
     return Dict{String,Any}(
+        "cache_version" => CACHE_SCHEMA_VERSION,
         "coverage_ratio" => isnan(r.coverage.coverage_ratio) ? 0.0 : r.coverage.coverage_ratio,
         "avg_latency_ms" => r.latency.avg_latency_ms,
         "max_latency_ms" => r.latency.max_latency_ms,
@@ -95,7 +117,18 @@ end
 
 # Dict → Result 反序列化（从缓存重建）
 function _dict_to_result(data::AbstractDict, config::ExperimentConfig)
-    # 简化版：返回一个 Dict 而非完整的 ExperimentResult（避免类型重建复杂性）
+    version = get(data, "cache_version", 0)
+    version == CACHE_SCHEMA_VERSION ||
+        throw(ArgumentError("cache schema mismatch: expected $CACHE_SCHEMA_VERSION, got $version"))
+    for key in _CACHE_REQUIRED_KEYS
+        haskey(data, key) || throw(ArgumentError("cache missing required key: $key"))
+    end
+    for key in ("coverage_ratio", "avg_latency_ms", "max_latency_ms", "p95_latency_ms",
+                "connectivity_ratio", "diameter_ms", "fitness", "duration_s")
+        val = data[key]
+        val isa Number && isfinite(Float64(val)) ||
+            throw(ArgumentError("cache field $key must be a finite number"))
+    end
     return data
 end
 
@@ -145,15 +178,6 @@ function compare_results(results::Dict{String,<:Any})::String
     push!(lines, "|------|--------|-------------|-------------|--------|----------|---------|")
 
     for (name, r) in results
-        @printf("| %-12s | %.1f%% | %11.1f | %11.1f | %6.1f%% | %8.1f | %7.3f |\n",
-            name,
-            get_metric(r, :coverage) * 100,
-            get_metric(r, :avg_latency),
-            get_metric(r, :p95),
-            get_metric(r, :connectivity) * 100,
-            get_metric(r, :diameter),
-            get_metric(r, :fitness),
-        )
         push!(lines, @sprintf("| %-12s | %.1f%% | %11.1f | %11.1f | %6.1f%% | %8.1f | %7.3f |",
             name,
             get_metric(r, :coverage) * 100,
