@@ -28,6 +28,7 @@ include("layers/11_experiment/sweep.jl")
 
 # ── 交互与集成适配层 ─────────────────────────────────────────
 # 此层可以组合上面的公开编排 API，但不反向定义实验领域能力。
+include("layers/12_interaction/server_adapter.jl")
 include("layers/12_interaction/studies.jl")
 include("layers/12_interaction/goals.jl")
 include("layers/12_interaction/planner/planner.jl")

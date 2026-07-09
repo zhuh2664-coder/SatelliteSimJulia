@@ -7,13 +7,9 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 JSON3 = "0f8b85d8-7281-11e9-16c2-39a750bddbf1"
 StructTypes = "856f2bd8-1eba-4b0a-8007-ebc267875bd4"
 WebSockets = "104b5d7c-a370-577a-8038-80a2059c5097"
-SatelliteSimCore = "99f6b6c7-c40f-4eb3-8423-ddc96d839c0b"
-SatelliteSimNet = "e40ae7a9-b545-48ee-92d2-18cbe9a7d82b"
 SatelliteSimLab = "456db33b-f2e9-44a1-91e6-796f5949196b"
 
 [sources]
-SatelliteSimCore = {path = "../core"}
-SatelliteSimNet = {path = "../net"}
 SatelliteSimLab = {path = "../lab"}
 
 [extras]

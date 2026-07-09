@@ -46,6 +46,36 @@ end
         @test cfg.tspan == [0.0, 60.0]
     end
 
+    @testset "transport-neutral streaming adapter" begin
+        @test "iridium" in streaming_constellation_names()
+        @test streaming_constellation_metadata("iridium")["T"] == 66
+
+        custom = streaming_walker_config(T = 6, P = 3, F = 1, alt_km = 550.0, inc_deg = 53.0)
+        simulation = prepare_streaming_simulation(
+            name = "streaming-smoke",
+            config = custom,
+            tspan = [0.0, 10.0],
+            step_s = 10.0,
+            ground_stations = [(id = "beijing", name = "Beijing", lat_deg = 39.9042, lon_deg = 116.4074, alt_km = 0.0)],
+        )
+        @test simulation isa StreamingSimulation
+        @test size(simulation.positions) == (6, 2, 3)
+        @test length(simulation.isl_edges) > 0
+        @test streaming_constellation_metadata(simulation)["name"] == "streaming-smoke"
+        @test streaming_shell_metadata(simulation)[1]["id"] == 1
+
+        frame = streaming_frame(simulation, 1)
+        @test frame["frame_index"] == 1
+        @test frame["n_total"] == 2
+        @test length(frame["positions"]) == 18
+        @test length(frame["isl_pairs"]) == length(simulation.isl_edges)
+        @test length(frame["isl_avail"]) == length(simulation.isl_edges)
+        @test frame["gsl_shape"] == [6, 1]
+        @test length(frame["gsl_avail"]) == 6
+        @test frame["coverage_summary"]["total"] == 1
+        @test_throws BoundsError streaming_frame(simulation, 3)
+    end
+
     @testset "traffic time grid alignment" begin
         grid = SatelliteSimLab._simulation_time_grid_from_tspan([0.0, 60.0, 120.0], 3)
         @test grid !== nothing

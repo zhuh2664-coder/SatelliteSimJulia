@@ -1,14 +1,16 @@
 # ============================================================
 # SatelliteSimServer — WebSocket 物理服务
 #
-# 把 SatelliteSimCore/Lab 的物理层通过 WebSocket 暴露给 Unity 客户端。
+# 把 SatelliteSimLab 的 transport-neutral streaming adapter 通过 WebSocket 暴露给 Unity 客户端。
 # 协议：纯 WebSocket 文本帧（JSON），5 个 endpoint。
-# 架构：叶子消费方，只调原子工具，不污染现有 11 个包。
+# 架构：叶子传输适配器；协议和会话留在 Server，领域仿真委托给 Lab。
 #
-# 依赖方向：Server → Lab/Net → Core → {Foundation, Orbit, Link, Metrics}
+# 依赖方向：Server → Lab → {Core, Net, Foundation, Orbit, Link, Metrics}
 # ============================================================
 
 module SatelliteSimServer
+
+using SatelliteSimLab
 
 # 全部模块就绪：协议 + 会话 + 推流 + handlers。
 
