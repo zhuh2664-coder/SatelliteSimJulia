@@ -7,19 +7,43 @@
 
 # ── worker 端函数（toplevel 定义，供 remotecall 调用）──
 
-"""在 worker 上初始化 SatelliteServer（remotecall 调用）。"""
-function _init_worker_server(sat_id::Int, elements, strategy, T::Int, P::Int)
-    server = init_server(sat_id, elements, strategy, T, P)
-    # 存到 worker 全局变量
+function _resolve_topology_strategy(key::Symbol)
+    key === :ring && return RingStrategy()
+    error("distributed simulation 不支持的拓扑策略: $key")
+end
+
+function _topology_strategy_key(strategy::RingStrategy)
+    return :ring
+end
+function _topology_strategy_key(strategy)
+    error("distributed simulation 不支持的拓扑策略类型: $(typeof(strategy))")
+end
+
+"""在 worker 上初始化 SatelliteServer（本地生成 Walker 根数，避免 KeplerianElements 跨进程类型漂移）。"""
+function _init_worker_server(
+    sat_id::Int, T::Int, P::Int, F::Int,
+    alt_km::Float64, inc_deg::Float64, strategy_key::Symbol,
+)
+    elems = generate_walker_delta(T=T, P=P, F=F, alt_km=alt_km, inc_deg=inc_deg)
+    strategy = _resolve_topology_strategy(strategy_key)
+    server = init_server(sat_id, elems[sat_id], strategy, T, P)
     Core.eval(Main, :(global _SATELLITE_SERVER_ = $server))
     return sat_id
 end
 
-"""在 worker 上传播到 t，返回位置（remotecall 调用）。"""
-function _propagate_worker(t::Float64, propagator)
+"""在 worker 上传播到 t，返回位置（remotecall 调用）。propagator 传 Symbol 避免跨进程类型不匹配。"""
+function _propagate_worker(t::Float64, propagator::Symbol)
     server = Main._SATELLITE_SERVER_
     return propagate_server(server, t; propagator=propagator)
 end
+
+function _propagator_symbol(prop::AbstractKeplerianPropagator)
+    prop isa TwoBodyPropagator && return :two_body
+    prop isa J2Propagator && return :j2
+    prop isa J4Propagator && return :j4
+    return :two_body
+end
+_propagator_symbol(prop::Symbol) = prop
 
 export DistributedSimulation, run_distributed_simulation,
        evaluate_isls_global, compute_routing_matrix
@@ -51,25 +75,23 @@ function run_distributed_simulation(config; n_workers::Int=0)
     T = constellation.T
     P = constellation.P
     n_w = n_workers > 0 ? min(n_workers, T) : T
+    project_path = dirname(Base.active_project())
 
-    # 1. 启动 worker 进程
-    worker_pids = addprocs(n_w)
+    # 1. 启动 worker 进程（继承根项目环境，path 子包可加载）
+    worker_pids = addprocs(n_w; exeflags="--project=$(project_path)")
     try
-        # 2. 在 worker 加载依赖（用 remotecall_eval 而非 @everywhere，避免 toplevel 宏问题）
+        # 2. 在 worker 加载依赖（Core.eval 避免闭包序列化引发模块 KeyError）
         for w in worker_pids
-            remotecall_fetch(w) do
-                Core.eval(Main, :(using SatelliteSimCore))
-                Core.eval(Main, :(using SatelliteSimNet))
-                Core.eval(Main, :(using SatelliteSimDistributed))
-            end
+            remotecall_fetch(Core.eval, w, Main, :(using SatelliteSimCore))
+            remotecall_fetch(Core.eval, w, Main, :(using SatelliteSimNet))
+            remotecall_fetch(Core.eval, w, Main, :(using SatelliteSimDistributed))
         end
 
-        # 3. 生成 Walker 根数
-        elems = generate_walker_delta(T=T, P=P, F=constellation.F,
-                                       alt_km=constellation.alt_km, inc_deg=constellation.inc_deg)
+        # 3. 拓扑/约束/传播器（Walker 根数在 worker 本地生成）
         strategy = config.topology_strategy
+        strategy_key = _topology_strategy_key(strategy)
         constraints = config.constraints
-        propagator = config.propagator
+        propagator_key = _propagator_symbol(config.propagator)
 
         # 4. 分配卫星到 worker（round-robin）
         sat_to_worker = Dict{Int,Int}()
@@ -80,7 +102,11 @@ function run_distributed_simulation(config; n_workers::Int=0)
         # 5. 初始化各 worker 的 SatelliteServer
         for sat_id in 1:T
             w = sat_to_worker[sat_id]
-            remotecall_fetch(_init_worker_server, w, sat_id, elems[sat_id], strategy, T, P)
+            remotecall_fetch(
+                _init_worker_server, w,
+                sat_id, T, P, constellation.F,
+                constellation.alt_km, constellation.inc_deg, strategy_key,
+            )
         end
 
         # 6. 传播到最终时刻，收集位置
@@ -88,7 +114,7 @@ function run_distributed_simulation(config; n_workers::Int=0)
         positions = zeros(T, 3)
         for sat_id in 1:T
             w = sat_to_worker[sat_id]
-            pos = remotecall_fetch(_propagate_worker, w, final_t, propagator)
+            pos = remotecall_fetch(_propagate_worker, w, final_t, propagator_key)
             positions[sat_id, :] = pos
         end
 

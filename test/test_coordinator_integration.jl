@@ -37,8 +37,3 @@ end
     @test !isempty(results)
     @test all(r -> r[2] isa Bool && isfinite(r[3]), results)
 end
-
-@testset "run_distributed_simulation smoke" begin
-    # path 子包在 addprocs worker 上常无法反序列化加载；in-process 逻辑已由上一 testset 覆盖
-    @test_skip "Distributed worker 环境限制；全局 ISL/路由 helper 已单进程验证"
-end

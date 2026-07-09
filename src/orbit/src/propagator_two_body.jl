@@ -48,7 +48,7 @@ _make_propagator(el::KeplerianElements, ::J4Propagator) = init(Val(:J4), el)
 `(N_sat, N_time, 3)` 矩阵，`pos[i, j, :]` 为第 i 颗卫星第 j 个时间步的 (x, y, z) km
 """
 function propagate_positions(
-    elems::Vector{KeplerianElements},
+    elems::Vector{<:KeplerianElements},
     tspan::Vector{Float64};
     propagator=TwoBodyPropagator(),
 )
@@ -75,7 +75,7 @@ end
 
 传播并转 ECEF（用 SatelliteToolbox 官方 r_eci_to_ecef，含岁差章动极移修正）。
 """
-function propagate_to_ecef(elems::Vector{KeplerianElements}, tspan::Vector{Float64};
+function propagate_to_ecef(elems::Vector{<:KeplerianElements}, tspan::Vector{Float64};
                             propagator=TwoBodyPropagator())
     N = length(elems)
     M = length(tspan)
