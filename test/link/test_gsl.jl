@@ -1,6 +1,6 @@
 # test/link/test_gsl.jl — 地面站链路（GSL）可见性测试
 
-using SatelliteSimJulia
+using SatelliteSimCore
 using Test
 
 @testset "evaluate_gsl_batch visible and invisible" begin

@@ -1,12 +1,17 @@
 module SatelliteSimJulia
 
-using Reexport
+# 日常仿真门面。低层领域包与交互/Agent 集成必须显式导入对应子包，
+# 以免根包再次成为无边界的聚合命名空间。
+using SatelliteSimLab: demo, run_examples,
+    ExperimentConfig, ExperimentResult, run_experiment,
+    study, walker, run_study,
+    assess_coverage, assess_routing, full_constellation_assessment
 
-# Phase 0': 日常仿真伞包 — 主链 + Lab。Opt/Viz/Security/Distributed 见 envs/* 或 [extras]。
-@reexport using SatelliteSimCore
-@reexport using SatelliteSimNet
-@reexport using SatelliteSimLab
-@reexport using SatelliteSimTraffic
+export satnet,
+       demo, run_examples,
+       ExperimentConfig, ExperimentResult, run_experiment,
+       study, walker, run_study,
+       assess_coverage, assess_routing, full_constellation_assessment
 
 include("cli/SimCLI.jl")
 using .SimCLI

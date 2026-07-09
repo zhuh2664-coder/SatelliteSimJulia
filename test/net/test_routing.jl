@@ -1,6 +1,5 @@
 # test/net/test_routing.jl — 统一路由接口测试
 
-using SatelliteSimJulia
 using SatelliteSimNet
 using Graphs
 using Test

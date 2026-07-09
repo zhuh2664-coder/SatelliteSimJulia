@@ -166,8 +166,8 @@ end
 批量评估 N 颗卫星对 M 个地面站的 GSL。
 """
 function evaluate_gsl_batch(
-    pos_matrix::Matrix{Float64},
-    gs_stations::Vector{NTuple{3,Float64}};
+    pos_matrix::AbstractMatrix{<:Real},
+    gs_stations::AbstractVector{<:NTuple{3,<:Real}};
     constraints::PhysicalConstraints=LEO_DEFAULTS,
 )
     N = size(pos_matrix, 1)

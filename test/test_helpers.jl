@@ -1,6 +1,7 @@
 # test/test_helpers.jl — 当前架构测试共享 fixture
 
-using SatelliteSimJulia
+using Dates
+using SatelliteSimCore
 
 """
     make_walker_pos(T=24, P=6, F=1, t_slots=11)

@@ -1,6 +1,6 @@
 # test_cgr.jl — Contact Graph Routing 测试
 
-using SatelliteSimJulia
+using SatelliteSimNet
 using Test
 
 @testset "CGR contact plan basics" begin
