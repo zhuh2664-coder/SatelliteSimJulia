@@ -12,7 +12,8 @@ if get(ENV, "SATSIM_RUN_LEGACY", "0") != "1"
 else
     using SatelliteSimJulia
     using Dates
-    using SatelliteSimFoundation: TimeUTC, SatelliteConfig
+    using SatelliteSimFoundation: TimeUTC, SatelliteConfig, SourceMetadata
+    using SatelliteSimOrbit: earth_fixed_node_longitude_deg
     import LinearAlgebra
 
     @testset "legacy runnable: package skeleton" begin
@@ -35,7 +36,7 @@ else
         @test sat.id == 1
         @test design.raan_deg == 10.0
         earth_fixed = EarthFixedOrbitElementSet(550.0, 53.0, 10.0, 0.0, SourceMetadata("ef"))
-        @test earth_fixed.altitude_km == 550.0
+        @test earth_fixed_node_longitude_deg(earth_fixed) ≈ 30.0
     end
 
     include(joinpath(@__DIR__, "test_metrics.jl"))

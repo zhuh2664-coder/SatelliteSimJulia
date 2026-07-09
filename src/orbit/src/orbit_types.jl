@@ -27,14 +27,47 @@ end
 
 Base.propertynames(::DesignOrbitElementSet) = (:altitude_km, :inclination_deg, :raan_deg, :eccentricity, :metadata)
 
-"""地固轨道根数"""
+"""地固轨道根数（倾角→纬度，RAAN/近地点幅角/平近点角→经度分量）"""
 struct EarthFixedOrbitElementSet <: AbstractOrbitElementSet
     altitude_km::Float64
     inclination_deg::Float64
     raan_deg::Float64
-    eccentricity::Float64
+    argument_of_perigee_deg::Float64
+    mean_anomaly_deg::Float64
     metadata::SourceMetadata
 end
+
+function EarthFixedOrbitElementSet(
+    altitude_km::Real, inclination_deg::Real, raan_deg::Real,
+    argument_of_perigee_deg::Real, metadata::SourceMetadata;
+    mean_anomaly_deg::Real = 20.0,
+)
+    Float64(altitude_km) >= 0 ||
+        throw(ArgumentError("altitude_km must be non-negative"))
+    return EarthFixedOrbitElementSet(
+        Float64(altitude_km), Float64(inclination_deg), Float64(raan_deg),
+        Float64(argument_of_perigee_deg), Float64(mean_anomaly_deg), metadata,
+    )
+end
+
+function EarthFixedOrbitElementSet(;
+    altitude_km::Real,
+    inclination_deg::Real,
+    raan_deg::Real = 0.0,
+    argument_of_perigee_deg::Real = 0.0,
+    mean_anomaly_deg::Real = 0.0,
+    metadata::SourceMetadata = SourceMetadata("earth-fixed"),
+)
+    return EarthFixedOrbitElementSet(
+        altitude_km, inclination_deg, raan_deg,
+        argument_of_perigee_deg, metadata; mean_anomaly_deg=mean_anomaly_deg,
+    )
+end
+
+Base.propertynames(::EarthFixedOrbitElementSet) = (
+    :altitude_km, :inclination_deg, :raan_deg,
+    :argument_of_perigee_deg, :mean_anomaly_deg, :metadata,
+)
 
 """TLE 轨道根数"""
 struct TLEOrbitElementSet <: AbstractOrbitElementSet
