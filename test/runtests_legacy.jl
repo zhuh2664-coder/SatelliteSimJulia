@@ -5,6 +5,7 @@
 #
 # 运行方式（任选其一）：
 #   SATSIM_RUN_LEGACY=1 julia --project=. test/runtests_legacy.jl
+#   SATSIM_RUN_LEGACY=1 julia --project=. test/runtests_legacy_runnable.jl  # 活跃 API 对齐子集
 #   SATSIM_RUN_LEGACY=1 julia --project=. test/runtests.jl
 #
 # 直接运行本文件且未设置 SATSIM_RUN_LEGACY=1 时，仅输出跳过说明。
