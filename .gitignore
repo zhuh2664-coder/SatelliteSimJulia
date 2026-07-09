@@ -38,21 +38,17 @@ benchmark_suite/
 # Data (not source code)
 data/
 
-# AI tool configs & docs (not source code)
+# AI tool configs & local assistant notes
 .claude/
 AGENTS.md
 CLAUDE.md
 LAYERS.md
 REFACTOR_STATUS.md
 
-# Top-level docs and papers (not source code)
-docs/
-paper/
-*.md
-!/README.md
-实施手册.md
-调研.md
-重复代码清理报告.md
+# Generated documentation output; keep docs source files tracked
+docs/build/
+docs/site/
+paper/build/
 
 # Misc local
 scripts/.kimi_env

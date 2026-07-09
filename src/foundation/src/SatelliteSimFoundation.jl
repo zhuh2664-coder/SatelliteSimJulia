@@ -12,5 +12,6 @@ include("geometry_constants.jl")
 include("entities.jl")
 include("experiment_variables.jl")
 include("link_types.jl")
+include("exports.jl")
 
 end # module
