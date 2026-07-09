@@ -50,6 +50,7 @@ import SatelliteToolboxSgp4
 export AbstractPropagator
 export Sgp4PropagatorAdapter
 export propagate_sample, propagate_constellation
+export supports_orbit_elements
 
 """
     AbstractPropagator
@@ -858,15 +859,17 @@ SGP4 传播 + TEME→ECEF 转换，直接返回裸数组 (N×T×3) km。
 function SatelliteSimOrbit.propagate_to_ecef(
     tle_elements::Vector{TLEOrbitElementSet},
     time_grid::SimulationTimeGrid;
+    propagator::Union{Nothing,Sgp4PropagatorAdapter} = nothing,
     verify_checksum::Bool = false,
 )::Array{Float64,3}
     n_sats = length(tle_elements)
     n_time = time_count(time_grid)
     pos_ecef = zeros(n_sats, n_time, 3)
     offsets = timeslot_offsets(time_grid)
+    checksum_enabled = propagator === nothing ? verify_checksum : propagator.verify_checksum
 
     Threads.@threads for i in 1:n_sats
-        tle = satellite_toolbox_tle(tle_elements[i]; verify_checksum = verify_checksum)
+        tle = satellite_toolbox_tle(tle_elements[i]; verify_checksum = checksum_enabled)
         sgp4d = SatelliteToolboxSgp4.sgp4_init(tle)
         tle_epoch = SatelliteToolbox.tle_epoch(DateTime, tle)
 
