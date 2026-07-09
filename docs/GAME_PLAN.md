@@ -1,5 +1,7 @@
 # SatelliteSim 游戏开发计划（Godot 4）
 
+> **已冻结（2026-07-09）** — 非仿真主线，本周不做。进度表见同目录 `STATUS.md`（亦冻结）。主线现状：[`../CURRENT.md`](../CURRENT.md)。
+
 > 目标：基于 `SatelliteSimCore/Lab` 物理仿真，做一个 LEO 卫星星座 3D 沙盒游戏。
 > 后端：Julia WebSocket 服务（已就绪）。前端：Godot 4 客户端。
 > 状态：**计划阶段**，等待审核后开始实施。

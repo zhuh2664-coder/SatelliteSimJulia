@@ -1,7 +1,4 @@
-# 可视化环境（Phase 1）
-# = envs/core + CairoMakie + GeoMakie
-# CLI viz 子命令通过子进程调用: julia --project=envs/viz bin/satnet_viz.jl
-# 目标: 主链 demo() 不触发 Makie 预编译
+# 可视化环境：core 主链 + CairoMakie + GeoMakie + SatelliteSimViz
 
 [deps]
 CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"

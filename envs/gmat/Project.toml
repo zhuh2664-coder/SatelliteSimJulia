@@ -1,7 +1,3 @@
-name = "SatelliteSimGmat_Env"
-uuid = "f5a6b7c8-d9e0-1234-f012-456789012345"
-version = "0.1.0"
-
 # HPOP 高精度传播：core 主链 + GMAT + OrdinaryDiffEq（SciML 隔离于此环境）
 
 [deps]

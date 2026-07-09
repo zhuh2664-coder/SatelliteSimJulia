@@ -383,22 +383,33 @@ end
 # ────────────────────────────────────────────────────────────
 
 """
-生成可视化图片。
+生成可视化图片（子进程 envs/viz，避免主链预编译 Makie）。
 
-subcommand: snapshot / dashboard / animate（当前仅 snapshot 完全实现）
-positions: N×T×3 位置数据文件路径（JLD2 或未来支持的格式）
+subcommand: snapshot / coverage / dashboard / animate
+positions_path: 可选 JLD2 位置文件（含 `positions` 键）；snapshot 无文件时生成演示图
 """
-@cast function viz(subcommand::String, positions_path::String; output::String = "")
+const _VIZ_SCRIPT = joinpath(@__DIR__, "..", "..", "bin", "satnet_viz.jl")
+const _ENVS_VIZ = joinpath(@__DIR__, "..", "..", "envs", "viz")
+
+@cast function viz(subcommand::String, positions_path::String = ""; output::String = "")
     subcommand = lowercase(subcommand)
-    if subcommand == "snapshot"
-        error("viz snapshot requires a positions file; load and save workflow not yet implemented in CLI")
-    elseif subcommand == "dashboard"
-        error("viz dashboard not yet implemented in CLI")
-    elseif subcommand == "animate"
-        error("viz animate not yet implemented in CLI")
-    else
-        error("unknown viz subcommand: $subcommand")
+    subcommand in ("snapshot", "coverage", "dashboard", "animate") ||
+        error("unknown viz subcommand: $subcommand (use snapshot, coverage, dashboard, animate)")
+
+    if subcommand in ("dashboard", "animate")
+        error("viz $subcommand not yet implemented; use snapshot or coverage")
     end
+
+    args = String[subcommand]
+    if !isempty(positions_path)
+        push!(args, positions_path)
+    end
+    if !isempty(output)
+        push!(args, "--output", output)
+    end
+
+    julia = Base.julia_cmd()
+    run(`$julia --project=$_ENVS_VIZ $_VIZ_SCRIPT $args`)
 end
 
 # ────────────────────────────────────────────────────────────

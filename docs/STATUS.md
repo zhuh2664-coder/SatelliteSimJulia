@@ -1,5 +1,7 @@
 # SatelliteSim Godot 客户端 — 进度跟踪
 
+> **已冻结（2026-07-09）** — 这是 Godot 客户端进度，**不是**仿真主链状态。主链只看 [`../CURRENT.md`](../CURRENT.md)。
+
 > 每个 milestone 一个 commit。状态变化时更新本文档 + 一个 commit。
 
 ## 当前进度

@@ -1,5 +1,7 @@
 # SatelliteSimJulia
 
+**现状看 [`CURRENT.md`](CURRENT.md)** · **给 AI 看 [`AGENTS.md`](AGENTS.md)** · **论文在 [`paper/`](paper/)** · **依赖隔离 [`docs/design/dependency-isolation.md`](docs/design/dependency-isolation.md)**
+
 **LEO 卫星星座仿真 + 可微优化 + AI 适配**——用 Julia 的类型系统、多重分派和裸数组构建的一条端到端卫星网络仿真流水线。
 
 从「Walker 星座生成 → 轨道传播 → ISL/GSL 链路评估 → 拓扑/路由 → 流量/容量 → 指标」，全链路用裸 `Array{Float64,3}` 衔接、用多重分派扩展、并可微分以做梯度优化。上方再叠一层 AI 适配层，把自然语言请求翻译成仿真工具调用。
@@ -133,10 +135,12 @@ println("连通: $(round(result.network.connectivity_ratio*100, digits=1))%")
 
 ## 文档
 
-- [用户手册](docs/USER_GUIDE.md) — 6 个场景（覆盖评估 / 参数扫描 / 星座对比 / AI 仿真 / 可微优化 / TLE 仿真）
-- [API 参考](docs/API_REFERENCE.md) — 每个包导出的类型与函数，按领域分组
-- [开发者指南](docs/DEVELOPER_GUIDE.md) — 怎么加新拓扑 / 路由 / 传播器 / AI 工具 / 实验
-- [平台状态报告](docs/PLATFORM_STATUS_REPORT.md) — 当前能力边界与路线图
+- **[CURRENT.md](CURRENT.md)** — 唯一现状：做到哪、本周目标、明确不做
+- [用户手册](docs/USER_GUIDE.md) — 使用场景
+- [API 参考](docs/API_REFERENCE.md) — 导出类型与函数
+- [开发者指南](docs/DEVELOPER_GUIDE.md) — 怎么扩展
+- [依赖隔离](docs/design/dependency-isolation.md) — 多环境与 Phase 路线
+- 其余 `docs/` / `project_docs/` 默认参考或归档，不以平行「总规划」为准
 
 ## 测试
 

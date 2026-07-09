@@ -26,7 +26,7 @@ const ROOT_FORBIDDEN_DEPS = Set([
     "Flux", "Lux", "Zygote", "Enzyme", "Optimisers", "ForwardDiff",
     "CairoMakie", "Makie", "GeoMakie", "OrdinaryDiffEq",
     "SatelliteSimOpt", "SatelliteSimViz", "SatelliteSimDistributed",
-    "GMAT", "BenchmarkTools",
+    "GMAT", "BenchmarkTools", "SatelliteSimSecurity",
 ])
 
 function parse_dep_names(path::AbstractString)
