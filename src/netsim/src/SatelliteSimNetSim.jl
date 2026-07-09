@@ -6,6 +6,7 @@ Packet-level discrete-event network simulation for SatelliteSimJulia.
 Phase 1: DropTail queues + multi-hop path DES (`simulate_path`)
 Phase 2: ContactPlan / CGR, FlowMonitor, UDP helpers, simplified TCP Reno
 Phase 3: Bundle/LTP, BPA store-and-forward, PCAP export
+Phase 4: Dual-fidelity compare, M/D/1 baseline, ns-3 scenario export
 
 Kept separate from the differentiable optimization path (DES is not AD-safe).
 """
@@ -31,6 +32,7 @@ include("monitor/flow_monitor.jl")
 include("monitor/pcap.jl")
 include("transport/udp.jl")
 include("transport/tcp_reno.jl")
+include("validate/dual_fidelity.jl")
 include("demo.jl")
 
 end # module

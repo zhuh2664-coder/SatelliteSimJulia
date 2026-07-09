@@ -1,6 +1,6 @@
 # Standalone NetSim demos (no SatelliteSim* deps)
 
-export demo_netsim, demo_cgr, demo_tcp_reno, demo_dtn, demo_ltp
+export demo_netsim, demo_cgr, demo_tcp_reno, demo_dtn, demo_ltp, demo_dual_fidelity
 
 """
     demo_netsim(; load_mbps=130.0, rate_mbps=100.0, duration_s=2.0)
@@ -187,4 +187,36 @@ function demo_ltp(; loss::Real=0.2, seed::Int=3)
             r.segments_sent, r.retransmits, r.drops, r.duration_s)
     println("="^60)
     return r
+end
+
+"""
+    demo_dual_fidelity()
+
+Analytical prop-only vs DES underload/overload on the same hop delays,
+plus an M/D/1 theory check and ns-3 scenario export.
+"""
+function demo_dual_fidelity()
+    println("="^60)
+    println("SatelliteSimNetSim demo — dual fidelity + baselines")
+    println("="^60)
+    hop_ms = [10.5, 10.8, 11.2, 10.1, 10.9, 10.4, 10.0]
+    df = compare_path_fidelity(hop_ms, 100e6; duration_s=0.4, seed=7)
+    @printf("analytical prop     : %.3f ms\n", df.analytical_prop_ms)
+    @printf("DES underload mean  : %.3f ms  drops=%d  aligned=%s\n",
+            df.underload.mean_latency_ms, df.underload.n_dropped, string(df.aligned))
+    @printf("DES overload mean   : %.3f ms  drop=%.2f%%  queue=%.3f ms\n",
+            df.overload.mean_latency_ms, 100 * df.overload_drop_ratio, df.overload_queue_ms)
+
+    md = compare_to_md1(10.0, 100e6; load_frac=0.7, duration_s=1.5, seed=1)
+    @printf("M/D/1 ρ=%.2f  theory=%.3f ms  DES=%.3f ms  rel_err=%.1f%%  ok=%s\n",
+            md.rho, 1000 * md.theory_wait_s, 1000 * md.des_queue_s,
+            100 * md.rel_error, string(md.within_tol))
+
+    sc_path = joinpath(tempdir(), "satellitesim_ns3_scenario.json")
+    export_ns3_scenario(sc_path, Ns3Scenario(
+        "demo_7hop_overload", hop_ms, 100e6, 1500, 130e6, 2.0, 32, 42,
+    ))
+    println("ns-3 scenario: ", sc_path)
+    println("="^60)
+    return (df, md)
 end

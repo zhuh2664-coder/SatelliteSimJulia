@@ -19,6 +19,13 @@ demo_cgr()         # ContactPlan + CGR
 demo_tcp_reno()    # 简化 TCP Reno
 demo_dtn()         # Bundle BPA store-and-forward + PCAP
 demo_ltp()         # LTP red/green + 重传
+demo_dual_fidelity()  # 解析 vs DES 双档 + M/D/1 + ns-3 JSON
+```
+
+完整验证（含 GMAT 轨道交叉）见 [VALIDATION.md](VALIDATION.md)：
+
+```bash
+julia --project=. scripts/validate_phase4.jl
 ```
 
 桥接脚本（真实 Iridium 路径 → DES）：
@@ -55,10 +62,17 @@ julia --project=. test/test_netsim.jl
 - `simulate_dtn_forward` / `DtnNode` / `DtnSimResult`
 - `open_pcap` / `write_pcap_packet!` / `close_pcap!`
 
+### Phase 4 — 双档对齐 / 验证基线
+- `compare_path_fidelity` / `DualFidelityResult`
+- `compare_to_md1` / `md1_mean_wait_s` / `Md1Baseline`
+- `Ns3Scenario` / `export_ns3_scenario`
+- `scripts/validate_phase4.jl`（Iridium 路径 + GMAT 轨道交叉）
+- 文档：`docs/VALIDATION.md`
+
 ## 与 archive 的关系
 
 `src/_archive/legacy_layers/09_protocol/netsim/` 仍保留更完整的实验性栈。  
-正式包走干净、可测试的子集；Phase 4 可做解析/DES 双档对齐与 ns-3/GMAT 交叉验证。
+正式包走干净、可测试的子集；外部 ns-3 对比用导出的 scenario JSON。
 
 ## 架构红线
 

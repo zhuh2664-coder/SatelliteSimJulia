@@ -200,6 +200,28 @@ using SatelliteSimNetSim
         rm(path; force=true)
     end
 
+    @testset "dual fidelity + M/D/1 + ns-3 export" begin
+        hop_ms = [10.0, 10.0, 10.0]
+        df = compare_path_fidelity(hop_ms, 100e6; duration_s=0.4, seed=3)
+        @test df.analytical_prop_ms ≈ 30.0 atol = 1e-9
+        @test df.aligned
+        @test df.underload.n_dropped == 0
+        @test df.overload_drop_ratio > 0.0
+        @test df.overload_queue_ms > 0.0
+
+        md = compare_to_md1(5.0, 50e6; load_frac=0.6, duration_s=1.5, seed=2)
+        @test md.rho ≈ 0.6 atol = 1e-9
+        @test md.theory_wait_s > 0
+        @test md.within_tol
+
+        sc_path = joinpath(tempdir(), "ns3_sc_$(getpid()).json")
+        export_ns3_scenario(sc_path, Ns3Scenario("t", hop_ms, 100e6, 1500, 130e6, 1.0, 32, 1))
+        txt = read(sc_path, String)
+        @test occursin("hop_prop_ms", txt)
+        @test occursin("100000000", txt) || occursin("1.0e8", txt) || occursin("1.0e+8", txt)
+        rm(sc_path; force=true)
+    end
+
     @testset "demos" begin
         r = demo_netsim(load_mbps=130.0, rate_mbps=100.0, duration_s=0.3, seed=7)
         @test r isa PathSimResult
@@ -212,5 +234,8 @@ using SatelliteSimNetSim
         @test dr.delivered
         lr = demo_ltp(loss=0.15, seed=3)
         @test lr.delivered_red
+        df, md = demo_dual_fidelity()
+        @test df.aligned
+        @test md.within_tol
     end
 end

@@ -27,13 +27,15 @@ demo_cgr()                      # ContactPlan + CGR（DTN 路由）
 demo_tcp_reno()                 # 简化 TCP Reno
 demo_dtn()                      # Bundle BPA store-and-forward + PCAP
 demo_ltp()                      # LTP red/green
+demo_dual_fidelity()            # 解析 vs DES 双档 + M/D/1 基线
 agent_repl(LLMProvider())       # 启动 AI 仿真助手 REPL（需配 DEEPSEEK_API_KEY）
 ```
 
-解析层路径 → DES 桥接：
+解析层路径 → DES 桥接 / Phase 4 验证：
 
 ```bash
 julia --project=. scripts/demo_netsim_bridge.jl
+julia --project=. scripts/validate_phase4.jl   # 双档 + M/D/1 + GMAT + ns-3 JSON
 ```
 
 ## 三层架构
@@ -68,7 +70,7 @@ julia --project=. scripts/demo_netsim_bridge.jl
 | `orbit` | Orbit | Walker 星座生成、二体/J2/J4/SGP4 传播、星历容器、TLE 数据源 |
 | `link` | Link | ISL/GSL 物理链路评估（距离/LOS/仰角/方位/时延）、容量模型、约束 |
 | `net` | Net | ISL 拓扑策略（Grid+/T/Honeycomb/Ring/...）、路由（Dijkstra/ECMP/MinLoad）、接入决策 |
-| `netsim` | NetSim | **分组级 DES**（ConcurrentSim）：DropTail、CGR、Bundle/LTP、TCP Reno、FlowMonitor、PCAP（见 docs/NETSIM.md） |
+| `netsim` | NetSim | **分组级 DES**（ConcurrentSim）：DropTail、CGR、Bundle/LTP、TCP、FlowMonitor、PCAP、双档验证（见 docs/NETSIM.md / VALIDATION.md） |
 | `metrics` | Metrics | 覆盖率、时延、网络指标、链路利用率、图论分析（介数/PageRank/Fiedler）、网络容量 |
 | `traffic` | Traffic | AoN 流量分配：demand → RoutePath → ISL/GSL 链路负载样本 |
 | `opt` | Opt | 可微 J2 传播、软 ISL/覆盖、端到端梯度、Adam、`optimize_coverage` 覆盖优化 driver |
