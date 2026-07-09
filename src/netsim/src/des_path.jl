@@ -2,7 +2,7 @@
 # This is the Phase-1 bridge: analytical topology/routing supplies the path;
 # NetSim supplies queueing delay, drops, and latency distributions.
 
-export PathHop, PathSimConfig, PathSimResult, simulate_path
+export PathHop, PathSimConfig, PathSimResult, simulate_path, make_path_queues
 
 """
     PathHop(prop_delay_s, data_rate_bps; max_packets=32)
@@ -26,6 +26,8 @@ end
     PathSimConfig
 
 Configuration for a single-flow multi-hop DES experiment.
+
+`queue_kind` ∈ `:droptail | :red | :codel`
 """
 struct PathSimConfig
     hops::Vector{PathHop}
@@ -34,6 +36,7 @@ struct PathSimConfig
     duration_s::Float64
     poisson::Bool
     seed::Int
+    queue_kind::Symbol
 end
 
 function PathSimConfig(
@@ -43,12 +46,50 @@ function PathSimConfig(
     duration_s::Real=2.0,
     poisson::Bool=true,
     seed::Int=42,
+    queue_kind::Symbol=:droptail,
 )
     isempty(hops) && throw(ArgumentError("hops must be non-empty"))
     pkt_bytes > 0 || throw(ArgumentError("pkt_bytes must be positive"))
     load_bps > 0 || throw(ArgumentError("load_bps must be positive"))
     duration_s > 0 || throw(ArgumentError("duration_s must be positive"))
-    return PathSimConfig(hops, pkt_bytes, Float64(load_bps), Float64(duration_s), poisson, seed)
+    queue_kind in (:droptail, :red, :codel) ||
+        throw(ArgumentError("queue_kind must be :droptail, :red, or :codel"))
+    return PathSimConfig(
+        hops, pkt_bytes, Float64(load_bps), Float64(duration_s), poisson, seed, queue_kind,
+    )
+end
+
+"""Build per-hop queues for a path simulation."""
+function make_path_queues(hops::Vector{PathHop}, pkt_bytes::Int, kind::Symbol)
+    if kind === :droptail
+        return AbstractQueue[
+            DropTailQueue(max_packets=h.max_packets, max_bytes=h.max_packets * pkt_bytes)
+            for h in hops
+        ]
+    elseif kind === :red
+        return AbstractQueue[
+            RedQueue(
+                max_packets=h.max_packets,
+                max_bytes=h.max_packets * pkt_bytes,
+                min_th=max(2.0, h.max_packets * 0.2),
+                max_th=max(4.0, h.max_packets * 0.6),
+                max_p=0.1,
+            )
+            for h in hops
+        ]
+    elseif kind === :codel
+        return AbstractQueue[
+            CoDelQueue(
+                max_packets=h.max_packets,
+                max_bytes=h.max_packets * pkt_bytes,
+                target=0.001,    # 1 ms — LEO hops are short; default 5 ms rarely trips
+                interval=0.01,   # 10 ms control interval
+            )
+            for h in hops
+        ]
+    else
+        throw(ArgumentError("unknown queue_kind=$kind"))
+    end
 end
 
 """
@@ -79,7 +120,7 @@ end
 # Mutable run state shared by ConcurrentSim processes.
 # (@resumable must be at module scope — it expands to a struct.)
 mutable struct _PathRunState
-    queues::Vector{DropTailQueue}
+    queues::Vector{AbstractQueue}
     busy_until::Vector{Float64}
     services::Vector{Float64}
     prop_s::Vector{Float64}
@@ -93,10 +134,18 @@ mutable struct _PathRunState
     n_drop::Int
 end
 
+function _sync_queue_time!(q::AbstractQueue, t::Float64)
+    if q isa CoDelQueue
+        set_queue_time!(q, t)
+    end
+    return nothing
+end
+
 @resumable function _journey(env, st::_PathRunState, t_enter::Float64)
     nhops = length(st.queues)
     for h in 1:nhops
         pkt = create_packet!(st.pkt_bytes, UInt32(1), UInt32(2))
+        _sync_queue_time!(st.queues[h], ConcurrentSim.now(env))
         if !enqueue!(st.queues[h], pkt)
             st.n_drop += 1
             return
@@ -105,7 +154,13 @@ end
         st.busy_until[h] = start + st.services[h]
         wait = start - ConcurrentSim.now(env)
         @yield ConcurrentSim.timeout(env, wait + st.services[h])
-        dequeue!(st.queues[h])
+        _sync_queue_time!(st.queues[h], ConcurrentSim.now(env))
+        out = dequeue!(st.queues[h])
+        if out === nothing
+            # AQM drop on dequeue (e.g. CoDel)
+            st.n_drop += 1
+            return
+        end
         @yield ConcurrentSim.timeout(env, st.prop_s[h])
     end
     st.n_deliv += 1
@@ -141,10 +196,7 @@ function simulate_path(cfg::PathSimConfig)::PathSimResult
     prop_ms = sum(prop_s) * 1000.0
     tx_ms = sum(services) * 1000.0
 
-    queues = [
-        DropTailQueue(max_packets=h.max_packets, max_bytes=h.max_packets * cfg.pkt_bytes)
-        for h in cfg.hops
-    ]
+    queues = make_path_queues(cfg.hops, cfg.pkt_bytes, cfg.queue_kind)
 
     st = _PathRunState(
         queues,
@@ -195,8 +247,9 @@ function simulate_path(
     prop_delay_ms::AbstractVector{<:Real},
     data_rate_bps::Real;
     max_packets::Int=32,
+    queue_kind::Symbol=:droptail,
     kwargs...,
 )
     hops = [PathHop(d / 1000.0, data_rate_bps; max_packets=max_packets) for d in prop_delay_ms]
-    return simulate_path(PathSimConfig(hops; kwargs...))
+    return simulate_path(PathSimConfig(hops; queue_kind=queue_kind, kwargs...))
 end

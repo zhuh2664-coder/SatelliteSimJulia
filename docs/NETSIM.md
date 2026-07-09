@@ -20,6 +20,8 @@ demo_tcp_reno()    # 简化 TCP Reno
 demo_dtn()         # Bundle BPA store-and-forward + PCAP
 demo_ltp()         # LTP red/green + 重传
 demo_dual_fidelity()  # 解析 vs DES 双档 + M/D/1 + ns-3 JSON
+demo_aqm()            # DropTail / RED / CoDel 对比
+demo_tcp_cubic()      # 简化 TCP CUBIC
 ```
 
 完整验证（含 GMAT 轨道交叉）见 [VALIDATION.md](VALIDATION.md)：
@@ -68,6 +70,11 @@ julia --project=. test/test_netsim.jl
 - `Ns3Scenario` / `export_ns3_scenario`
 - `scripts/validate_phase4.jl`（Iridium 路径 + GMAT 轨道交叉）
 - 文档：`docs/VALIDATION.md`
+
+### Phase 5 — AQM + CUBIC
+- `RedQueue` / `CoDelQueue`
+- `simulate_path(...; queue_kind=:droptail|:red|:codel)`
+- `simulate_tcp_cubic` / `TcpCubicConfig` / `TcpCubicResult`
 
 ## 与 archive 的关系
 

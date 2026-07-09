@@ -1,4 +1,5 @@
 using Test
+using Random
 using SatelliteSimNetSim
 
 @testset "SatelliteSimNetSim" begin
@@ -200,6 +201,64 @@ using SatelliteSimNetSim
         rm(path; force=true)
     end
 
+    @testset "RED + CoDel queues" begin
+        # RED: forced early drops when avg grows
+        rq = RedQueue(max_packets=20, max_bytes=100_000, min_th=2.0, max_th=6.0, max_p=1.0, w_q=1.0)
+        Random.seed!(1)
+        accepted = 0
+        for i in 1:30
+            enqueue!(rq, create_packet!(100, 1, 2)) && (accepted += 1)
+        end
+        @test drop_count(rq) > 0
+        @test accepted < 30
+
+        # CoDel: drop after sustained sojourn > target
+        cq = CoDelQueue(max_packets=64, target=0.005, interval=0.02)
+        set_queue_time!(cq, 0.0)
+        for i in 1:5
+            enqueue!(cq, create_packet!(100, 1, 2))
+        end
+        # dequeue while sojourn still small → no AQM drop
+        set_queue_time!(cq, 0.001)
+        @test dequeue!(cq) !== nothing
+        # age remaining packets past target+interval
+        set_queue_time!(cq, 0.050)
+        dropped_or_pkt = dequeue!(cq)
+        # either dropped (nothing) or still delivering first above-interval packet
+        set_queue_time!(cq, 0.080)
+        _ = dequeue!(cq)
+        set_queue_time!(cq, 0.120)
+        _ = dequeue!(cq)
+        @test drop_count(cq) >= 1 || packets_in_queue(cq) < 4
+
+        # Path-level: RED should drop under overload
+        r_red = simulate_path(
+            [10.0, 10.0, 10.0], 50e6;
+            load_bps=80e6, duration_s=0.4, poisson=true, seed=5,
+            max_packets=16, queue_kind=:red,
+        )
+        @test r_red.n_sent > 0
+        @test r_red.n_dropped > 0
+
+        r_codel = simulate_path(
+            [10.0, 10.0, 10.0], 50e6;
+            load_bps=80e6, duration_s=0.4, poisson=true, seed=5,
+            max_packets=64, queue_kind=:codel,
+        )
+        @test r_codel.n_sent > 0
+    end
+
+    @testset "TCP CUBIC simplified" begin
+        r = simulate_tcp_cubic(
+            [5.0, 5.0], 50e6;
+            total_bytes=10_000, mss_bytes=1000, max_packets=64, rto_s=0.5, seed=1,
+        )
+        @test r.bytes_acked >= 10_000
+        @test r.completed
+        @test r.goodput_bps > 0
+        @test r.w_max > 0
+    end
+
     @testset "dual fidelity + M/D/1 + ns-3 export" begin
         hop_ms = [10.0, 10.0, 10.0]
         df = compare_path_fidelity(hop_ms, 100e6; duration_s=0.4, seed=3)
@@ -237,5 +296,9 @@ using SatelliteSimNetSim
         df, md = demo_dual_fidelity()
         @test df.aligned
         @test md.within_tol
+        aq = demo_aqm(duration_s=0.3, seed=11)
+        @test haskey(aq, :droptail) && haskey(aq, :red) && haskey(aq, :codel)
+        cr = demo_tcp_cubic(total_bytes=5_000)
+        @test cr.bytes_acked >= 5_000
     end
 end

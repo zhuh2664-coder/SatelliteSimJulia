@@ -1,6 +1,7 @@
 # Standalone NetSim demos (no SatelliteSim* deps)
 
 export demo_netsim, demo_cgr, demo_tcp_reno, demo_dtn, demo_ltp, demo_dual_fidelity
+export demo_aqm, demo_tcp_cubic
 
 """
     demo_netsim(; load_mbps=130.0, rate_mbps=100.0, duration_s=2.0)
@@ -219,4 +220,61 @@ function demo_dual_fidelity()
     println("ns-3 scenario: ", sc_path)
     println("="^60)
     return (df, md)
+end
+
+"""
+    demo_aqm()
+
+Compare DropTail / RED / CoDel under the same overloaded multi-hop path.
+"""
+function demo_aqm(; load_mbps::Real=130.0, rate_mbps::Real=100.0, duration_s::Real=0.5, seed::Int=11)
+    println("="^60)
+    println("SatelliteSimNetSim demo — AQM compare (DropTail / RED / CoDel)")
+    println("="^60)
+    hop_ms = [10.5, 10.8, 11.2, 10.1, 10.9, 10.4, 10.0]
+    results = Dict{Symbol,PathSimResult}()
+    for kind in (:droptail, :red, :codel)
+        r = simulate_path(
+            hop_ms, rate_mbps * 1e6;
+            load_bps=load_mbps * 1e6,
+            duration_s=duration_s,
+            poisson=true,
+            seed=seed,
+            max_packets=32,
+            queue_kind=kind,
+        )
+        results[kind] = r
+        @printf("%-8s  sent=%d deliv=%d drop=%.2f%%  mean_lat=%.3f ms  queue=%.3f ms\n",
+                string(kind), r.n_sent, r.n_delivered, 100 * r.drop_ratio,
+                r.mean_latency_ms, r.mean_queue_delay_ms)
+    end
+    println("="^60)
+    return results
+end
+
+"""
+    demo_tcp_cubic()
+
+Simplified TCP CUBIC transfer demo.
+"""
+function demo_tcp_cubic(; rate_mbps::Real=10.0, total_bytes::Int=20_000)
+    println("="^60)
+    println("SatelliteSimNetSim demo — TCP CUBIC (simplified)")
+    println("="^60)
+    hop_ms = [20.0, 20.0]
+    r = simulate_tcp_cubic(
+        hop_ms,
+        rate_mbps * 1e6;
+        total_bytes=total_bytes,
+        mss_bytes=1000,
+        max_packets=8,
+        rto_s=0.3,
+        seed=7,
+    )
+    @printf("acked=%d / %d  segs=%d  rexmit=%d  drops=%d  completed=%s\n",
+            r.bytes_acked, total_bytes, r.segments_sent, r.retransmits, r.drops, string(r.completed))
+    @printf("duration=%.3fs  goodput=%.3f Mbps  cwnd=%d  w_max=%.1f\n",
+            r.duration_s, r.goodput_bps / 1e6, r.final_cwnd, r.w_max)
+    println("="^60)
+    return r
 end
