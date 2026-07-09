@@ -4,6 +4,7 @@ using Reexport
 
 @reexport using SatelliteSimCore
 @reexport using SatelliteSimNet
+@reexport using SatelliteSimNetSim
 @reexport using SatelliteSimOpt
 @reexport using SatelliteSimSecurity
 @reexport using SatelliteSimLab

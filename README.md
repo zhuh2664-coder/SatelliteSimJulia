@@ -22,7 +22,14 @@ julia --project=. -e 'using SatelliteSimJulia; demo()'
 using SatelliteSimJulia
 
 run_examples()                  # 跑 3 个预编排示例（覆盖/路由/全套评估）
+demo_netsim()                   # 分组级 DES 演示（排队时延 / 丢包）
 agent_repl(LLMProvider())       # 启动 AI 仿真助手 REPL（需配 DEEPSEEK_API_KEY）
+```
+
+解析层路径 → DES 桥接：
+
+```bash
+julia --project=. scripts/demo_netsim_bridge.jl
 ```
 
 ## 三层架构
@@ -57,6 +64,7 @@ agent_repl(LLMProvider())       # 启动 AI 仿真助手 REPL（需配 DEEPSEEK_
 | `orbit` | Orbit | Walker 星座生成、二体/J2/J4/SGP4 传播、星历容器、TLE 数据源 |
 | `link` | Link | ISL/GSL 物理链路评估（距离/LOS/仰角/方位/时延）、容量模型、约束 |
 | `net` | Net | ISL 拓扑策略（Grid+/T/Honeycomb/Ring/...）、路由（Dijkstra/ECMP/MinLoad）、接入决策 |
+| `netsim` | NetSim | **分组级 DES**（ConcurrentSim）：DropTail 队列、多跳路径仿真、排队时延/丢包（见 [docs/NETSIM.md](docs/NETSIM.md)） |
 | `metrics` | Metrics | 覆盖率、时延、网络指标、链路利用率、图论分析（介数/PageRank/Fiedler）、网络容量 |
 | `traffic` | Traffic | AoN 流量分配：demand → RoutePath → ISL/GSL 链路负载样本 |
 | `opt` | Opt | 可微 J2 传播、软 ISL/覆盖、端到端梯度、Adam、`optimize_coverage` 覆盖优化 driver |
