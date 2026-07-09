@@ -1,5 +1,6 @@
 using SatelliteSimServer
 using SatelliteSimCore
+using SatelliteSimLab
 using JSON3
 using Test
 
@@ -17,8 +18,17 @@ using Test
         r = parse_request("""{"type":"start_simulation","name":"iridium"}""")
         @test r isa StartSimulationReq
         @test r.name == "iridium"
+        @test r.walker === nothing
         @test r.tspan == [0.0, 600.0]
         @test r.step_s == 10.0
+
+        r = parse_request("""{"type":"start_simulation","name":"custom_walker","walker":{"T":10,"P":2,"F":1,"alt_km":600.0,"inc_deg":45.0}}""")
+        @test r.walker !== nothing
+        @test r.walker.T == 10
+        @test r.walker.P == 2
+        @test r.walker.F == 1
+        @test r.walker.alt_km == 600.0
+        @test r.walker.inc_deg == 45.0
 
         # start_simulation 完整字段
         r = parse_request("""{"type":"start_simulation","name":"walker48","tspan":[0.0,30.0],"step_s":5.0,"propagator":"j4","fps":20.0}""")
@@ -26,8 +36,24 @@ using Test
         @test r.propagator == "j4"
         @test r.fps == 20.0
 
+        r = parse_request("""{"type":"start_simulation","name":"iridium","ground_stations":[{"id":"beijing","name":"Beijing","lat_deg":39.9042,"lon_deg":116.4074,"alt_km":0.0}],"include_gsl":true,"include_coverage":true}""")
+        @test length(r.ground_stations) == 1
+        @test r.ground_stations[1].id == "beijing"
+        @test r.ground_stations[1].lat_deg ≈ 39.9042
+        @test r.include_gsl
+        @test r.include_coverage
+
         r = parse_request("""{"type":"stop_simulation","session_id":"abc"}""")
         @test r isa StopSimulationReq
+        @test r.session_id == "abc"
+
+        r = parse_request("""{"type":"ai_trace","session_id":"abc","mode":"replay_plan"}""")
+        @test r isa AITraceReq
+        @test r.session_id == "abc"
+        @test r.mode == "replay_plan"
+
+        r = parse_request("""{"type":"ai_checkpoint","session_id":"abc"}""")
+        @test r isa AICheckpointReq
         @test r.session_id == "abc"
 
         # 未知 type 报错
@@ -83,6 +109,10 @@ using Test
             @test length(resp.session_id) == 8
             @test sess !== nothing
             @test size(sess.positions) == (48, 4, 3)
+            @test resp.constellation["T"] == 48
+            @test resp.constellation["P"] == 8
+            @test length(resp.shells) == 1
+            @test resp.shells[1]["alt_km"] == 550.0
 
             # stop
             stop_req = StopSimulationReq(session_id = resp.session_id)
@@ -94,6 +124,29 @@ using Test
             @test_throws ArgumentError dispatch_request(stop_req)
         finally
             # 清理（万一断言失败也要清）
+            haskey(SESSIONS, resp.session_id) && stop_session!(resp.session_id)
+        end
+    end
+
+    @testset "handlers: custom Walker start" begin
+        req = StartSimulationReq(
+            name = "custom_walker",
+            walker = WalkerSpec(T = 10, P = 2, F = 1, alt_km = 600.0, inc_deg = 45.0),
+            tspan = [0.0, 10.0],
+            step_s = 10.0,
+        )
+        resp, sess = dispatch_request(req)
+        try
+            @test resp.ok
+            @test resp.n_sat == 10
+            @test resp.n_time == 2
+            @test size(sess.positions) == (10, 2, 3)
+            @test sess.constellation.T == 10
+            @test resp.constellation["name"] == "custom_walker"
+            @test resp.constellation["T"] == 10
+            @test resp.constellation["alt_km"] == 600.0
+            @test resp.shells[1]["P"] == 2
+        finally
             haskey(SESSIONS, resp.session_id) && stop_session!(resp.session_id)
         end
     end
@@ -123,6 +176,21 @@ using Test
             # 第二帧 t != 0
             payload2 = frame_payload(session, 2)
             @test payload2["t"] ≈ 10.0
+
+            gs_session = start_session(;
+                name = "iridium", tspan = [0.0, 10.0], step_s = 10.0,
+                ground_stations = [GroundStationSpec(id = "beijing", name = "Beijing", lat_deg = 39.9042, lon_deg = 116.4074, alt_km = 0.0)],
+            )
+            try
+                gsl_payload = frame_payload(gs_session, 1)
+                @test gsl_payload["gsl_shape"] == [66, 1]
+                @test length(gsl_payload["gsl_avail"]) == 66
+                @test haskey(gsl_payload, "gsl_pairs")
+                @test haskey(gsl_payload, "ground_stations")
+                @test gsl_payload["coverage_summary"]["total"] == 1
+            finally
+                stop_session!(gs_session.id)
+            end
 
             # 越界
             @test_throws BoundsError frame_payload(session, 99)
@@ -162,6 +230,36 @@ using Test
             finally
                 stop_session!(session.id)
             end
+        end
+    end
+
+    @testset "AI trace/checkpoint endpoints" begin
+        session_id = "server_ai_$(rand(UInt))"
+        mem = SatelliteSimLab.SessionMemory(session_id = session_id)
+        session_dir = dirname(mem.transcript_path)
+        try
+            SatelliteSimLab.record_ledger_event!(mem, Dict{String,Any}(
+                "event_type" => "tool_call",
+                "tool" => "list_available",
+                "args" => Dict("what" => "all"),
+                "status" => "succeeded",
+            ))
+            trace_resp, sess = dispatch_request(AITraceReq(session_id = session_id))
+            @test sess === nothing
+            @test trace_resp.ok
+            @test trace_resp.mode == "timeline"
+            @test any(occursin("tool_call", item) for item in trace_resp.items)
+
+            state = SatelliteSimLab.TeamState("req", SatelliteSimLab.TeamMessage[], Dict{String,Any}(), "", 0, :completed)
+            team = SatelliteSimLab.AgentTeam(SatelliteSimLab.MockProvider(SatelliteSimLab.AssistantMessage[]); session_id = session_id)
+            SatelliteSimLab.save_team_graph_checkpoint!(team, state)
+            chk_resp, sess2 = dispatch_request(AICheckpointReq(session_id = session_id))
+            @test sess2 === nothing
+            @test chk_resp.ok
+            @test JSON3.read(chk_resp.summary_json).status == "completed"
+        finally
+            isdir(session_dir) && rm(session_dir; recursive = true, force = true)
+            SatelliteSimLab.clear_hooks!()
         end
     end
 end
