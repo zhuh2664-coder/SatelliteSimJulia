@@ -84,9 +84,21 @@ end
     MinLoadRouting
 
 最小负载路由策略：选当前链路负载最低的路径。
-迭代式：Dijkstra → 累加负载 → 边权改拥塞加权 → 重算。
+
+**注意**：`route(::MinLoadRouting, ::RoutingInput)` 不含实时 `current_loads` 时，
+会发出一次性运行时警告，并退化为基于 `RoutingGraph` 静态边权的最短路（与 Dijkstra 等价）。
+有负载数据时请直接调用 `min_load_path(..., current_loads, capacities)`。
 """
 struct MinLoadRouting <: AbstractRoutingAlgorithm end
+
+const _MINLOAD_STATIC_FALLBACK_WARNED = Ref(false)
+
+function _warn_once(ref::Ref{Bool}, msg::String)
+    if !ref[]
+        ref[] = true
+        printstyled(stderr, "[MinLoadRouting] ", msg, "\n"; color = :yellow)
+    end
+end
 
 # ────────────────────────────────────────────────────────────
 # route() 方法：让 ECMP/MinLoad 真正实现 AbstractRoutingAlgorithm 接口
@@ -134,10 +146,14 @@ end
 """
     route(::MinLoadRouting, input) -> RoutingOutput
 
-MinLoad 路由：无实时负载信息时退化为最短路径（与 Dijkstra 等价）。
+MinLoad 路由：无实时负载信息时退化为最短路径（与 Dijkstra 等价，使用 RoutingGraph 静态权重）。
 有负载信息时应配合 current_loads/capacities 使用 min_load_path。
 """
 function route(::MinLoadRouting, input::RoutingInput)::RoutingOutput
+    if !_MINLOAD_STATIC_FALLBACK_WARNED[]
+        _warn_once(_MINLOAD_STATIC_FALLBACK_WARNED,
+            "无实时链路负载，退化为静态权重最短路（Dijkstra）。有负载时请使用 min_load_path(..., current_loads, capacities)。")
+    end
     g = input.graph
     src, dst = input.source, input.destination
     src == dst && return RoutingOutput([src], 0.0, "MinLoad")
