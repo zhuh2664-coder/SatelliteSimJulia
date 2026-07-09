@@ -525,11 +525,17 @@ function _resolve_tle(constellation::AbstractString, args::AbstractDict; max_sat
             end
         catch; end
     end
-    # 参数兜底：tle 字段可为文件路径或 TLE 文本
+    # 参数兜底：tle 字段可为文件路径或 TLE 文本。
+    # 含换行的内容按文本解析；isfile 对超长字符串会抛 ENAMETOOLONG，不能裸调。
     if haskey(args, "tle")
-        tle = args["tle"]
-        return isfile(tle) ? _load_tle_file(tle; max_sats=max_sats) :
-                             _load_tle_lines(split(tle, "\n"); max_sats=max_sats)
+        tle = string(args["tle"])
+        is_path = !occursin('\n', tle) && try
+            isfile(tle)
+        catch
+            false
+        end
+        return is_path ? _load_tle_file(tle; max_sats=max_sats) :
+                         _load_tle_lines(split(tle, '\n'); max_sats=max_sats)
     end
     return error("tle_based 传播器需要 TLE 数据：catalog 无 '$(constellation)_tle' 预设，且未传 tle 参数")
 end

@@ -13,6 +13,24 @@
 
 using Printf
 
+# #region agent log
+function _agent_dbg(hypothesisId::String, location::String, message::String, data::AbstractDict=Dict{String,Any}())
+    try
+        open("/Users/zhuhai/Research/SatelliteSimJulia/.cursor/debug-2ee721.log", "a") do io
+            parts = String[]
+            for (k, v) in data
+                push!(parts, "\"" * string(k) * "\":\"" * replace(string(v), "\"" => "\\\"") * "\"")
+            end
+            println(io, "{\"sessionId\":\"2ee721\",\"runId\":\"" * get(ENV, "SATSIM_DEBUG_RUN", "post-fix") *
+                "\",\"hypothesisId\":\"" * hypothesisId * "\",\"location\":\"" * location *
+                "\",\"message\":\"" * message * "\",\"data\":{" * join(parts, ",") *
+                "},\"timestamp\":" * string(round(Int, time() * 1000)) * "}")
+        end
+    catch
+    end
+end
+# #endregion
+
 struct TestTarget
     name::String
     command::Cmd
@@ -22,9 +40,10 @@ end
 
 const ROOT = normpath(joinpath(@__DIR__, ".."))
 const SERVER_PROJECT = joinpath(ROOT, "src", "server")
-# Security declares relative path sources (../link etc.); Pkg.test from ROOT
-# resolves them against ROOT's parent. Run from its own project like server.
+# Packages that declare relative path sources (../link etc.): Pkg.test from ROOT
+# resolves those paths against ROOT's parent. Run from each package's own project.
 const SECURITY_PROJECT = joinpath(ROOT, "src", "security")
+const LAB_PROJECT = joinpath(ROOT, "src", "lab")
 const ROOT_TEST_ENTRY = joinpath(ROOT, "test", "runtests_current.jl")
 
 const RUN_SERVER = get(ENV, "SATSIM_RUN_SERVER", "0") == "1"
@@ -45,6 +64,9 @@ end
 function build_targets()
     targets = TestTarget[]
     push!(targets, target("root", `julia --project=$ROOT $ROOT_TEST_ENTRY`))
+    # #region agent log
+    _agent_dbg("H1", "test_all.jl:root", "root target configured", Dict("root" => ROOT, "manifest" => isfile(joinpath(ROOT, "Manifest.toml"))))
+    # #endregion
 
     # Packages with Project.toml [extras]/[targets] and test/runtests.jl.
     for (short, pkg) in [
@@ -56,7 +78,6 @@ function build_targets()
         ("core", "SatelliteSimCore"),
         ("net", "SatelliteSimNet"),
         ("traffic", "SatelliteSimTraffic"),
-        ("lab", "SatelliteSimLab"),
         ("opt", "SatelliteSimOpt"),
         ("distributed", "SatelliteSimDistributed"),
     ]
@@ -64,6 +85,11 @@ function build_targets()
     end
 
     push!(targets, target("viz", `julia --project=$ROOT -e "using Pkg; Pkg.test(\"SatelliteSimViz\")"`; enabled=!SKIP_VIZ, reason="SATSIM_SKIP_VIZ=1"))
+    # lab/security/server: own project (relative [sources] break under ROOT Pkg.test)
+    push!(targets, target("lab", `julia --project=$LAB_PROJECT -e "using Pkg; Pkg.test()"`))
+    # #region agent log
+    _agent_dbg("H2", "test_all.jl:lab", "lab uses own project", Dict("project" => LAB_PROJECT, "exists" => isdir(LAB_PROJECT)))
+    # #endregion
     push!(targets, target("security", `julia --project=$SECURITY_PROJECT -e "using Pkg; Pkg.test()"`))
     push!(targets, target("server", `julia --project=$SERVER_PROJECT -e "using Pkg; Pkg.test()"`; enabled=RUN_SERVER, reason="set SATSIM_RUN_SERVER=1"))
 

@@ -84,6 +84,12 @@ end
         ensure_default_ai_tools!()
         @test "run_simulation" in registered_ai_tools()
 
+        # Catalog has no starlink_tle preset in this repo; pass inline TLE text
+        # (tool's documented fallback). Reuse a classic NORAD sample × 8 names.
+        line1 = "1 00005U 58002B   00179.78495062  .00000023  00000-0  28098-4 0  4753"
+        line2 = "2 00005  34.2682 331.5174 1859667 331.7664  19.3264 10.82419157413667"
+        tle_text = join(["SAT $i\n$line1\n$line2" for i in 1:8], "\n")
+
         result_json = execute_tool(
             "run_simulation",
             Dict(
@@ -93,6 +99,7 @@ end
                 "duration_s" => 60,
                 "steps" => 3,
                 "max_sats" => 8,
+                "tle" => tle_text,
             ),
         )
         result = JSON.parse(result_json)

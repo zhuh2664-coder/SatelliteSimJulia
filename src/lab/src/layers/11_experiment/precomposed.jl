@@ -426,7 +426,7 @@ function _stable_link_union(links_by_time)::Vector{Tuple{Int,Int}}
 end
 
 function _isl_results_for_union(
-    pos_t::Matrix{Float64},
+    pos_t::AbstractMatrix{<:Real},
     isl_pairs::Vector{Tuple{Int,Int}},
     active_links::Vector{Tuple{Int,Int}},
     constraints,
@@ -638,6 +638,7 @@ function full_constellation_assessment(config)
     network = compute_network_metrics(D)
 
     # 路由结果：通过 RoutingGraph + config.routing_algorithm 逐对执行
+    route_label = string(typeof(config.routing_algorithm).name.name)
     isl_weights = isempty(available_isl) ? Float64[] :
         Float64[r.latency_ms for r in isl_results if r.available]
     routing_graph = isempty(available_isl) ? nothing :
