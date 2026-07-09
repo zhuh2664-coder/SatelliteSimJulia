@@ -2,14 +2,11 @@ module SatelliteSimJulia
 
 using Reexport
 
+# Phase 0': 日常仿真伞包 — 主链 + Lab。Opt/Viz/Security/Distributed 见 envs/* 或 [extras]。
 @reexport using SatelliteSimCore
 @reexport using SatelliteSimNet
-@reexport using SatelliteSimOpt
-@reexport using SatelliteSimSecurity
 @reexport using SatelliteSimLab
 @reexport using SatelliteSimTraffic
-@reexport using SatelliteSimDistributed
-@reexport using SatelliteSimViz
 
 include("cli/SimCLI.jl")
 using .SimCLI

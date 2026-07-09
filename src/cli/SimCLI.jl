@@ -12,7 +12,6 @@ using SatelliteSimCore
 using SatelliteSimLab
 using SatelliteSimNet
 using SatelliteSimOrbit
-using SatelliteSimViz
 
 # ────────────────────────────────────────────────────────────
 # list：列出可发现资源
