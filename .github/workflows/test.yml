@@ -7,27 +7,69 @@ on:
     branches: [main]
 
 jobs:
-  test:
+  boundary:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Julia
-        uses: julia-actions/setup-julia@v2
+      - uses: julia-actions/setup-julia@v2
         with:
           version: "1.12"
+      - name: Dependency boundary check
+        run: julia scripts/check_dependency_boundaries.jl
 
-      - name: Cache Julia artifacts
-        uses: julia-actions/cache@v2
+  core-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - uses: julia-actions/cache@v2
+      - name: Instantiate envs/core
+        run: julia --project=envs/core -e 'using Pkg; Pkg.instantiate()'
+      - name: Core smoke
+        run: julia --project=envs/core test/runtests_core_smoke.jl
 
-      - name: Instantiate project
+  sim-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [boundary, core-test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - uses: julia-actions/cache@v2
+      - name: Instantiate root (sim)
         run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
-
-      - name: Run test suite
+      - name: Run bootstrap test suite
         run: julia --project=. test/runtests.jl
-
-      - name: Run integration test
+      - name: Run current regression suite
+        env:
+          SATSIM_RUN_CURRENT: "1"
+        run: julia --project=. test/runtests.jl
+      - name: Integration test
         run: |
           julia --project=src/lab -e 'using Pkg; Pkg.instantiate()'
           julia --project=. scripts/integration_test.jl
+
+  manifest-baseline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: sim-test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - uses: julia-actions/cache@v2
+      - name: Instantiate tracked environments
+        run: |
+          julia --project=. -e 'using Pkg; Pkg.instantiate()'
+          julia --project=envs/core -e 'using Pkg; Pkg.instantiate()'
+          julia --project=envs/sim -e 'using Pkg; Pkg.instantiate()'
+      - name: Manifest baseline check
+        run: julia scripts/check_manifest_baseline.jl

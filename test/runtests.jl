@@ -43,8 +43,13 @@ include(joinpath(@__DIR__, "test_precomposed_fixes.jl"))
 include(joinpath(@__DIR__, "test_routing_graph.jl"))
 include(joinpath(@__DIR__, "test_access_bounds.jl"))
 include(joinpath(@__DIR__, "test_opt_routing.jl"))
-include(joinpath(@__DIR__, "test_security.jl"))
-include(joinpath(@__DIR__, "test_security_p1.jl"))
+
+if isdefined(SatelliteSimJulia, :SatelliteSimSecurity)
+    include(joinpath(@__DIR__, "test_security.jl"))
+    include(joinpath(@__DIR__, "test_security_p1.jl"))
+else
+    @info "Security tests 跳过（SatelliteSimSecurity 不在伞包；见 envs/security + test/runtests_security.jl）"
+end
 
 if RUN_CURRENT_SUITE
     @info "SATSIM_RUN_CURRENT=1：运行 runtests_current.jl"
