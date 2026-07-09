@@ -265,27 +265,21 @@ function _dijkstra_sat_path(src::Int, dst::Int, D, N::Int, edge_index::Dict{Tupl
     return reverse(path)
 end
 
-"""地面站对路由：GSL + ISL 最短路径 + GSL。"""
+"""地面站对路由：GSL + 配置路由算法 ISL 路径 + GSL。"""
 function _route_ground_pair(
-    src_g::Int, dst_g::Int, access_map, D, available_isl, N::Int, route_label::String,
+    src_g::Int, dst_g::Int, access_map, routing_graph, alg,
 )
+    label = string(typeof(alg).name.name)
     if !haskey(access_map, src_g) || !haskey(access_map, dst_g)
-        return RoutingOutput(Int[], Inf, route_label * "-no-access")
+        return RoutingOutput(Int[], Inf, label * "-no-access")
     end
+    routing_graph === nothing && return RoutingOutput(Int[], Inf, label * "-unreachable")
     src_sat = access_map[src_g].sat_id
     dst_sat = access_map[dst_g].sat_id
-    if !isfinite(D[src_sat, dst_sat])
-        return RoutingOutput(Int[], Inf, route_label * "-unreachable")
-    end
-    edge_index = Dict{Tuple{Int,Int},Int}()
-    for (k, (i, j)) in enumerate(available_isl)
-        edge_index[(i, j)] = k
-        edge_index[(j, i)] = k
-    end
-    path = _dijkstra_sat_path(src_sat, dst_sat, D, N, edge_index)
-    isempty(path) && return RoutingOutput(Int[], Inf, route_label * "-unreachable")
-    total_ms = access_map[src_g].delay_ms + D[src_sat, dst_sat] + access_map[dst_g].delay_ms
-    return RoutingOutput(path, total_ms, route_label)
+    isl_result = route(alg, RoutingInput(routing_graph, src_sat, dst_sat))
+    isempty(isl_result.path) && return RoutingOutput(Int[], Inf, isl_result.algorithm * "-unreachable")
+    total_ms = access_map[src_g].delay_ms + isl_result.total_weight + access_map[dst_g].delay_ms
+    return RoutingOutput(isl_result.path, total_ms, isl_result.algorithm)
 end
 
 # ────────────────────────────────────────────────────────────
@@ -319,23 +313,26 @@ function full_constellation_assessment(config)
     latency = compute_latency(D)
     network = compute_network_metrics(D)
 
-    # 路由结果（用于 routing_metrics）
-    # 注意：当前评估用全对最短路径距离矩阵 D（Floyd-Warshall）。
-    # routing_algorithm 字段记录用户意图，但 ECMP/MinLoad 的逐流 route() 接口
-    # 与矩阵模型不兼容，故此处标签反映意图，实际路径仍走最短路径。
-    # 完整的逐流路由评估（ECMP 分散/MLB 负载感知）待 route() 接口统一后接入。
-    route_label = string(typeof(config.routing_algorithm).name.name)
+    # 路由结果：通过 RoutingGraph + config.routing_algorithm 逐对执行
+    isl_weights = isempty(available_isl) ? Float64[] :
+        Float64[r.latency_ms for r in isl_results if r.available]
+    routing_graph = isempty(available_isl) ? nothing :
+        build_routing_graph(T, available_isl, isl_weights)
+    alg = config.routing_algorithm
+
     pairs, use_ground = _resolve_routing_endpoint_pairs(config, T)
     routing_results = RoutingOutput[]
     for (source, destination) in pairs
         if use_ground
             push!(routing_results, _route_ground_pair(
-                source, destination, access_map, D, available_isl, T, route_label,
+                source, destination, access_map, routing_graph, alg,
             ))
-        elseif isfinite(D[source, destination])
-            push!(routing_results, RoutingOutput([source, destination], D[source, destination], route_label))
+        elseif routing_graph === nothing
+            push!(routing_results, RoutingOutput(
+                Int[], Inf, string(typeof(alg).name.name) * "-unreachable",
+            ))
         else
-            push!(routing_results, RoutingOutput(Int[], Inf, route_label * "-unreachable"))
+            push!(routing_results, route(alg, RoutingInput(routing_graph, source, destination)))
         end
     end
 
@@ -353,6 +350,7 @@ function full_constellation_assessment(config)
             _assign_demands_to_isls(
                 config.traffic_demands, available_isl, D, T;
                 access_map = access_map,
+                routing_graph = routing_graph,
             )
         else
             # 从真 AON 结果提取最后一步的 ISL 负载
@@ -400,9 +398,11 @@ AoN（All-or-Nothing）分配：每条 demand 全量走其最短路径。
 - `D`: 全对最短路径距离矩阵（卫星索引）
 - `N`: 卫星总数
 """
-function _assign_demands_to_isls(demands, available_isl, D, N; access_map=nothing)
+function _assign_demands_to_isls(
+    demands, available_isl, D, N;
+    access_map=nothing, routing_graph=nothing,
+)
     loads = zeros(Float64, length(available_isl))
-    # 建 ISL 边 → 索引的快速查找表
     edge_index = Dict{Tuple{Int,Int},Int}()
     for (k, (i, j)) in enumerate(available_isl)
         edge_index[(i, j)] = k
@@ -417,44 +417,22 @@ function _assign_demands_to_isls(demands, available_isl, D, N; access_map=nothin
             src = access_map[src_g].sat_id
             dst = access_map[dst_g].sat_id
         else
-            # 无地面站配置时，需求 ID 直接视为卫星索引（向后兼容）
             (src_g < 1 || src_g > N || dst_g < 1 || dst_g > N) && continue
             src, dst = src_g, dst_g
         end
         src == dst && continue
-        !isfinite(D[src, dst]) && continue
-        path = _dijkstra_sat_path(src, dst, D, N, edge_index)
+        path = if routing_graph !== nothing
+            route(DijkstraRouting(), RoutingInput(routing_graph, src, dst)).path
+        else
+            !isfinite(D[src, dst]) && continue
+            _dijkstra_sat_path(src, dst, D, N, edge_index)
+        end
         for k in 2:length(path)
             e = (path[k-1], path[k])
             haskey(edge_index, e) && (loads[edge_index[e]] += demand.rate_mbps)
         end
     end
     return loads
-end
-
-# 保留旧贪婪重建供参考（已弃用，由 _dijkstra_sat_path 替代）
-function _reconstruct_path(src::Int, dst::Int, D, N::Int, edge_index)
-    path = [src]
-    current = src
-    visited = Set([src])
-    for _ in 1:N
-        current == dst && break
-        best_next = 0
-        best_cost = Inf
-        for nb in 1:N
-            nb == current && continue
-            nb in visited && continue
-            haskey(edge_index, (current, nb)) || continue  # 必须有 ISL 直连
-            !isfinite(D[nb, dst]) && continue
-            cost = D[current, nb] + D[nb, dst]
-            cost < best_cost && (best_cost = cost; best_next = nb)
-        end
-        best_next == 0 && break   # 无路可走
-        push!(path, best_next)
-        push!(visited, best_next)
-        current = best_next
-    end
-    return path
 end
 
 # ────────────────────────────────────────────────────────────

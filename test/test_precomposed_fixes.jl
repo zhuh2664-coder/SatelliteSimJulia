@@ -2,6 +2,7 @@
 
 using Test
 using SatelliteSimLab
+using SatelliteSimNet: build_routing_graph
 using SatelliteSimCore: WalkerConstellationConfig, TwoBodyPropagator, J2Propagator,
     GroundStation, GeodeticPosition, LEO_DEFAULTS
 
@@ -48,8 +49,10 @@ using SatelliteSimCore: WalkerConstellationConfig, TwoBodyPropagator, J2Propagat
             1 => (sat_id=1, delay_ms=0.1),
             2 => (sat_id=4, delay_ms=0.2),
         )
+        graph = build_routing_graph(4, available, [1.0, 1.0, 1.0, 1.0])
         loads = SatelliteSimLab._assign_demands_to_isls(
-            demands, available, D, 4; access_map=access_map,
+            demands, available, D, 4;
+            access_map=access_map, routing_graph=graph,
         )
         @test sum(loads) > 0
     end
