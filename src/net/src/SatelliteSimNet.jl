@@ -1,10 +1,9 @@
 module SatelliteSimNet
 
 using Graphs
-using SatelliteSimCore
-
-# 信任 Core 的 export 列表，不逐符号 import（Julia 规范）。
-# 个别不在 export 中的符号在调用处按需用 SatelliteSimCore.<name> 限定访问。
+# Net 直接依赖所需的底层领域包，避免通过 Core 的聚合 re-export 形成隐式边界。
+using SatelliteSimFoundation
+using SatelliteSimLink
 
 include("layers/03_topology/abstract.jl")
 include("layers/03_topology/grid_plus.jl")
