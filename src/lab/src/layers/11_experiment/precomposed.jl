@@ -18,7 +18,7 @@ using SatelliteSimNet
 using SatelliteSimTraffic: TrafficDemand, evaluate_traffic_from_bare_arrays
 import Random
 # 从 Foundation 借时间网格（Core re-export 了 Foundation，但 SimulationTimeGrid 需要显式引用）
-import SatelliteSimFoundation: SimulationTimeGrid, default_starlink_simulation_epoch
+import SatelliteSimFoundation: SimulationTimeGrid, default_starlink_simulation_epoch, time_count
 
 export propagate_constellation_positions, assess_coverage, assess_routing,
        assess_routing_temporal, full_constellation_assessment
@@ -440,6 +440,43 @@ end
 # ────────────────────────────────────────────────────────────
 
 """
+    _aligned_simulation_time_grid(config, n_time) -> SimulationTimeGrid
+
+构造与 `positions` 时间维 `n_time` 对齐的 `SimulationTimeGrid`。
+当由 `tspan` 推导的网格片数与 `n_time` 不一致时，按 `n_time` 重算 `duration/step` 并发出警告。
+"""
+function _aligned_simulation_time_grid(config, n_time::Int)::SimulationTimeGrid
+    n_time >= 1 || throw(ArgumentError("n_time must be positive"))
+    epoch = default_starlink_simulation_epoch()
+    n_time == 1 && return SimulationTimeGrid(epoch, 0, 1)
+
+    tspan = config.tspan
+    duration = if !isempty(tspan)
+        Int(round(maximum(tspan) - minimum(tspan)))
+    else
+        n_time - 1
+    end
+    duration = max(duration, n_time - 1)
+    step = max(1, duration ÷ (n_time - 1))
+    duration = step * (n_time - 1)
+
+    grid = SimulationTimeGrid(epoch, duration, step)
+    if time_count(grid) != n_time
+        @warn "SimulationTimeGrid 与 positions 时间维不一致，强制对齐" time_count=time_count(grid) n_time=n_time duration step
+        duration = max(n_time - 1, 1)
+        step = 1
+        grid = SimulationTimeGrid(epoch, duration, step)
+        if time_count(grid) != n_time
+            duration = n_time - 1
+            step = max(1, duration ÷ max(n_time - 1, 1))
+            duration = step * (n_time - 1)
+            grid = SimulationTimeGrid(epoch, duration, step)
+        end
+    end
+    return grid
+end
+
+"""
     _evaluate_traffic_full(config, positions, isl_pairs) -> Union{Nothing,TrafficEvaluation}
 
 构造多时间步的 ISL/GSL 评估数据，调 evaluate_traffic_from_bare_arrays 跑完整 AON。
@@ -455,12 +492,7 @@ function _evaluate_traffic_full(config, positions, isl_pairs)
     gs_tuples = [_ground_station_tuple(gs) for gs in config.ground_stations]
     ground_ids = collect(1:length(gs_tuples))
 
-    # 构造时间网格
-    tspan = config.tspan
-    duration = isempty(tspan) ? 0 : Int(round(maximum(tspan) - minimum(tspan)))
-    step = length(tspan) >= 2 ? Int(round(tspan[2] - tspan[1])) : max(duration, 1)
-    step = max(step, 1)
-    grid = SimulationTimeGrid(default_starlink_simulation_epoch(), duration, step)
+    grid = _aligned_simulation_time_grid(config, n_time)
 
     # 每时间步评估 ISL + GSL
     isl_results_by_time = [
