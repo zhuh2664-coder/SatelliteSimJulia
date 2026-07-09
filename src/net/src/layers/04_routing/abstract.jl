@@ -3,7 +3,7 @@
 using Graphs
 
 export AbstractRoutingAlgorithm, RoutingInput, RoutingOutput, RoutingGraph,
-       route, batch_route
+       route, batch_route, build_routing_graph
 
 struct RoutingGraph
     n_nodes::Int
