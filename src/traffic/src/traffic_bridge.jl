@@ -127,6 +127,7 @@ function _build_access_table(
     ground_ids::Vector{Int},
     time_grid::SimulationTimeGrid;
     capacity_mbps::Float64 = 500.0,
+    handover_policy::AbstractHandoverPolicy = ElevationThreshold(),
 )::AccessDecisionTable
     n_time = length(gsl_avail_by_time)
     decisions_by_ground = Dict{Int,Vector{AccessDecision}}()
@@ -134,23 +135,32 @@ function _build_access_table(
     for ground_local in eachindex(ground_ids)
         ground_id = ground_ids[ground_local]
         decisions = AccessDecision[]
+        prev_satellite_id = nothing
         for time_index in 1:n_time
             elapsed_s = Int(timeslot_offsets(time_grid)[time_index])
-            avail = gsl_avail_by_time[time_index][:, ground_local]  # 所有卫星对这地面站
-            # 选可见卫星中仰角最高的
-            best_sat = nothing
-            best_elev = -Inf
+            avail = gsl_avail_by_time[time_index][:, ground_local]
+            samples = GSLPhysicalLinkSample{Float64}[]
             for sat_id in eachindex(avail)
                 if avail[sat_id]
+                    dist = gsl_dist_by_time[time_index][sat_id, ground_local]
                     elev = gsl_elev_by_time[time_index][sat_id, ground_local]
-                    if elev > best_elev
-                        best_elev = elev
-                        best_sat = sat_id
-                    end
+                    push!(samples, GSLPhysicalLinkSample{Float64}(;
+                        ground_id = ground_id,
+                        satellite_id = sat_id,
+                        time_index = time_index,
+                        elapsed_s = elapsed_s,
+                        distance_km = dist,
+                        propagation_delay_s = dist / 299792.458,
+                        elevation_deg = elev,
+                        capacity_mbps = capacity_mbps,
+                        state = LinkAvailable(),
+                    ))
                 end
             end
+            sample = select_satellite(handover_policy, samples, prev_satellite_id)
+            prev_satellite_id = sample === nothing ? nothing : sample.satellite_id
 
-            if best_sat === nothing
+            if sample === nothing
                 push!(decisions, AccessDecision(;
                     ground_id = ground_id,
                     time_index = time_index,
@@ -158,22 +168,10 @@ function _build_access_table(
                     selected_sample = nothing,
                 ))
             else
-                dist = gsl_dist_by_time[time_index][best_sat, ground_local]
-                sample = GSLPhysicalLinkSample{Float64}(;
-                    ground_id = ground_id,
-                    satellite_id = best_sat,
-                    time_index = time_index,
-                    elapsed_s = elapsed_s,
-                    distance_km = dist,
-                    propagation_delay_s = dist / 299792.458,
-                    elevation_deg = best_elev,
-                    capacity_mbps = capacity_mbps,
-                    state = LinkAvailable(),
-                )
                 push!(decisions, AccessDecision(;
                     ground_id = ground_id,
                     time_index = time_index,
-                    selected_satellite_id = best_sat,
+                    selected_satellite_id = sample.satellite_id,
                     selected_sample = sample,
                 ))
             end

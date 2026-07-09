@@ -85,13 +85,13 @@ end
 
 ground_ids(table::AccessDecisionTable)::Vector{Int} = sort(collect(keys(table.decisions_by_ground)))
 
-function _best_access_sample(samples::Vector{GSLPhysicalLinkSample})::Union{Nothing,GSLPhysicalLinkSample}
-    isempty(samples) && return nothing
-    return samples[argmax(sample -> sample.elevation_deg, samples)]
+function _best_access_sample(samples::Vector{<:GSLPhysicalLinkSample})::Union{Nothing,GSLPhysicalLinkSample}
+    return select_satellite(ElevationThreshold(), samples)
 end
 
 function build_access_decision_table(
-    gsl_series_by_ground::Vector{GSLPhysicalLinkSeries},
+    gsl_series_by_ground::Vector{GSLPhysicalLinkSeries};
+    handover_policy::AbstractHandoverPolicy = ElevationThreshold(),
 )::AccessDecisionTable
     !isempty(gsl_series_by_ground) || throw(ArgumentError("gsl_series_by_ground must not be empty"))
     time_grid = first(gsl_series_by_ground).time_grid
@@ -101,8 +101,14 @@ function build_access_decision_table(
         series.time_grid === time_grid ||
             throw(ArgumentError("all GSL series must share the same time_grid object"))
         decisions = AccessDecision[]
+        prev_satellite_id = nothing
         for time_index in 1:time_count(time_grid)
-            sample = _best_access_sample(available_gsl_samples(series, time_index))
+            sample = select_satellite(
+                handover_policy,
+                available_gsl_samples(series, time_index),
+                prev_satellite_id,
+            )
+            prev_satellite_id = sample === nothing ? nothing : sample.satellite_id
             selected_satellite_id = sample === nothing ? nothing : sample.satellite_id
             push!(
                 decisions,
