@@ -25,29 +25,29 @@ n_satellites(positions::Array{Float64,3})::Int = size(positions, 1)
 n_timesteps(positions::Array{Float64,3})::Int = size(positions, 2)
 
 """
-    position_at_instant(positions, time_index) -> Matrix{Float64}
+    position_at_instant(positions, time_index) -> AbstractMatrix{Float64}
 
 取某个时刻所有卫星的位置（N×3 矩阵）。
 替代难读的 `positions[:, time_index, :]`。
 """
-function position_at_instant(positions::Array{Float64,3}, time_index::Int)::Matrix{Float64}
+function position_at_instant(positions::Array{Float64,3}, time_index::Int)::AbstractMatrix{Float64}
     return @view positions[:, time_index, :]
 end
 
 """
-    positions_at_last(positions) -> Matrix{Float64}
+    positions_at_last(positions) -> AbstractMatrix{Float64}
 
 取最后一步所有卫星的位置（N×3 矩阵）。
 替代反复出现的 `positions[:, end, :]`。
 """
-positions_at_last(positions::Array{Float64,3})::Matrix{Float64} = position_at_instant(positions, size(positions, 2))
+positions_at_last(positions::Array{Float64,3})::AbstractMatrix{Float64} = position_at_instant(positions, size(positions, 2))
 
 """
-    satellite_positions(positions, sat_index) -> Matrix{Float64}
+    satellite_positions(positions, sat_index) -> AbstractMatrix{Float64}
 
 取某颗卫星在所有时间步的位置（T×3 矩阵）。
 替代 `positions[sat_index, :, :]`——命名明确"这是单颗卫星的轨迹"。
 """
-function satellite_positions(positions::Array{Float64,3}, sat_index::Int)::Matrix{Float64}
+function satellite_positions(positions::Array{Float64,3}, sat_index::Int)::AbstractMatrix{Float64}
     return @view positions[sat_index, :, :]
 end

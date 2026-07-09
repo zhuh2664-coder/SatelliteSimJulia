@@ -1,5 +1,5 @@
 using Test
-using SatelliteSimOpt
+using SatelliteSimJulia
 
 @testset "end-to-end differentiable architecture" begin
     report = end_to_end_gradient_report()

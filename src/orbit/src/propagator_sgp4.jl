@@ -48,9 +48,9 @@ import SatelliteToolbox
 import SatelliteToolboxSgp4
 
 export AbstractPropagator
-export Sgp4PropagatorAdapter
-export propagate_sample, propagate_constellation
-export supports_orbit_elements
+export Sgp4PropagatorAdapter, EarthFixedNodePropagator
+export supports_orbit_elements, propagate_sample, propagate_satellite, propagate_constellation
+export earth_fixed_node_longitude_deg, earth_fixed_node_position_ecef_km
 
 """
     AbstractPropagator
@@ -504,8 +504,7 @@ end
 对于地球固定节点，轨道根数中的倾角、升交点赤经、近地点幅角、平近点角被重新解释为
 纬度、经度相关分量。本函数把后三者相加再对 360 取模，得到节点在地固系中的经度。
 """
-earth_fixed_node_longitude_deg(elements::EarthFixedOrbitElementSet)::Float64 =
-    mod(elements.raan_deg + elements.argument_of_perigee_deg + elements.mean_anomaly_deg, 360)
+earth_fixed_node_longitude_deg(elements::EarthFixedOrbitElementSet)::Float64 = elements.longitude_deg
 
 """
     earth_fixed_node_position_ecef_km(elements::EarthFixedOrbitElementSet) -> Vector{Float64}
@@ -859,17 +858,15 @@ SGP4 传播 + TEME→ECEF 转换，直接返回裸数组 (N×T×3) km。
 function SatelliteSimOrbit.propagate_to_ecef(
     tle_elements::Vector{TLEOrbitElementSet},
     time_grid::SimulationTimeGrid;
-    propagator::Union{Nothing,Sgp4PropagatorAdapter} = nothing,
     verify_checksum::Bool = false,
 )::Array{Float64,3}
     n_sats = length(tle_elements)
     n_time = time_count(time_grid)
     pos_ecef = zeros(n_sats, n_time, 3)
     offsets = timeslot_offsets(time_grid)
-    checksum_enabled = propagator === nothing ? verify_checksum : propagator.verify_checksum
 
     Threads.@threads for i in 1:n_sats
-        tle = satellite_toolbox_tle(tle_elements[i]; verify_checksum = checksum_enabled)
+        tle = satellite_toolbox_tle(tle_elements[i]; verify_checksum = verify_checksum)
         sgp4d = SatelliteToolboxSgp4.sgp4_init(tle)
         tle_epoch = SatelliteToolbox.tle_epoch(DateTime, tle)
 

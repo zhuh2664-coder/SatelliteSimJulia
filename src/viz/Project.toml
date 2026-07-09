@@ -9,7 +9,6 @@ JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
 SatelliteSimCore = "99f6b6c7-c40f-4eb3-8423-ddc96d839c0b"
 
-
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 

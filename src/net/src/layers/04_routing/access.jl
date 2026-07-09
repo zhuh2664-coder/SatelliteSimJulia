@@ -70,6 +70,9 @@ function access_decisions_at(
 )::AccessDecision
     decisions = get(table.decisions_by_ground, ground_id, nothing)
     decisions === nothing && return AccessDecision(ground_id, time_index)
+    if time_index < 1 || time_index > length(decisions)
+        return AccessDecision(ground_id, time_index)
+    end
     return decisions[time_index]
 end
 

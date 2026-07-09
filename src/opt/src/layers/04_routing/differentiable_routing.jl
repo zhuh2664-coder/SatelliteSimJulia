@@ -9,6 +9,8 @@
 
 const SPEED_OF_LIGHT_KMS = SatelliteSimCore.SPEED_OF_LIGHT_KM_S  # → Core/L0
 
+export NetworkStats, dijkstra_latency, aon_throughput, network_stats
+
 """
     NetworkStats
 
@@ -58,6 +60,50 @@ function _dijkstra(A::AbstractMatrix{Float64}, src::Int)
         end
     end
     return dist
+end
+
+function _dijkstra_with_prev(A::AbstractMatrix{Float64}, src::Int)
+    N = size(A, 1)
+    dist = fill(Inf, N)
+    prev = zeros(Int, N)
+    visited = falses(N)
+    dist[src] = 0.0
+
+    for _ in 1:N
+        u = 0
+        d_min = Inf
+        for i in 1:N
+            if !visited[i] && dist[i] < d_min
+                u = i
+                d_min = dist[i]
+            end
+        end
+        u == 0 && break
+        visited[u] = true
+
+        for v in 1:N
+            if !visited[v] && isfinite(A[u, v])
+                nd = dist[u] + A[u, v]
+                if nd < dist[v]
+                    dist[v] = nd
+                    prev[v] = u
+                end
+            end
+        end
+    end
+    return dist, prev
+end
+
+function _path_from_prev(prev::Vector{Int}, src::Int, dst::Int)
+    path = Int[]
+    v = dst
+    while v != 0
+        push!(path, v)
+        v == src && break
+        v = prev[v]
+        v == 0 && return Int[]
+    end
+    return reverse(path)
 end
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -113,11 +159,17 @@ function aon_throughput(
     served = 0
 
     for src in unique(first.(od_pairs))
-        dists = _dijkstra(A, src)
+        dists, prev = _dijkstra_with_prev(A, src)
         for (s, d) in od_pairs
             s != src && continue
             isinf(dists[d]) && continue
             served += 1
+            path = _path_from_prev(prev, s, d)
+            for k in 2:length(path)
+                u, v = path[k - 1], path[k]
+                edge = u < v ? (u, v) : (v, u)
+                link_load[edge] = get(link_load, edge, 0.0) + 1.0
+            end
         end
     end
 
