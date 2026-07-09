@@ -7,7 +7,7 @@
 # isl_adjacency() 的 Matrix{Float64} 输出对接。
 # =============================================================================
 
-const SPEED_OF_LIGHT_KMS = SatelliteSimCore.SPEED_OF_LIGHT_KM_S  # → Core/L0
+const SPEED_OF_LIGHT_KMS = SatelliteSimFoundation.SPEED_OF_LIGHT_KM_S  # → Foundation/L0
 
 export NetworkStats, dijkstra_latency, aon_throughput, network_stats
 

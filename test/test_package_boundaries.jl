@@ -30,4 +30,5 @@ end
     @test !haskey(_package_dependencies("net"), "SatelliteSimCore")
     @test !haskey(_package_dependencies("traffic"), "SatelliteSimCore")
     @test !haskey(_package_dependencies("security"), "SatelliteSimCore")
+    @test !haskey(_package_dependencies("opt"), "SatelliteSimCore")
 end
