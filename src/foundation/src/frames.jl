@@ -37,6 +37,7 @@ import SatelliteToolbox
 export AbstractFrameTransform, SimpleTemeToGeodeticTransform
 export CartesianState, GeodeticPosition
 export ECEF, ECI, TEME
+export ecef_to_geodetic
 
 """
     AbstractFrameTransform

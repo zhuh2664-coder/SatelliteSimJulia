@@ -3,7 +3,7 @@
 # SatelliteConfig 已迁移到 SatelliteSimFoundation（entities.jl）。
 # 本文件只保留轨道根数的具体实现和组织关系（属于 Orbit 领域）。
 
-export DesignOrbitElementSet, TLEOrbitElementSet
+export DesignOrbitElementSet, TLEOrbitElementSet, EarthFixedOrbitElementSet
 export Shell, OrbitPlane
 
 const EARTH_FIXED_ROTATION_REV_PER_DAY = 7.2921150e-5 * 86_400 / (2 * pi)  # 与 OMEGA_EARTH (Foundation) 同值
