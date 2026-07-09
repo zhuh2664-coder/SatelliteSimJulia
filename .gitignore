@@ -64,3 +64,9 @@ temp-wolaiyongde
 texput.log
 
 Manifest.toml.bak
+
+# Research data store (not source code)
+research_store/
+
+# Local Julia environments
+envs/
