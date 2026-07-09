@@ -116,12 +116,16 @@ function route(::ECMPRouting, input::RoutingInput)::RoutingOutput
     g = input.graph
     src, dst = input.source, input.destination
     src == dst && return RoutingOutput([src], 0.0, "ECMP")
-    # 从 RoutingGraph 提取边和权重
+    # 从 RoutingGraph 提取无向边和权重（去重）
     edges = Tuple{Int,Int}[]
     weights = Float64[]
+    seen = Set{Tuple{Int,Int}}()
     for (u, nbrs) in g.adj
         for (v, w) in nbrs
-            push!(edges, (u, v))
+            canonical = u < v ? (u, v) : (v, u)
+            canonical in seen && continue
+            push!(seen, canonical)
+            push!(edges, canonical)
             push!(weights, w)
         end
     end

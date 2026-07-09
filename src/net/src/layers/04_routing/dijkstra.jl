@@ -1,9 +1,53 @@
 # Dijkstra 最短路径路由。
 
-export DijkstraRouting, build_adjacency, all_pairs_shortest_paths,
+export DijkstraRouting, build_adjacency, build_routing_graph, all_pairs_shortest_paths,
        shortest_path_from_adjacency
 
 struct DijkstraRouting <: AbstractRoutingAlgorithm end
+
+"""
+    build_routing_graph(n_nodes, edges, weights; node_labels) -> RoutingGraph
+
+从边列表与权重构造 `RoutingGraph`，供 `route(DijkstraRouting(), RoutingInput(...))` 使用。
+无向 ISL：每条边双向写入邻接表与 `SimpleDiGraph`。
+"""
+function build_routing_graph(
+    n_nodes::Int,
+    edges::Vector{Tuple{Int,Int}},
+    weights::Vector{Float64};
+    node_labels::Vector{String} = String[],
+)::RoutingGraph
+    length(edges) == length(weights) ||
+        throw(ArgumentError("edges and weights must have the same length"))
+    if isempty(node_labels)
+        node_labels = ["node$i" for i in 1:n_nodes]
+    else
+        length(node_labels) == n_nodes ||
+            throw(ArgumentError("node_labels length must equal n_nodes"))
+    end
+
+    g = SimpleDiGraph(n_nodes)
+    adj = Dict{Int, Vector{Tuple{Int, Float64}}}()
+    for i in 1:n_nodes
+        adj[i] = Tuple{Int, Float64}[]
+    end
+
+    seen = Set{Tuple{Int, Int}}()
+    for (k, (u, v)) in enumerate(edges)
+        (1 <= u <= n_nodes && 1 <= v <= n_nodes) ||
+            throw(ArgumentError("edge ($u, $v) out of range 1:$n_nodes"))
+        canonical = u < v ? (u, v) : (v, u)
+        canonical in seen && continue
+        push!(seen, canonical)
+        w = weights[k]
+        add_edge!(g, u, v)
+        u != v && add_edge!(g, v, u)
+        push!(adj[u], (v, w))
+        u != v && push!(adj[v], (u, w))
+    end
+
+    return RoutingGraph(n_nodes, adj, node_labels, g)
+end
 
 function _routing_graph_adjacency_matrix(graph::RoutingGraph)::Matrix{Float64}
     A = fill(Inf, graph.n_nodes, graph.n_nodes)

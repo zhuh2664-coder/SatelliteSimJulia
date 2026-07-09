@@ -43,6 +43,7 @@ end
 function compute_coverage(gsl_matrix::AbstractMatrix{Bool}, user_ids::Vector{String})::CoverageResult
     n_users = size(gsl_matrix, 2)
     n_users == length(user_ids) || throw(ArgumentError("gsl_matrix columns must match user_ids length"))
+    n_users == 0 && return CoverageResult(0.0, Int[], 0)
 
     covered = falses(n_users)
     for j in 1:n_users
@@ -246,7 +247,7 @@ function compute_link_utilization(used_bandwidth::Vector{Float64},
     n = length(used_bandwidth)
     n == 0 && return UtilizationResult(0.0, 0.0, 0.0, Int[])
 
-    utilization = [used / max for (used, max) in zip(used_bandwidth, max_bandwidth)]
+    utilization = [max <= 0 ? 0.0 : used / max for (used, max) in zip(used_bandwidth, max_bandwidth)]
     bottleneck = findall(u -> u >= 0.8, utilization)
 
     return UtilizationResult(
