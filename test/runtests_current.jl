@@ -30,21 +30,38 @@ include(joinpath(@__DIR__, "test_helpers.jl"))
         # 时间、坐标、实体等基础类型已有 smoke 覆盖；后续拆分为独立文件
         @test SatelliteSimJulia.SimulationEpoch isa DataType
         @test SatelliteSimJulia.CartesianState isa DataType
+        include(joinpath(@__DIR__, "foundation", "test_time_grid.jl"))
     end
 
     @testset "Orbit" begin
         include(joinpath(@__DIR__, "orbit", "test_walker.jl"))
+        include(joinpath(@__DIR__, "orbit", "test_ephemeris.jl"))
     end
 
     @testset "Link" begin
         include(joinpath(@__DIR__, "link", "test_gsl.jl"))
+        include(joinpath(@__DIR__, "test_isl_constraints.jl"))
     end
 
     @testset "Net" begin
         include(joinpath(@__DIR__, "test_topology_strategies.jl"))
         include(joinpath(@__DIR__, "test_topology_metrics.jl"))
         include(joinpath(@__DIR__, "net", "test_routing.jl"))
+        include(joinpath(@__DIR__, "net", "test_core_routing_paths.jl"))
         include(joinpath(@__DIR__, "test_cgr.jl"))
+    end
+
+    @testset "Traffic" begin
+        include(joinpath(@__DIR__, "traffic", "test_aon.jl"))
+        include(joinpath(@__DIR__, "traffic", "test_traffic_bridge.jl"))
+    end
+
+    @testset "Lab" begin
+        include(joinpath(@__DIR__, "lab", "test_ground_traffic_precomposed.jl"))
+    end
+
+    @testset "AI" begin
+        include(joinpath(@__DIR__, "ai", "runtests.jl"))
     end
 
     @testset "Metrics" begin
@@ -52,19 +69,16 @@ include(joinpath(@__DIR__, "test_helpers.jl"))
     end
 
     @testset "Optimization" begin
-        if RUN_SLOW && isdefined(SatelliteSimJulia, :SatelliteSimOpt)
+        if RUN_SLOW
             include(joinpath(@__DIR__, "test_end_to_end_gradient.jl"))
         else
-            @info "Optimization testset 跳过（需 SATSIM_RUN_SLOW=1 且 envs/opt 环境）"
+            @info "Optimization testset 跳过（设 SATSIM_RUN_SLOW=1 启用）"
         end
     end
 
     @testset "Security" begin
-        if isdefined(SatelliteSimJulia, :SatelliteSimSecurity)
-            include(joinpath(@__DIR__, "test_security.jl"))
-        else
-            @info "Security testset 跳过（SatelliteSimSecurity 不在当前伞包，见 envs/security 或 extras）"
-        end
+        include(joinpath(@__DIR__, "test_security.jl"))
+        include(joinpath(@__DIR__, "test_security_p1.jl"))
     end
 
     @testset "Integration" begin
@@ -72,27 +86,10 @@ include(joinpath(@__DIR__, "test_helpers.jl"))
     end
 
     @testset "Viz" begin
-        if get(ENV, "SATSIM_RUN_VIZ", "0") == "1" && isdefined(SatelliteSimJulia, :SatelliteSimViz)
-            Viz = SatelliteSimJulia.SatelliteSimViz
-            @test Viz.plot_orbit_snapshot isa Function
-            @test Viz.geodetic_to_xyz isa Function
-            @test Viz.plot_ground_track isa Function
-            @test Viz.save_orbit_snapshot isa Function
-            pos = zeros(Float64, 2, 1, 3)
-            pos[1, 1, :] .= 7000.0, 0.0, 0.0
-            pos[2, 1, :] .= 0.0, 7000.0, 0.0
-            tmp_png = tempname() * ".png"
-            try
-                Viz.save_orbit_snapshot(tmp_png, pos)
-                @test filesize(tmp_png) > 100
-            catch e
-                @warn "Viz 出图失败（可能缺 coastline 数据，非阻塞）" exception=e
-                @test_broken false
-            finally
-                isfile(tmp_png) && rm(tmp_png; force=true)
-            end
-        else
-            @info "Viz testset 跳过（设 SATSIM_RUN_VIZ=1 且在 envs/viz 环境运行）"
-        end
+        include(joinpath(@__DIR__, "viz", "test_viz.jl"))
+    end
+
+    @testset "CLI" begin
+        include(joinpath(@__DIR__, "cli", "test_cli.jl"))
     end
 end

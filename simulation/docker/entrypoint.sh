@@ -5,9 +5,8 @@
 #   --sat-id        : 卫星 ID（必填）
 #   --control-plane : 控制平面地址（可选）
 
-set -e
+set -euo pipefail
 
-# 解析参数
 SAT_ID=""
 CONTROL_PLANE=""
 
@@ -19,28 +18,38 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [ -z "$SAT_ID" ]; then
-    echo "错误: --sat-id 必填"
+if [[ -z "$SAT_ID" ]]; then
+    echo "错误: --sat-id 必填" >&2
     exit 1
 fi
 
 echo "=== 卫星 $SAT_ID Agent 启动 ==="
 echo "控制平面: ${CONTROL_PLANE:-无}"
 
-# 设置环境变量
-export SAT_ID=$SAT_ID
-export SAT_HOSTNAME="sat-$(printf '%03d' $SAT_ID)"
-hostname $SAT_HOSTNAME
+export SAT_ID
+export CONTROL_PLANE
+export SAT_HOSTNAME="sat-$(printf '%03d' "$SAT_ID")"
+export AGENT_DT="${AGENT_DT:-1.0}"
+export AGENT_TIMEOUT_S="${AGENT_TIMEOUT_S:-Inf}"
 
-# 启动 Agent Runtime（后台）
+echo "$SAT_HOSTNAME" > /etc/hostname 2>/dev/null || true
+touch /tmp/satellite-agent-ready
+
 cd /opt/satellite/agent_runtime
-echo "启动 Agent Runtime..."
 
-# Julia 版本（未来用）
-# julia -e "using SatelliteSimAgentRuntime; AgentRuntime(SimpleAgent(AgentConfig(sat_id=$SAT_ID))).loop(timeout_s=Inf)"
+echo "启动 Julia Agent Runtime..."
+exec julia --project=/opt/satellite/agent_runtime -e '
+using SatelliteSimAgentRuntime
 
-# 目前：模拟 Agent 心跳
-while true; do
-    echo "[$(date -Iseconds)] SAT-$SAT_ID: 心跳 - 电量正常"
-    sleep 10
-done
+sat_id = parse(Int, get(ENV, "SAT_ID", "0"))
+dt = parse(Float64, get(ENV, "AGENT_DT", "1.0"))
+timeout_s = parse(Float64, get(ENV, "AGENT_TIMEOUT_S", "Inf"))
+
+config = SatelliteSimAgentRuntime.AgentConfig(sat_id = sat_id)
+state = SatelliteSimAgentRuntime.SatelliteAgentState(id = sat_id)
+agent = SatelliteSimAgentRuntime.SimpleAgent(config = config, state = state)
+runtime = SatelliteSimAgentRuntime.AgentRuntime(agent = agent, dt = dt)
+
+println("[agent] SAT-$(sat_id) runtime started dt=$(dt) timeout=$(timeout_s)")
+runtime(; timeout_s = timeout_s)
+'

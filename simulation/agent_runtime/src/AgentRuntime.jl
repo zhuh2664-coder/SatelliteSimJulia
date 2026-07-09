@@ -4,6 +4,7 @@ export
     # 核心类型
     SatelliteAgentState,
     AbstractAgent,
+    AgentConfig,
     SimpleAgent,
     # 事件系统
     SatelliteEvent,
@@ -21,11 +22,14 @@ export
     AgentRuntime
 
 using DataStructures: CircularBuffer
+using Statistics
 
-include("event_loop.jl")
+abstract type SatelliteEvent end
+
+include("planner.jl")
 include("memory.jl")
 include("scheduler.jl")
-include("planner.jl")
+include("event_loop.jl")
 
 """
     AgentRuntime

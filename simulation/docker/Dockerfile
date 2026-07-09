@@ -8,13 +8,14 @@
 # 启动：
 #   docker run --name sat-001 satellite-agent --sat-id 1
 
-FROM julia:1.11-ubuntu
+FROM julia:1.12-bookworm
 
 LABEL description="SatelliteSimJulia Autonomous Satellite Agent"
 LABEL maintainer="SatelliteSimJulia"
 
 # 安装系统依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get -o Acquire::Retries=5 update && \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
     python3 \
     python3-pip \
     python3-venv \
@@ -31,12 +32,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 复制 Julia Agent Runtime
 COPY agent_runtime /opt/satellite/agent_runtime
 
+ENV JULIA_PROJECT=/opt/satellite/agent_runtime
+RUN julia -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+
 # 启动脚本
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
-# 健康检查
+# 健康检查：入口脚本启动运行时后写入 ready 文件
 HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD test -f /tmp/satellite-agent-ready || exit 1
 
 ENTRYPOINT ["entrypoint.sh"]

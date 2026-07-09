@@ -12,6 +12,7 @@ using SatelliteSimCore
 using SatelliteSimLab
 using SatelliteSimNet
 using SatelliteSimOrbit
+using SatelliteSimViz
 
 # ────────────────────────────────────────────────────────────
 # list：列出可发现资源
@@ -383,22 +384,251 @@ end
 # ────────────────────────────────────────────────────────────
 
 """
-生成可视化图片。
+生成可视化图片/动画/Dashboard/CZML。
 
-subcommand: snapshot / dashboard / animate（当前仅 snapshot 完全实现）
-positions: N×T×3 位置数据文件路径（JLD2 或未来支持的格式）
+subcommand: snapshot / dashboard / animate / czml
+positions_path: JLD2 位置文件路径
 """
-@cast function viz(subcommand::String, positions_path::String; output::String = "")
+@cast function viz(subcommand::String, positions_path::String;
+    output::String = "",
+    show_isl::Bool = false,
+    show_route::Bool = false,
+    show_beams::Bool = false,
+    strategy::String = "gridplus",
+    time_index::Int = 1,
+    fps::Int = 10,
+)
     subcommand = lowercase(subcommand)
-    if subcommand == "snapshot"
-        error("viz snapshot requires a positions file; load and save workflow not yet implemented in CLI")
-    elseif subcommand == "dashboard"
-        error("viz dashboard not yet implemented in CLI")
-    elseif subcommand == "animate"
-        error("viz animate not yet implemented in CLI")
-    else
-        error("unknown viz subcommand: $subcommand")
+    isfile(positions_path) || error("positions file not found: $positions_path")
+
+    data = jldopen(positions_path, "r")
+    pos = data["positions"]
+    T = data["T"]
+    P = data["P"]
+    tspan = try
+        data["tspan"]
+    catch
+        Float64[]
     end
+    close(data)
+
+    out_path = _viz_output_path(subcommand, output, positions_path)
+    mkpath(dirname(out_path))
+
+    # 可选：计算 ISL / 路由
+    isl_pairs = Tuple{Int,Int}[]
+    isl_available = Bool[]
+    route_path = Int[]
+
+    if show_isl || show_route
+        s = _resolve_topology_strategy(strategy)
+        D, available, _ = SatelliteSimLab.assess_routing(pos, T, P, s, SatelliteSimCore.LEO_DEFAULTS)
+        # 为了可视化，生成所有拓扑边 + 可用掩码
+        topo = SatelliteSimNet.generate_topology(s, T, P)
+        all_links = vcat(topo.static_links, topo.dynamic_candidates)
+        isl_pairs = [(Int(l[1]), Int(l[2])) for l in all_links]
+        isl_available = Bool[(l in available) for l in all_links]
+
+        if show_route
+            dst = min(T, ceil(Int, T / 2))
+            if isfinite(D[1, dst])
+                # 用贪心在 D 矩阵上找路径
+                route_path = _greedy_route(D, 1, dst)
+            end
+        end
+    end
+
+    if subcommand == "snapshot"
+        config = SatelliteSimViz.MakieViewerConfig(;
+            title = "CLI Snapshot",
+            time_index = time_index,
+            show_orbits = true,
+            show_isl = show_isl,
+            show_route = show_route,
+            show_beams = show_beams,
+            show_ground_stations = false,
+            satellite_markersize = 4.0,
+            dark_theme = true,
+        )
+        fig = SatelliteSimViz.plot_orbit_snapshot(pos;
+            isl_pairs = isl_pairs,
+            isl_available = isl_available,
+            route_path = route_path,
+            config = config,
+        )
+        SatelliteSimViz.save(out_path, fig)
+        println("Saved snapshot: $out_path")
+
+    elseif subcommand == "animate"
+        config = SatelliteSimViz.MakieViewerConfig(;
+            title = "CLI Animation",
+            show_orbits = false,
+            show_isl = show_isl,
+            show_route = show_route,
+            show_ground_stations = false,
+            satellite_markersize = 4.0,
+            dark_theme = true,
+        )
+        SatelliteSimViz.animate_orbit(pos;
+            isl_pairs = isl_pairs,
+            isl_available = isl_available,
+            route_path = route_path,
+            output_path = out_path,
+            fps = fps,
+            config = config,
+        )
+        println("Saved animation: $out_path")
+
+    elseif subcommand == "dashboard"
+        fig = SatelliteSimViz.plot_dashboard(pos;
+            time_index = time_index,
+            isl_pairs = isl_pairs,
+            isl_available = isl_available,
+            route_path = route_path,
+            config = SatelliteSimViz.MakieViewerConfig(; dark_theme = true),
+            title = "CLI Dashboard",
+        )
+        SatelliteSimViz.save(out_path, fig)
+        println("Saved dashboard: $out_path")
+
+    elseif subcommand == "czml"
+        dt = length(tspan) >= 2 ? Float64(tspan[2] - tspan[1]) : 60.0
+        SatelliteSimViz.write_czml(out_path, pos;
+            dt = dt,
+            isl_pairs = isl_pairs,
+        )
+        println("Saved CZML: $out_path")
+
+    else
+        error("unknown viz subcommand: $subcommand (use snapshot, animate, dashboard, czml)")
+    end
+end
+
+# ────────────────────────────────────────────────────────────
+# agent：自然语言 Agent CLI
+# ────────────────────────────────────────────────────────────
+
+"""
+启动自然语言 Agent 交互式 REPL。
+
+需要设置 DEEPSEEK_API_KEY 环境变量，或用 --key 传入。
+"""
+@cast function agent(;
+    model::String = "deepseek-chat",
+    key::String = "",
+    url::String = "https://api.deepseek.com/v1",
+    timeout::Int = 120,
+    voice::Bool = false,
+)
+    api_key = isempty(key) ? get(ENV, "DEEPSEEK_API_KEY", "") : key
+    isempty(api_key) && error("DEEPSEEK_API_KEY not set; pass --key or set env var")
+
+    provider = SatelliteSimLab.LLMProvider(; key = api_key, model = model, url = url, readtimeout_s = timeout)
+    voice ? SatelliteSimLab.voice_agent_repl(provider) : SatelliteSimLab.agent_repl(provider)
+end
+
+"""
+单轮自然语言 Agent 查询。
+
+query: 自然语言问题，例如 "walker24 和 walker48 的时延对比"
+"""
+@cast function chat(query::String;
+    model::String = "deepseek-chat",
+    key::String = "",
+    url::String = "https://api.deepseek.com/v1",
+    timeout::Int = 120,
+)
+    api_key = isempty(key) ? get(ENV, "DEEPSEEK_API_KEY", "") : key
+    isempty(api_key) && error("DEEPSEEK_API_KEY not set; pass --key or set env var")
+
+    provider = SatelliteSimLab.LLMProvider(; key = api_key, model = model, url = url, readtimeout_s = timeout)
+    agent = SatelliteSimLab.SimAgent(provider)
+    reply = SatelliteSimLab.run_agent(agent, query)
+    println(reply)
+end
+
+"""
+多智能体团队单轮查询。
+
+query: 自然语言任务，例如 "帮我规划并执行一个 walker48 覆盖分析"
+"""
+@cast function team(query::String;
+    model::String = "deepseek-chat",
+    key::String = "",
+    url::String = "https://api.deepseek.com/v1",
+    timeout::Int = 120,
+    session_id::String = "team_default",
+)
+    api_key = isempty(key) ? get(ENV, "DEEPSEEK_API_KEY", "") : key
+    isempty(api_key) && error("DEEPSEEK_API_KEY not set; pass --key or set env var")
+
+    provider = SatelliteSimLab.LLMProvider(; key = api_key, model = model, url = url, readtimeout_s = timeout)
+    result = SatelliteSimLab.run_team(provider, query; session_id = session_id)
+    println(result.final_answer)
+end
+
+"""运行 TeamGraph 多智能体状态图。"""
+@cast function teamgraph(query::String;
+    model::String = "deepseek-chat",
+    key::String = "",
+    url::String = "https://api.deepseek.com/v1",
+    timeout::Int = 120,
+    session_id::String = "team_graph_default",
+    checkpoint::Bool = false,
+)
+    api_key = isempty(key) ? get(ENV, "DEEPSEEK_API_KEY", "") : key
+    isempty(api_key) && error("DEEPSEEK_API_KEY not set; pass --key or set env var")
+
+    provider = SatelliteSimLab.LLMProvider(; key = api_key, model = model, url = url, readtimeout_s = timeout)
+    result = SatelliteSimLab.run_team_graph(provider, query; session_id = session_id, checkpoint = checkpoint)
+    println(result.final_answer)
+end
+
+"""查看 AI ledger trace。mode 可为 timeline 或 replay_plan。"""
+@cast function ai_trace(session_id::String; mode::String = "timeline")
+    trace = SatelliteSimLab.load_agent_trace(session_id)
+    if mode == "timeline"
+        for line in SatelliteSimLab.trace_timeline(trace)
+            println(line)
+        end
+    elseif mode == "replay_plan"
+        println(JSON.json(SatelliteSimLab.tool_replay_plan(trace)))
+    else
+        error("unknown trace mode: $mode (use timeline or replay_plan)")
+    end
+end
+
+"""查看 TeamGraph checkpoint 摘要。"""
+@cast function ai_checkpoint(session_id::String)
+    path = joinpath("data", "sessions", session_id, "team_graph_checkpoint.json")
+    println(JSON.json(SatelliteSimLab.checkpoint_summary(path)))
+end
+
+"""从 AI ledger deterministic replay 工具调用。默认 dry-run，传 --execute 才实际执行。"""
+@cast function ai_replay(session_id::String; execute::Bool = false, verify_hash::Bool = false)
+    trace = SatelliteSimLab.load_agent_trace(session_id)
+    result = SatelliteSimLab.replay_tools(trace; dry_run = !execute, verify_hash = verify_hash)
+    println(JSON.json(SatelliteSimLab.replay_report(result)))
+end
+
+"""运行内置 AI regression benchmark（离线 MockProvider）。"""
+@cast function ai_eval()
+    case = SatelliteSimLab.AgentEvalCase(
+        id = "list-propagators",
+        input = "列出传播器",
+        responses = [
+            SatelliteSimLab.AssistantMessage("", [
+                SatelliteSimLab.ToolCall("call_1", "list_available", Dict{String,Any}("what" => "propagators")),
+            ]),
+            SatelliteSimLab.AssistantMessage("可用传播器：fast/balanced/precise/tle_based", SatelliteSimLab.ToolCall[]),
+        ],
+        expected_contains = ["tle_based"],
+        expected_tools = ["list_available"],
+    )
+    report = redirect_stdout(devnull) do
+        SatelliteSimLab.run_ai_regression_benchmark([case])
+    end
+    println(JSON.json(report))
 end
 
 # ────────────────────────────────────────────────────────────
@@ -508,6 +738,61 @@ function _save_compare_results(rows, output::String)
     else
         println("Compare output supports .csv/.md")
     end
+end
+
+function _resolve_propagator(name::String)
+    name = lowercase(name)
+    name == "twobody" && return SatelliteSimCore.TwoBodyPropagator()
+    name == "two_body" && return SatelliteSimCore.TwoBodyPropagator()
+    name == "j2" && return SatelliteSimCore.J2Propagator()
+    name == "j4" && return SatelliteSimCore.J4Propagator()
+    error("unknown propagator: $name (use two_body, j2, j4)")
+end
+
+function _resolve_topology_strategy(name::String)
+    name = lowercase(name)
+    name in ("gridplus", "grid_plus") && return SatelliteSimNet.GridPlusStrategy()
+    name == "tshape" && return SatelliteSimNet.TShapeStrategy()
+    name == "spiral" && return SatelliteSimNet.SpiralStrategy()
+    name == "honeycomb" && return SatelliteSimNet.HoneycombStrategy()
+    name == "ring" && return SatelliteSimNet.RingStrategy()
+    name == "mesh" && return SatelliteSimNet.MeshStrategy()
+    name in ("nearest", "nearest_neighbor") && return SatelliteSimNet.NearestNeighborStrategy()
+    error("unknown topology strategy: $name")
+end
+
+function _viz_output_path(subcommand::String, output::String, positions_path::String)
+    !isempty(output) && return output
+    base = splitext(positions_path)[1]
+    ext = subcommand == "animate" ? ".mp4" :
+          subcommand == "czml" ? ".czml" : ".png"
+    return base * "_" * subcommand * ext
+end
+
+function _greedy_route(D::Matrix{Float64}, src::Int, dst::Int)
+    n = size(D, 1)
+    path = [src]
+    visited = Set([src])
+    cur = src
+    while cur != dst
+        next = 0
+        best = Inf
+        for nb in 1:n
+            nb == cur && continue
+            nb in visited && continue
+            cost = D[cur, nb] + D[nb, dst]
+            if cost < best
+                best = cost
+                next = nb
+            end
+        end
+        (next == 0 || !isfinite(D[cur, next])) && break
+        push!(path, next)
+        push!(visited, next)
+        cur = next
+        length(path) > n && break
+    end
+    return path
 end
 
 end # module

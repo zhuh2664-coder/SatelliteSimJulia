@@ -1,0 +1,32 @@
+# Dockerfile.api — SatelliteSimJulia PlatformAPI 镜像
+# 构建：docker build -f platform/docker/Dockerfile.api -t satnet-api:latest .
+
+FROM julia:1.12-bookworm
+
+LABEL description="SatelliteSimJulia platform API"
+LABEL maintainer="SatelliteSimJulia"
+
+RUN apt-get -o Acquire::Retries=5 update && \
+    apt-get -o Acquire::Retries=5 install -y --no-install-recommends \
+    git \
+    curl \
+    ca-certificates \
+    kubernetes-client \
+    libpq5 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/satnet
+
+COPY Project.toml Manifest.toml /opt/satnet/
+COPY src /opt/satnet/src
+COPY platform /opt/satnet/platform
+
+ENV JULIA_PROJECT=/opt/satnet/platform/api
+RUN julia -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'
+
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --retries=3 \
+    CMD curl -fsS http://localhost:8080/api/health || exit 1
+
+ENTRYPOINT ["julia", "--project=/opt/satnet/platform/api", "/opt/satnet/platform/api/bin/satnet-api.jl"]

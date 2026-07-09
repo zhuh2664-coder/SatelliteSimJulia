@@ -11,6 +11,7 @@ arXiv 论文自动收集系统
     python3 arxiv_collector.py --days 7           # 搜最近 7 天 (默认 14)
     python3 arxiv_collector.py --max 100          # 每查询最多取 100 篇 (默认 50)
     python3 arxiv_collector.py --no-save          # 试运行, 只打印不保存
+    python3 arxiv_collector.py --query-id 02_link --no-save
 
 可配合 crontab / launchd 每日自动运行:
     0 8 * * * cd /path/to/SatelliteSimJulia && python3 scripts/arxiv_collector.py --days 1
@@ -66,8 +67,12 @@ QUERIES = [
         "id": "02_link",
         "name": "ISL/GSL 链路",
         "query": (
-            '(ti:"inter-satellite link" OR ti:ISL OR ti:"optical link" OR ti:"laser link" '
-            'OR ti:"ground station" OR ti:GSL OR ti:"free space optic") '
+            '(ti:"inter-satellite link" OR ti:"inter-satellite links" OR ti:ISL '
+            'OR ti:OISL OR ti:LISL OR ti:"satellite link" OR ti:"satellite links" '
+            'OR ti:"optical link" OR ti:"laser link" OR ti:"free space optic" OR ti:FSO '
+            'OR ti:"ground station" OR ti:GSL OR ti:"feeder link" OR ti:"link budget" '
+            'OR ti:"path loss" OR ti:"channel model" OR ti:SNR OR ti:outage '
+            'OR ti:"rain attenuation" OR ti:mmWave OR ti:THz OR ti:"Ka-band" OR ti:"Ku-band") '
             'AND (ti:satellite OR ti:LEO OR ti:constellation OR ti:space)'
         ),
         "categories": ["cs.NI", "physics.optics", "astro-ph.IM"],
@@ -77,9 +82,10 @@ QUERIES = [
         "id": "03_topology",
         "name": "拓扑策略",
         "query": (
-            '(ti:topology OR ti:constellation OR ti:satellite) '
-            'AND (ti:topology OR ti:graph OR ti:connectivity OR ti:robustness) '
-            'AND (ti:satellite OR ti:LEO OR ti:constellation)'
+            '(ti:topology OR ti:"logical topology" OR ti:"virtual topology" '
+            'OR ti:"link assignment" OR ti:"link planning" OR ti:snapshot '
+            'OR ti:connectivity OR ti:robustness OR ti:resilience) '
+            'AND (ti:satellite OR ti:LEO OR ti:constellation OR ti:NTN)'
         ),
         "categories": ["cs.NI", "cs.IT"],
     },
@@ -88,18 +94,26 @@ QUERIES = [
         "id": "04_routing",
         "name": "路由算法",
         "query": (
-            '(ti:routing OR ti:shortest OR ti:ECMP OR ti:"segment routing" OR ti:SDN) '
-            'AND (ti:satellite OR ti:LEO OR ti:constellation OR ti:space)'
+            '(ti:routing OR ti:forwarding OR ti:"path computation" OR ti:shortest '
+            'OR ti:ECMP OR ti:"segment routing" OR ti:SDN OR ti:"traffic engineering" '
+            'OR ti:"load balancing" OR ti:multipath OR ti:backpressure OR ti:CGR '
+            'OR ti:DTN OR ti:QoS OR ti:resilient OR ti:GNN OR ti:reinforcement) '
+            'AND (ti:satellite OR ti:LEO OR ti:constellation OR ti:space '
+            'OR ti:NTN OR ti:SAGIN OR ti:"satellite-terrestrial")'
         ),
-        "categories": ["cs.NI"],
+        "categories": ["cs.NI", "cs.IT"],
     },
     # --- 板块5: 流量/容量/时延 ---
     {
         "id": "05_traffic",
         "name": "流量/容量/时延",
         "query": (
-            '(ti:traffic OR ti:capacity OR ti:throughput OR ti:latency OR ti:delay) '
-            'AND (ti:satellite OR ti:LEO OR ti:constellation)'
+            '(ti:traffic OR ti:capacity OR ti:throughput OR ti:latency OR ti:delay '
+            'OR ti:QoS OR ti:"Quality of Service" OR ti:queue OR ti:congestion '
+            'OR ti:"rate control" OR ti:"load balancing" OR ti:"low latency" '
+            'OR ti:"low-latency" OR ti:"high throughput" OR ti:"high-throughput" '
+            'OR ti:measurement OR ti:benchmark) '
+            'AND (ti:satellite OR ti:LEO OR ti:constellation OR ti:Starlink)'
         ),
         "categories": ["cs.NI", "cs.IT", "cs.PF"],
     },
@@ -109,8 +123,10 @@ QUERIES = [
         "name": "可微优化",
         "query": (
             '(ti:differentiable OR ti:autodiff OR ti:"gradient descent" OR ti:"gradient-based" '
-            'OR ti:surrogate) '
-            'AND (ti:satellite OR ti:LEO OR ti:orbit OR ti:constellation)'
+            'OR ti:surrogate OR ti:"physics-informed" OR ti:PINN OR ti:"neural ODE" '
+            'OR ti:"neural operator" OR ti:adjoint OR ti:JAX OR ti:dSGP4 OR ti:SGP4 OR ti:J2) '
+            'AND (ti:satellite OR ti:LEO OR ti:orbit OR ti:constellation '
+            'OR ti:spacecraft OR ti:trajectory OR ti:coverage OR ti:ISL)'
         ),
         "categories": ["cs.LG", "cs.NI", "math.OC"],
     },
@@ -131,10 +147,12 @@ QUERIES = [
         "id": "08_llm",
         "name": "LLM/Agent 编排",
         "query": (
-            '(ti:"large language" OR ti:LLM OR ti:GPT OR ti:"language model" '
-            'OR ti:agent OR ti:orchestrator) '
+            '(ti:"large language" OR ti:LLM OR ti:LLMs OR ti:GPT OR ti:RAG '
+            'OR ti:"language model" OR ti:"tool use" OR ti:"function calling" '
+            'OR ti:planner OR ti:workflow OR ti:"digital twin" OR ti:"control plane" '
+            'OR ti:orchestration OR ti:orchestrator OR ti:agent) '
             'AND (ti:satellite OR ti:LEO OR ti:constellation OR ti:spacecraft '
-            'OR ti:network OR ti:simulation)'
+            'OR ti:network OR ti:simulation OR ti:NTN)'
         ),
         "categories": ["cs.CL", "cs.NI", "cs.AI", "cs.RO"],
     },
@@ -143,8 +161,11 @@ QUERIES = [
         "id": "09_handover",
         "name": "切换/移动性",
         "query": (
-            '(ti:handover OR ti:handoff OR ti:mobility OR ti:"beam hopping" OR ti:hand-off) '
-            'AND (ti:satellite OR ti:LEO OR ti:constellation)'
+            '(ti:handover OR ti:handovers OR ti:handoff OR ti:handoffs '
+            'OR ti:mobility OR ti:"beam hopping" OR ti:hand-off '
+            'OR ti:"satellite selection" OR ti:"user association" '
+            'OR ti:"access selection" OR ti:"service continuity" OR ti:"session continuity") '
+            'AND (ti:satellite OR ti:LEO OR ti:constellation OR ti:NTN)'
         ),
         "categories": ["cs.NI", "eess.SP"],
     },
@@ -153,10 +174,13 @@ QUERIES = [
         "id": "10_tcp",
         "name": "TCP 传输",
         "query": (
-            '(ti:TCP OR ti:congestion OR ti:BBR OR ti:Cubic OR ti:QUIC OR ti:transport) '
-            'AND (ti:satellite OR ti:LEO OR ti:constellation OR ti:space)'
+            '(ti:TCP OR ti:MPTCP OR ti:QUIC OR ti:HTTP3 OR ti:HTTP/3 '
+            'OR ti:PEP OR ti:QPEP OR ti:SCPS OR ti:"SCPS-TP" OR ti:BBR '
+            'OR ti:Cubic OR ti:congestion OR ti:"transport layer" OR ti:transport) '
+            'AND (ti:satellite OR ti:LEO OR ti:GEO OR ti:SATCOM '
+            'OR ti:Starlink OR ti:constellation OR ti:space)'
         ),
-        "categories": ["cs.NI"],
+        "categories": ["cs.NI", "eess.SP"],
     },
     # --- 补充: 通用卫星仿真 ---
     {
@@ -347,22 +371,36 @@ def main():
                         help=f"每查询最多篇数 (默认 {MAX_RESULTS})")
     parser.add_argument("--no-save", action="store_true",
                         help="试运行模式,不保存文件")
+    parser.add_argument("--query-id", action="append", default=[],
+                        help="只运行指定查询 ID,可重复传入;例如 02_link 或 04_routing")
     args = parser.parse_args()
+
+    selected_queries = QUERIES
+    if args.query_id:
+        query_ids = set(args.query_id)
+        selected_queries = [q for q in QUERIES if q["id"] in query_ids]
+        missing = sorted(query_ids - {q["id"] for q in selected_queries})
+        if missing:
+            print("未知 query-id:", ", ".join(missing))
+            print("可用 query-id:")
+            for q in QUERIES:
+                print(f"  {q['id']:<18} {q['name']}")
+            return 2
 
     print(f"🚀 arXiv 论文收集器")
     print(f"   时间窗口: 最近 {args.days} 天 | 每查询上限: {args.max} 篇")
-    print(f"   查询数: {len(QUERIES)} 个方向\n")
+    print(f"   查询数: {len(selected_queries)} 个方向\n")
 
     all_papers = []
     query_stats = []
 
-    for i, qdef in enumerate(QUERIES, 1):
-        print(f"[{i}/{len(QUERIES)}] ", end="")
+    for i, qdef in enumerate(selected_queries, 1):
+        print(f"[{i}/{len(selected_queries)}] ", end="")
         papers = fetch_arxiv(qdef, max_results=args.max, days=args.days)
         all_papers.extend(papers)
         query_stats.append({"name": qdef["name"], "count": len(papers)})
         # 遵守 arXiv API 礼貌间隔
-        if i < len(QUERIES):
+        if i < len(selected_queries):
             time.sleep(1.5)
 
     # 去重
@@ -377,6 +415,8 @@ def main():
     else:
         save_results(unique, query_stats)
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

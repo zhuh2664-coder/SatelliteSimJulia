@@ -1,5 +1,7 @@
 # SatelliteSim Godot 客户端 — 进度跟踪
 
+> **范围声明**：本文档只跟踪 **Godot 客户端**的 milestone（M0–M10），不代表后端（Core/Orbit/Link/Metrics）、server、实验编排层或 AI 交互层的整体进度。判断全项目状态请结合 `docs/PLATFORM_STATUS_REPORT.md`、各子包 `test/` 及相关设计文档综合看。
+
 > 每个 milestone 一个 commit。状态变化时更新本文档 + 一个 commit。
 
 ## 当前进度
@@ -13,7 +15,10 @@
 | M4   | ISL 实时连线                     | ✅ done       | `b4d0449`, `1ec265e` |
 | M5   | UI 控制面板                      | ✅ done       | `b59828c` |
 | M6   | 摄像机控制                       | ✅ done       | `223a8b6`, `e730fc5`, `7572959`, `2bdd814` |
-| M7   | 14 星座回归 + 性能               | ⏳ in progress | `e5d1a8e` (M7.1 done) |
+| M7   | 14 星座回归 + 性能               | ✅ done       | `e5d1a8e`, `f5baeac`, `d43c9e2`, `407ce27`, `c9a3741`, `8a209bb`, `7b46e4a`, `d8f4f35` |
+| M8   | 可视化功能完善                   | ✅ done       | working tree |
+| M9   | 地面站 / GSL / 覆盖热力图        | ✅ done       | working tree |
+| M10  | 壳层 / 轨道面 / 部署可视化       | ✅ done       | working tree |
 
 ## 工作纪律
 

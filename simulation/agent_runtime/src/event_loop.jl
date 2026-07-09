@@ -1,13 +1,6 @@
 # ===== 事件系统 & Agent 抽象 =====
 
 """
-    SatelliteEvent
-
-所有卫星事件的抽象基类。
-"""
-abstract type SatelliteEvent end
-
-"""
     LinkChange
 
 链路状态变化事件。
@@ -88,18 +81,6 @@ Agent 静态配置。
 end
 
 """
-    SimpleAgent
-
-最简实现的卫星 Agent，用于原型验证。
-"""
-@kwdef mutable struct SimpleAgent <: AbstractAgent
-    config::AgentConfig
-    state::SatelliteAgentState
-    memory::MemoryStore = MemoryStore()
-    think_counter::Int = 0
-end
-
-"""
     SatelliteAgentState
 
 卫星 Agent 当前状态（运行时可变）。
@@ -115,6 +96,18 @@ end
     power_level::Float64 = 1.0
     health::Symbol = :healthy   # :healthy, :degraded, :critical
     pending_tasks::Vector{Mission} = Mission[]
+end
+
+"""
+    SimpleAgent
+
+最简实现的卫星 Agent，用于原型验证。
+"""
+@kwdef mutable struct SimpleAgent <: AbstractAgent
+    config::AgentConfig
+    state::SatelliteAgentState
+    memory::MemoryStore = MemoryStore()
+    think_counter::Int = 0
 end
 
 # ===== 默认方法实现 =====
