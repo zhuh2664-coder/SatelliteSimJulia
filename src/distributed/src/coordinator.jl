@@ -21,7 +21,8 @@ function _propagate_worker(t::Float64, propagator)
     return propagate_server(server, t; propagator=propagator)
 end
 
-export DistributedSimulation, run_distributed_simulation
+export DistributedSimulation, run_distributed_simulation,
+       evaluate_isls_global, compute_routing_matrix
 
 """
     DistributedSimulation
@@ -94,8 +95,8 @@ function run_distributed_simulation(config; n_workers::Int=0)
         # 7. 集中评估 ISL + 路由（协调进程用全局位置，和单进程等价）
         topology = generate_topology(strategy, T, P)
         all_links = vcat(topology.static_links, topology.dynamic_candidates)
-        available_isls, isl_weights = _evaluate_all_isls_global(positions, all_links, constraints)
-        D = _compute_global_routing(T, available_isls, isl_weights)
+        available_isls, isl_weights = evaluate_isls_global(positions, all_links, constraints)
+        D = compute_routing_matrix(T, available_isls, isl_weights)
 
         return (positions=positions, available_isls=available_isls,
                 D=D, n_workers=n_w, tspan=config.tspan)
@@ -105,7 +106,7 @@ function run_distributed_simulation(config; n_workers::Int=0)
 end
 
 # 协调进程用全局位置集中评估所有 ISL（MVP：和单进程等价）
-function _evaluate_all_isls_global(positions::Matrix{Float64}, links, constraints)
+function evaluate_isls_global(positions::Matrix{Float64}, links, constraints=LEO_DEFAULTS)
     available = Tuple{Int,Int}[]
     weights = Float64[]
     for (i, j) in links
@@ -121,7 +122,7 @@ function _evaluate_all_isls_global(positions::Matrix{Float64}, links, constraint
 end
 
 # 集中算路由（Floyd-Warshall）
-function _compute_global_routing(T::Int, available_isls, weights)
+function compute_routing_matrix(T::Int, available_isls, weights)
     isempty(available_isls) && return fill(Inf, T, T)
     A = fill(Inf, T, T)
     for i in 1:T; A[i,i] = 0.0; end
