@@ -1,0 +1,30 @@
+{
+  "root": {
+    "max_total": 200,
+    "note": "日常仿真伞包（主链+Lab），不含 Makie/Flux/ODE"
+  },
+  "core": {
+    "max_total": 160,
+    "note": "纯主链 envs/core，含 JuliaSpace/SatelliteToolbox 链"
+  },
+  "sim": {
+    "max_total": 200,
+    "note": "与 root 对齐的显式 sim 环境"
+  },
+  "viz": {
+    "max_total": 350,
+    "note": "Makie 可视化隔离环境"
+  },
+  "opt": {
+    "max_total": 400,
+    "note": "可微优化（Enzyme/Flux 等）"
+  },
+  "security": {
+    "max_total": 200,
+    "note": "攻防层 + 主链"
+  },
+  "gmat": {
+    "max_total": 450,
+    "note": "GMAT + SciML ODE 隔离"
+  }
+}

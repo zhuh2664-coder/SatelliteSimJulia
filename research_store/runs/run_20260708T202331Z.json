@@ -1,0 +1,21 @@
+{
+  "started_at": "2026-07-08T20:23:18.060863+00:00",
+  "papers": {
+    "fetched_unique": 0,
+    "added": 0,
+    "updated": 0,
+    "total": 0,
+    "query_stats": {
+      "01_orbit": 0,
+      "02_link": 0,
+      "03_topology": 0,
+      "04_routing": 0,
+      "05_traffic": 0,
+      "99_general": 0
+    },
+    "errors": []
+  },
+  "repos": {},
+  "ok": true,
+  "finished_at": "2026-07-08T20:23:31.484065+00:00"
+}

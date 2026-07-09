@@ -1,0 +1,207 @@
+=== bootstrap 10 rounds started Wed Jul  8 21:27:01 UTC 2026 ===
+--- ROUND 1 (days=365) Wed Jul  8 21:27:01 UTC 2026 ---
+{
+  "ok": true,
+  "cmd": "collect",
+  "result": {
+    "started_at": "2026-07-08T21:27:01.923495+00:00",
+    "papers": {
+      "fetched_unique": 309,
+      "added": 300,
+      "updated": 9,
+      "total": 309,
+      "query_stats": {
+        "arxiv/01_orbit": 7,
+        "arxiv/02_link": 3,
+        "arxiv/03_topology": 11,
+        "arxiv/04_routing": 16,
+        "arxiv/05_traffic": 19,
+        "arxiv/99_general": 40,
+        "openalex/kw_leo_network": 32,
+        "openalex/kw_isl": 4,
+        "openalex/kw_routing": 7,
+        "openalex/kw_topology": 28,
+        "openalex/kw_traffic": 32,
+        "openalex/kw_sim": 5,
+        "crossref/kw_leo_network": 50,
+        "crossref/kw_isl": 48,
+        "crossref/kw_routing": 39,
+        "crossref/kw_topology": 49,
+        "crossref/kw_traffic": 37,
+        "crossref/kw_sim": 29,
+        "s2/kw_leo_network": 0,
+        "s2/kw_isl": 0,
+        "s2/kw_routing": 0,
+        "s2/kw_topology": 0,
+        "s2/kw_traffic": 0,
+        "s2/kw_sim": 0
+      },
+      "errors": [
+        "s2/kw_leo_network: HTTP Error 429: ",
+        "s2/kw_isl: HTTP Error 429: ",
+        "s2/kw_routing: HTTP Error 429: ",
+        "s2/kw_topology: HTTP Error 429: ",
+        "s2/kw_traffic: HTTP Error 429: ",
+        "s2/kw_sim: HTTP Error 429: "
+      ]
+    },
+    "repos": {
+      "fetched_unique": 55,
+      "added": 0,
+      "updated": 55,
+      "total": 55,
+      "query_stats": {
+        "sim_leo": 4,
+        "isl_routing": 5,
+        "walker_sgp4": 2,
+        "starlink_sim": 16,
+        "julia_sat": 30
+      },
+      "errors": []
+    },
+    "ok": false,
+    "finished_at": "2026-07-08T21:28:29.516724+00:00",
+    "run_report_path": "/Users/zhuhai/Research/SatelliteSimJulia/research_store/runs/run_20260708T212829Z.json"
+  }
+}
+ROUND_DONE papers=309 repos=55
+--- ROUND 2 (days=30) Wed Jul  8 21:29:59 UTC 2026 ---
+Traceback (most recent call last):
+  File [35m"/Users/zhuhai/Research/SatelliteSimJulia/scripts/research_collect.py"[0m, line [35m14[0m, in [35m<module>[0m
+    [1;31mfrom research_agent import api[0m  # noqa: E402
+    [1;31m^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^[0m
+  File [35m"/Users/zhuhai/Research/SatelliteSimJulia/scripts/research_agent/api.py"[0m, line [35m8[0m, in [35m<module>[0m
+    from . import collect, store
+  File [35m"/Users/zhuhai/Research/SatelliteSimJulia/scripts/research_agent/collect.py"[0m, line [35m375[0m
+    >>>>>>> 8[1;31m5[0md1a5f (Add multi-source paper collection: OpenAlex, Crossref, Semantic Scholar.)
+             [1;31m^[0m
+[1;35mSyntaxError[0m: [35minvalid decimal literal[0m
+--- ROUND 3 (days=30) Wed Jul  8 21:31:29 UTC 2026 ---
+{
+  "ok": true,
+  "cmd": "collect",
+  "result": {
+    "started_at": "2026-07-08T21:31:29.948949+00:00",
+    "papers": {
+      "fetched_unique": 143,
+      "added": 82,
+      "updated": 61,
+      "total": 391,
+      "query_stats": {
+        "arxiv/01_orbit": 2,
+        "arxiv/02_link": 0,
+        "arxiv/03_topology": 0,
+        "arxiv/04_routing": 0,
+        "arxiv/05_traffic": 2,
+        "arxiv/99_general": 3,
+        "openalex/kw_leo_network": 24,
+        "openalex/kw_isl": 3,
+        "openalex/kw_routing": 6,
+        "openalex/kw_topology": 16,
+        "openalex/kw_traffic": 20,
+        "openalex/kw_sim": 2,
+        "crossref/kw_leo_network": 38,
+        "crossref/kw_isl": 22,
+        "crossref/kw_routing": 14,
+        "crossref/kw_topology": 12,
+        "crossref/kw_traffic": 30,
+        "crossref/kw_sim": 18,
+        "s2/kw_leo_network": 0,
+        "s2/kw_isl": 0,
+        "s2/kw_routing": 0,
+        "s2/kw_topology": 0,
+        "s2/kw_traffic": 0,
+        "s2/kw_sim": 30
+      },
+      "errors": [
+        "s2/kw_leo_network: HTTP Error 429: ",
+        "s2/kw_isl: HTTP Error 429: ",
+        "s2/kw_routing: HTTP Error 429: ",
+        "s2/kw_topology: HTTP Error 429: ",
+        "s2/kw_traffic: HTTP Error 429: "
+      ]
+    },
+    "repos": {
+      "fetched_unique": 55,
+      "added": 0,
+      "updated": 55,
+      "total": 55,
+      "query_stats": {
+        "sim_leo": 4,
+        "isl_routing": 5,
+        "walker_sgp4": 2,
+        "starlink_sim": 16,
+        "julia_sat": 30
+      },
+      "errors": []
+    },
+    "ok": false,
+    "finished_at": "2026-07-08T21:37:53.178697+00:00",
+    "run_report_path": "/Users/zhuhai/Research/SatelliteSimJulia/research_store/runs/run_20260708T213753Z.json"
+  }
+}
+ROUND_DONE papers=391 repos=55
+--- ROUND 4 (days=30) Wed Jul  8 21:39:23 UTC 2026 ---
+{
+  "ok": true,
+  "cmd": "collect",
+  "result": {
+    "started_at": "2026-07-08T21:39:23.407315+00:00",
+    "papers": {
+      "fetched_unique": 180,
+      "added": 32,
+      "updated": 148,
+      "total": 423,
+      "query_stats": {
+        "arxiv/01_orbit": 2,
+        "arxiv/02_link": 0,
+        "arxiv/03_topology": 0,
+        "arxiv/04_routing": 0,
+        "arxiv/05_traffic": 2,
+        "arxiv/99_general": 3,
+        "openalex/kw_leo_network": 24,
+        "openalex/kw_isl": 3,
+        "openalex/kw_routing": 6,
+        "openalex/kw_topology": 16,
+        "openalex/kw_traffic": 20,
+        "openalex/kw_sim": 2,
+        "crossref/kw_leo_network": 37,
+        "crossref/kw_isl": 22,
+        "crossref/kw_routing": 14,
+        "crossref/kw_topology": 12,
+        "crossref/kw_traffic": 30,
+        "crossref/kw_sim": 18,
+        "s2/kw_leo_network": 0,
+        "s2/kw_isl": 0,
+        "s2/kw_routing": 40,
+        "s2/kw_topology": 0,
+        "s2/kw_traffic": 0,
+        "s2/kw_sim": 32
+      },
+      "errors": [
+        "s2/kw_leo_network: HTTP Error 429: ",
+        "s2/kw_isl: HTTP Error 429: ",
+        "s2/kw_topology: HTTP Error 429: ",
+        "s2/kw_traffic: HTTP Error 429: "
+      ]
+    },
+    "repos": {
+      "fetched_unique": 55,
+      "added": 0,
+      "updated": 55,
+      "total": 55,
+      "query_stats": {
+        "sim_leo": 4,
+        "isl_routing": 5,
+        "walker_sgp4": 2,
+        "starlink_sim": 16,
+        "julia_sat": 30
+      },
+      "errors": []
+    },
+    "ok": false,
+    "finished_at": "2026-07-08T21:44:40.206023+00:00",
+    "run_report_path": "/Users/zhuhai/Research/SatelliteSimJulia/research_store/runs/run_20260708T214440Z.json"
+  }
+}
+ROUND_DONE papers=423 repos=55

@@ -1,0 +1,58 @@
+{
+  "started_at": "2026-07-08T21:31:29.948949+00:00",
+  "papers": {
+    "fetched_unique": 143,
+    "added": 82,
+    "updated": 61,
+    "total": 391,
+    "query_stats": {
+      "arxiv/01_orbit": 2,
+      "arxiv/02_link": 0,
+      "arxiv/03_topology": 0,
+      "arxiv/04_routing": 0,
+      "arxiv/05_traffic": 2,
+      "arxiv/99_general": 3,
+      "openalex/kw_leo_network": 24,
+      "openalex/kw_isl": 3,
+      "openalex/kw_routing": 6,
+      "openalex/kw_topology": 16,
+      "openalex/kw_traffic": 20,
+      "openalex/kw_sim": 2,
+      "crossref/kw_leo_network": 38,
+      "crossref/kw_isl": 22,
+      "crossref/kw_routing": 14,
+      "crossref/kw_topology": 12,
+      "crossref/kw_traffic": 30,
+      "crossref/kw_sim": 18,
+      "s2/kw_leo_network": 0,
+      "s2/kw_isl": 0,
+      "s2/kw_routing": 0,
+      "s2/kw_topology": 0,
+      "s2/kw_traffic": 0,
+      "s2/kw_sim": 30
+    },
+    "errors": [
+      "s2/kw_leo_network: HTTP Error 429: ",
+      "s2/kw_isl: HTTP Error 429: ",
+      "s2/kw_routing: HTTP Error 429: ",
+      "s2/kw_topology: HTTP Error 429: ",
+      "s2/kw_traffic: HTTP Error 429: "
+    ]
+  },
+  "repos": {
+    "fetched_unique": 55,
+    "added": 0,
+    "updated": 55,
+    "total": 55,
+    "query_stats": {
+      "sim_leo": 4,
+      "isl_routing": 5,
+      "walker_sgp4": 2,
+      "starlink_sim": 16,
+      "julia_sat": 30
+    },
+    "errors": []
+  },
+  "ok": false,
+  "finished_at": "2026-07-08T21:37:53.178697+00:00"
+}

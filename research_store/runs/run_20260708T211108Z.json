@@ -1,0 +1,41 @@
+{
+  "started_at": "2026-07-08T21:08:07.003839+00:00",
+  "papers": {
+    "fetched_unique": 0,
+    "added": 0,
+    "updated": 0,
+    "total": 9,
+    "query_stats": {
+      "01_orbit": 0,
+      "02_link": 0,
+      "03_topology": 0,
+      "04_routing": 0,
+      "05_traffic": 0,
+      "99_general": 0
+    },
+    "errors": [
+      "01_orbit: The read operation timed out",
+      "02_link: The read operation timed out",
+      "03_topology: HTTP Error 429: Too Many Requests",
+      "04_routing: HTTP Error 429: Unknown Error",
+      "05_traffic: HTTP Error 429: Unknown Error",
+      "99_general: HTTP Error 429: Unknown Error"
+    ]
+  },
+  "repos": {
+    "fetched_unique": 55,
+    "added": 26,
+    "updated": 29,
+    "total": 55,
+    "query_stats": {
+      "sim_leo": 4,
+      "isl_routing": 5,
+      "walker_sgp4": 2,
+      "starlink_sim": 16,
+      "julia_sat": 30
+    },
+    "errors": []
+  },
+  "ok": false,
+  "finished_at": "2026-07-08T21:11:08.977963+00:00"
+}
