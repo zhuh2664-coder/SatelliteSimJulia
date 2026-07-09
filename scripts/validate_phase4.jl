@@ -2,7 +2,7 @@
 #
 # 1) Dual-fidelity: analytical prop vs DES underload/overload (Iridium path)
 # 2) Queue theory: single-hop DES vs M/D/1
-# 3) Orbit cross-check: SatelliteSimOrbit ECI vs GMAT PropSetup (same initial state)
+# 3) Orbit cross-check: SatelliteSimOrbit ECI vs GMAT PropSetup (true initial RV)
 # 4) Export ns-3 scenario JSON for external comparison
 #
 # Usage (from repo root):
@@ -118,46 +118,46 @@ ns3_path = joinpath(OUT_DIR, "ns3_scenario_iridium.json")
 export_ns3_scenario(ns3_path, sc)
 println("wrote ", ns3_path)
 
-# ── 5. Orbit: ECI TwoBody/J2 vs GMAT (same initial circular state) ─
-println("\n[5] Orbit cross-check: propagate_positions (ECI) vs GMAT PropSetup")
-R_E = 6378.137e3
-alt = 780e3
-μ = 3.986004418e14
-a = R_E + alt
-v_circ = sqrt(μ / a)
-r0 = [a, 0.0, 0.0]
-v0 = [0.0, v_circ, 0.0]
+# ── 5. Orbit: true ECI RV vs GMAT ──────────────────────────────────
+println("\n[5] Orbit cross-check: propagate_eci_rv vs GMAT PropSetup")
+els = generate_walker_delta(T=1, P=1, F=0, alt_km=780.0, inc_deg=0.0)
 tspan = collect(0.0:60.0:600.0)
 
-# Matching near-circular Keplerian via Walker helper (abstract Vector{KeplerianElements})
-els = generate_walker_delta(T=1, P=1, F=0, alt_km=780.0, inc_deg=0.0)
-# Align GMAT initial state to Orbit package's first ECI sample (meters)
-pos0 = propagate_positions(els, [0.0]; propagator=:two_body)  # km
-r0 = pos0[1, 1, :] .* 1000
-# circular equatorial velocity perpendicular to r
-v0 = [-r0[2], r0[1], 0.0]
-v0 = v0 .* (v_circ / max(norm(v0), eps()))
-pos_tb = propagate_positions(els, tspan; propagator=:two_body)  # km
-pos_j2 = propagate_positions(els, tspan; propagator=:j2)
+pos_tb, vel_tb = propagate_eci_rv(els, tspan; propagator=:two_body)  # m, m/s
+pos_j2, vel_j2 = propagate_eci_rv(els, tspan; propagator=:j2)
 
-setup = PropSetup(
+r0 = pos_tb[1, 1, :]
+v0 = vel_tb[1, 1, :]
+@printf("initial |r|=%.3f km  |v|=%.3f m/s  (NOT circular √(μ/a))\n",
+        norm(r0) / 1000, norm(v0))
+
+setup_kepler = PropSetup(
+    force_model=combine_forces(GravityField(degree=0)),
+    integrator=PrinceDormand78(),
+    spacecraft=Spacecraft(),
+)
+setup_j2 = PropSetup(
     force_model=combine_forces(GravityField(degree=2)),
     integrator=PrinceDormand78(),
     spacecraft=Spacecraft(),
 )
-sol = propagate(setup, vcat(r0, v0), tspan)
-gmat_km = zeros(1, length(tspan), 3)
-for (k, u) in enumerate(sol.u)
-    gmat_km[1, k, :] .= u[1:3] ./ 1000
-end
+sol_k = propagate(setup_kepler, vcat(r0, v0), tspan)
+sol_j = propagate(setup_j2, vcat(r0, v0), tspan)
 
-n = min(size(pos_j2, 2), size(gmat_km, 2), size(pos_tb, 2))
-err_j2 = [norm(pos_j2[1, k, :] .- gmat_km[1, k, :]) * 1000 for k in 1:n]  # m
-err_tb = [norm(pos_tb[1, k, :] .- gmat_km[1, k, :]) * 1000 for k in 1:n]
-drift_tb_j2 = [norm(pos_tb[1, k, :] .- pos_j2[1, k, :]) * 1000 for k in 1:n]
-@printf("GMAT(J2) vs Orbit-J2 : mean|Δr|=%.1f m  max=%.1f m\n", mean(err_j2), maximum(err_j2))
-@printf("GMAT(J2) vs Orbit-TB : mean|Δr|=%.1f m  max=%.1f m\n", mean(err_tb), maximum(err_tb))
-@printf("Orbit TwoBody vs J2  : mean|Δr|=%.1f m  max=%.1f m\n", mean(drift_tb_j2), maximum(drift_tb_j2))
+n = length(tspan)
+err_kepler = [norm(sol_k.u[k][1:3] .- pos_tb[1, k, :]) for k in 1:n]
+err_j2 = [norm(sol_j.u[k][1:3] .- pos_j2[1, k, :]) for k in 1:n]
+drift_tb_j2 = [norm(pos_tb[1, k, :] .- pos_j2[1, k, :]) for k in 1:n]
+
+@printf("GMAT Kepler vs Orbit-TB : mean|Δr|=%.3f m  max=%.3f m  (gate: ~0)\n",
+        mean(err_kepler), maximum(err_kepler))
+@printf("GMAT J2 vs Orbit-J2     : mean|Δr|=%.1f m  max=%.1f m  (baseline; model form differs)\n",
+        mean(err_j2), maximum(err_j2))
+@printf("Orbit TwoBody vs J2     : mean|Δr|=%.1f m  max=%.1f m\n",
+        mean(drift_tb_j2), maximum(drift_tb_j2))
+
+kepler_ok = maximum(err_kepler) < 1.0  # sub-meter over 10 min
+kepler_ok || @warn "Kepler cross-check failed — check initial RV / μ constants"
 
 # ── 6. Write summary report ────────────────────────────────────────
 report = joinpath(OUT_DIR, "phase4_report.txt")
@@ -171,12 +171,14 @@ open(report, "w") do io
             df.overload.mean_latency_ms, df.overload_drop_ratio, df.overload_queue_ms)
     @printf(io, "md1_rho=%.4f theory_ms=%.6f des_ms=%.6f rel_err=%.4f ok=%s\n",
             md.rho, 1000 * md.theory_wait_s, 1000 * md.des_queue_s, md.rel_error, string(md.within_tol))
-    @printf(io, "gmat_vs_j2_mean_m=%.6f max_m=%.6f\n", mean(err_j2), maximum(err_j2))
+    @printf(io, "gmat_kepler_vs_tb_mean_m=%.6f max_m=%.6f ok=%s\n",
+            mean(err_kepler), maximum(err_kepler), string(kepler_ok))
+    @printf(io, "gmat_j2_vs_orbit_j2_mean_m=%.6f max_m=%.6f\n", mean(err_j2), maximum(err_j2))
     @printf(io, "orbit_tb_vs_j2_mean_m=%.6f\n", mean(drift_tb_j2))
     println(io, "ns3_scenario=", ns3_path)
 end
 println("\nwrote ", report)
 println("="^64)
 println("Phase 4 validation done.")
-@printf("aligned=%s  md1_ok=%s  gmat_vs_j2_mean_m=%.1f\n",
-        string(df.aligned), string(md.within_tol), mean(err_j2))
+@printf("aligned=%s  md1_ok=%s  gmat_kepler_ok=%s  gmat_j2_mean_m=%.1f\n",
+        string(df.aligned), string(md.within_tol), string(kepler_ok), mean(err_j2))

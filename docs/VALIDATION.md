@@ -50,9 +50,19 @@ On a loaded path (load > rate):
 - DES underload: mean latency ≈ prop + Σ transmission, **drops ≈ 0**, `aligned=true`
 - DES overload: **drop > 0**, queue delay > 0, mean latency > analytical
 
-## Orbit note
+## Orbit cross-check
 
-GMAT and `SatelliteSimOrbit` share a circular LEO initial state in ECI for the
-harness. Frame / force-model differences can produce large meter-level drift;
-the report records the delta as a **baseline**, not a pass/fail gate.
-`Orbit TwoBody vs J2` drift is the in-package sanity check.
+Use **`propagate_eci_rv`** (meters / m/s) for the initial state — do **not**
+assume circular `√(μ/a)`. Walker elements use `e≈0.001`, which shifts `|v|` by
+~O(100 m/s) and previously produced ~km-level false disagreement.
+
+| Compare | Expected |
+|---|---|
+| GMAT `GravityField(degree=0)` vs Orbit TwoBody | **~0 m** (pass/fail gate, `<1 m` over 10 min) |
+| GMAT `GravityField(degree=2)` vs Orbit J2 | O(km) baseline — analytical J2 forms differ |
+| Orbit TwoBody vs Orbit J2 | O(km) over 10 min (perturbation sanity) |
+
+```bash
+julia --project=. test/test_orbit_gmat_align.jl
+julia --project=. scripts/validate_phase4.jl
+```

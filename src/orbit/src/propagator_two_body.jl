@@ -12,7 +12,8 @@ using SatelliteToolbox.Propagators: init, step!
 using LinearAlgebra: norm, cross
 
 export AbstractKeplerianPropagator, TwoBodyPropagator, J2Propagator, J4Propagator,
-       resolve_keplerian_propagator, propagate_to_ecef, propagate_positions
+       resolve_keplerian_propagator, propagate_to_ecef, propagate_positions,
+       propagate_eci_rv
 
 abstract type AbstractKeplerianPropagator end
 struct TwoBodyPropagator <: AbstractKeplerianPropagator end
@@ -68,6 +69,46 @@ function propagate_positions(
         end
     end
     return pos
+end
+
+"""
+    propagate_eci_rv(elems, tspan; propagator=:two_body) -> (pos_m, vel_mps)
+
+Propagate in the inertial frame used by SatelliteToolbox Keplerian propagators.
+
+Returns:
+- `pos_m`: `N×T×3` positions in **meters**
+- `vel_mps`: `N×T×3` velocities in **m/s**
+
+Use this (not a circular-orbit approximation) when cross-checking against GMAT
+numerical integration — Walker elements have `e≈0.001`, so `|v|` differs from
+`√(μ/a)` by O(100 m/s).
+"""
+function propagate_eci_rv(
+    elems::Vector{KeplerianElements},
+    tspan::Vector{Float64};
+    propagator=TwoBodyPropagator(),
+)
+    N = length(elems)
+    M = length(tspan)
+    pos = zeros(N, M, 3)
+    vel = zeros(N, M, 3)
+    propagator = resolve_keplerian_propagator(propagator)
+
+    Threads.@threads for i in 1:N
+        p = _make_propagator(elems[i], propagator)
+        for j in 1:M
+            Δt = j == 1 ? tspan[1] : tspan[j] - tspan[j - 1]
+            state = step!(p, Δt, OrbitStateVector)
+            pos[i, j, 1] = state.r[1]
+            pos[i, j, 2] = state.r[2]
+            pos[i, j, 3] = state.r[3]
+            vel[i, j, 1] = state.v[1]
+            vel[i, j, 2] = state.v[2]
+            vel[i, j, 3] = state.v[3]
+        end
+    end
+    return pos, vel
 end
 
 """
