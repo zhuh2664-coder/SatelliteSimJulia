@@ -22,6 +22,9 @@ end
 
 const ROOT = normpath(joinpath(@__DIR__, ".."))
 const SERVER_PROJECT = joinpath(ROOT, "src", "server")
+# Security declares relative path sources (../link etc.); Pkg.test from ROOT
+# resolves them against ROOT's parent. Run from its own project like server.
+const SECURITY_PROJECT = joinpath(ROOT, "src", "security")
 const ROOT_TEST_ENTRY = joinpath(ROOT, "test", "runtests_current.jl")
 
 const RUN_SERVER = get(ENV, "SATSIM_RUN_SERVER", "0") == "1"
@@ -56,12 +59,12 @@ function build_targets()
         ("lab", "SatelliteSimLab"),
         ("opt", "SatelliteSimOpt"),
         ("distributed", "SatelliteSimDistributed"),
-        ("security", "SatelliteSimSecurity"),
     ]
         push!(targets, target(short, `julia --project=$ROOT -e "using Pkg; Pkg.test(\"$pkg\")"`))
     end
 
     push!(targets, target("viz", `julia --project=$ROOT -e "using Pkg; Pkg.test(\"SatelliteSimViz\")"`; enabled=!SKIP_VIZ, reason="SATSIM_SKIP_VIZ=1"))
+    push!(targets, target("security", `julia --project=$SECURITY_PROJECT -e "using Pkg; Pkg.test()"`))
     push!(targets, target("server", `julia --project=$SERVER_PROJECT -e "using Pkg; Pkg.test()"`; enabled=RUN_SERVER, reason="set SATSIM_RUN_SERVER=1"))
 
     # Build helper package; not a regular test target yet.
