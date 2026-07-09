@@ -56,8 +56,9 @@ const CONSTELLATION_CATALOG = Dict{Symbol,AbstractConstellationConfig}(
     ),
 
     # ── Telesat Lightspeed (Phase 1) — 调研 §7.3: 1015km/99.1° 极轨太阳同步 ──
+    # Walker 生成器要求 T 能被 P 整除；用 120≈117 保持 6 轨道面均分。
     :telesat => WalkerConstellationConfig(
-        T=117, P=6, F=1, alt_km=1015.0, inc_deg=99.1,
+        T=120, P=6, F=1, alt_km=1015.0, inc_deg=99.1,
     ),
 
     # ── GW (中国星网) — 参数基于公开 ITU 申报，待确认 ──

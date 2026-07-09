@@ -11,8 +11,7 @@
 # 依赖：
 #   - SatelliteToolbox：TLE 解析、校验与构造。
 #   - Dates、JSON：StarPerf JSON 的日期解析与文件读取。
-#   - TLERecordSpec 由外部模块定义（通常为 network_layer/builders.jl 或相关 spec 模块）。
-#   - `load_tle_records(path; default_name_prefix)` 由外部 TLE 文本解析模块提供。
+#   - TLERecordSpec 由本模块定义，供 TLE 数据源与星座构建器共享。
 
 using Dates
 using JSON
@@ -202,12 +201,57 @@ function validate_tle_records_with_juliaspace(records::Vector{TLERecordSpec})::V
 end
 
 """
+    load_tle_records(path::AbstractString; default_name_prefix="SAT") -> Vector{TLERecordSpec}
+
+从本地 TLE 文本文件加载记录，支持两种常见格式：
+1. 三行格式：名称行 + line1 + line2。
+2. 两行格式：line1 + line2，此时名称自动生成为 `default_name_prefix-N`。
+"""
+function load_tle_records(
+    path::AbstractString;
+    default_name_prefix::AbstractString = "SAT",
+)::Vector{TLERecordSpec}
+    isfile(path) || throw(ArgumentError("TLE file not found: $path"))
+    !isempty(strip(default_name_prefix)) ||
+        throw(ArgumentError("default_name_prefix must not be empty"))
+
+    lines = [strip(line) for line in readlines(path) if !isempty(strip(line))]
+    records = TLERecordSpec[]
+    i = 1
+    fallback_id = 1
+
+    while i <= length(lines)
+        if startswith(lines[i], "1 ")
+            name = "$(strip(default_name_prefix))-$(fallback_id)"
+            line1 = lines[i]
+            line2 = i + 1 <= length(lines) ? lines[i + 1] : ""
+            i += 2
+            fallback_id += 1
+        else
+            name = lines[i]
+            line1 = i + 1 <= length(lines) ? lines[i + 1] : ""
+            line2 = i + 2 <= length(lines) ? lines[i + 2] : ""
+            i += 3
+        end
+
+        record_index = length(records) + 1
+        startswith(line1, "1 ") ||
+            throw(ArgumentError("invalid TLE line 1 near record $record_index: $line1"))
+        startswith(line2, "2 ") ||
+            throw(ArgumentError("invalid TLE line 2 near record $record_index: $line2"))
+        push!(records, TLERecordSpec(name, line1, line2))
+    end
+
+    !isempty(records) || throw(ArgumentError("no TLE records found in file: $path"))
+    return records
+end
+
+"""
     load_tle_records(source::TLETextFileSource) -> Vector{TLERecordSpec}
 
 从本地三行 TLE 文本文件中加载记录。
 
 # 说明
-实际解析委托给外部 `load_tle_records(path; default_name_prefix)` 函数。
 若 `source.verify_with_juliaspace` 为真，加载后会逐条调用 SatelliteToolbox 校验。
 """
 function load_tle_records(source::TLETextFileSource)::Vector{TLERecordSpec}

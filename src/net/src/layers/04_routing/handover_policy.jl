@@ -61,7 +61,7 @@ function select_satellite(
     isempty(samples) && return nothing
     filtered = filter(s -> s.elevation_deg >= policy.min_elevation_deg, samples)
     isempty(filtered) && return nothing
-    return filtered[argmax(s -> s.elevation_deg, filtered)]
+    return _highest_elevation_sample(filtered)
 end
 
 function select_satellite(
@@ -80,7 +80,7 @@ function select_satellite(
 
     # 否则切换到仰角最高的
     isempty(filtered) && return nothing
-    return filtered[argmax(s -> s.elevation_deg, filtered)]
+    return _highest_elevation_sample(filtered)
 end
 
 function select_satellite(
@@ -89,7 +89,23 @@ function select_satellite(
     prev_satellite_id::Union{Nothing,Int}=nothing,
 )
     isempty(samples) && return nothing
-    return samples[argmin(s -> s.distance_km, samples)]
+    return _nearest_distance_sample(samples)
+end
+
+function _highest_elevation_sample(samples)
+    best = first(samples)
+    for sample in Iterators.drop(samples, 1)
+        sample.elevation_deg > best.elevation_deg && (best = sample)
+    end
+    return best
+end
+
+function _nearest_distance_sample(samples)
+    best = first(samples)
+    for sample in Iterators.drop(samples, 1)
+        sample.distance_km < best.distance_km && (best = sample)
+    end
+    return best
 end
 
 # ────────────────────────────────────────────────────────────

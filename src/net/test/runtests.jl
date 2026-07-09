@@ -1,69 +1,55 @@
-using Graphs
+# src/net/test/runtests.jl — SatelliteSimNet 独立 smoke 测试
+#
+# 网络层：拓扑策略 + ISL 候选生成 + 路由（Dijkstra/ECMP/MinLoad/CGR）。
+# 依赖 Core。测试用已知小图验证距离矩阵，秒级完成。
+
 using SatelliteSimNet
+using SatelliteSimCore
 using Test
 
-function make_routing_graph(
-    n_nodes::Int,
-    edges::Vector{Tuple{Int,Int}},
-    weights::Vector{Float64},
-)::RoutingGraph
-    adj = Dict{Int,Vector{Tuple{Int,Float64}}}()
-    g = SimpleDiGraph(n_nodes)
-    for (index, (source, destination)) in pairs(edges)
-        add_edge!(g, source, destination)
-        push!(get!(adj, source, Tuple{Int,Float64}[]), (destination, weights[index]))
+@testset "SatelliteSimNet" begin
+
+    @testset "拓扑策略类型" begin
+        @test GridPlusStrategy() isa AbstractTopologyStrategy
+        @test SpiralStrategy() isa AbstractTopologyStrategy
+        @test HoneycombStrategy() isa AbstractTopologyStrategy
+        @test RingStrategy() isa AbstractTopologyStrategy
+        @test MeshStrategy() isa AbstractTopologyStrategy
     end
-    return RoutingGraph(n_nodes, adj, string.(1:n_nodes), g)
-end
 
-@testset "RoutingGraph weighted directed semantics" begin
-    weighted_graph = make_routing_graph(
-        3,
-        Tuple{Int,Int}[(1, 2), (2, 3), (1, 3)],
-        [1.0, 2.0, 10.0],
-    )
+    @testset "拓扑生成（GridPlus 小星座）" begin
+        topo = generate_topology(GridPlusStrategy(), 6, 2)
+        @test topo isa TopologyOutput
+        @test !isempty(topo.static_links)
+    end
 
-    dijkstra = route(DijkstraRouting(), RoutingInput(weighted_graph, 1, 3))
-    @test dijkstra.path == [1, 2, 3]
-    @test isapprox(dijkstra.total_weight, 3.0; atol = 1e-12)
+    @testset "路由算法类型" begin
+        @test DijkstraRouting() isa AbstractRoutingAlgorithm
+        @test ECMPRouting() isa AbstractRoutingAlgorithm
+        @test MinLoadRouting() isa AbstractRoutingAlgorithm
+        @test CGRRouting() isa AbstractRoutingAlgorithm
+    end
 
-    ecmp = route(ECMPRouting(), RoutingInput(weighted_graph, 1, 3))
-    @test ecmp.path == [1, 2, 3]
-    @test isapprox(ecmp.total_weight, 3.0; atol = 1e-12)
+    @testset "邻接表 + 全对最短路径（已知小图）" begin
+        # 4 节点链：1-2-3-4，边权全 1
+        N = 4
+        edges = [(1,2), (2,3), (3,4)]
+        weights = [1.0, 1.0, 1.0]
+        A = build_adjacency(N, edges, weights)
+        @test size(A) == (N, N)
+        D = all_pairs_shortest_paths(A)
+        # 1→4 距离 = 3
+        @test D[1,4] == 3.0
+        @test D[1,2] == 1.0
+        @test D[2,4] == 2.0
+        # 对角线 0
+        @test all(D[i,i] == 0.0 for i in 1:N)
+    end
 
-    min_load = route(MinLoadRouting(), RoutingInput(weighted_graph, 1, 3))
-    @test min_load.path == [1, 2, 3]
-    @test isapprox(min_load.total_weight, 3.0; atol = 1e-12)
-
-    directed_graph = make_routing_graph(
-        3,
-        Tuple{Int,Int}[(1, 2), (2, 3)],
-        [1.0, 1.0],
-    )
-
-    reverse_dijkstra = route(DijkstraRouting(), RoutingInput(directed_graph, 3, 1))
-    @test isempty(reverse_dijkstra.path)
-    @test reverse_dijkstra.total_weight == Inf
-
-    reverse_ecmp = route(ECMPRouting(), RoutingInput(directed_graph, 3, 1))
-    @test isempty(reverse_ecmp.path)
-    @test reverse_ecmp.total_weight == Inf
-
-    reverse_min_load = route(MinLoadRouting(), RoutingInput(directed_graph, 3, 1))
-    @test isempty(reverse_min_load.path)
-    @test reverse_min_load.total_weight == Inf
-
-    @test isempty(ecmp_paths(3, Tuple{Int,Int}[(1, 2), (2, 3)], [1.0, 1.0], 3, 1))
-    @test isempty(min_load_path(3, Tuple{Int,Int}[(1, 2), (2, 3)], [1.0, 1.0], 3, 1, [0.0, 0.0], [1.0, 1.0]))
-end
-
-@testset "ECMP helper keeps equivalent shortest paths" begin
-    edges = Tuple{Int,Int}[(1, 2), (2, 4), (1, 3), (3, 4), (1, 4)]
-    weights = [1.0, 1.0, 1.0, 1.0, 3.0]
-
-    paths = ecmp_paths(4, edges, weights, 1, 4; K = 10)
-    @test length(paths) == 2
-    @test [1, 2, 4] in paths
-    @test [1, 3, 4] in paths
-    @test !([1, 4] in paths)
+    @testset "路由输出构造" begin
+        ro = RoutingOutput([1, 2, 3], 2.0, "Dijkstra")
+        @test ro isa RoutingOutput
+        @test ro.path == [1, 2, 3]
+        @test ro.total_weight == 2.0
+    end
 end

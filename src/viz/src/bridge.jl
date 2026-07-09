@@ -59,6 +59,12 @@ end
 
 地理坐标 → 球面 ECEF xyz。默认 alt=0（地面）。
 """
+function geodetic_to_xyz(lat_deg::Real, lon_deg::Real, alt_km::Real = 0.0;
+    radius_km = WGS84_EQUATORIAL_RADIUS_KM,
+)
+    return latlon_to_xyz(lat_deg, lon_deg; alt_km = alt_km, radius_km = radius_km)
+end
+
 function geodetic_to_xyz(position::GeodeticPosition; radius_km = WGS84_EQUATORIAL_RADIUS_KM)
     return latlon_to_xyz(position.latitude_deg, position.longitude_deg;
         alt_km = position.altitude_km,

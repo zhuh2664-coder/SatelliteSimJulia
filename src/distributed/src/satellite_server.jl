@@ -77,16 +77,27 @@ function evaluate_local_isls(server::SatelliteServer,
                              neighbor_positions::Dict{Int,Vector{Float64}},
                              constraints=LEO_DEFAULTS)
     results = Tuple{Int,Bool,Float64}[]
-    pos_a = (server.current_position[1], server.current_position[2], server.current_position[3])
+    rows = Vector{Vector{Float64}}()
+    ids = Int[server.sat_id]
+    push!(rows, server.current_position)
 
     for nb_id in server.isl_neighbors
         haskey(neighbor_positions, nb_id) || continue
-        pos_b = neighbor_positions[nb_id]
-        pos_b_t = (pos_b[1], pos_b[2], pos_b[3])
+        push!(ids, nb_id)
+        push!(rows, neighbor_positions[nb_id])
+    end
 
-        # 用现有 evaluate_isl 评估（返回 tuple: (available, distance, los, delay_ms, details)）
-        avail, _dist, _los, delay_ms, _details = evaluate_isl(pos_a, pos_b_t; constraints=constraints)
-        push!(results, (nb_id, avail, delay_ms))
+    length(ids) == 1 && return results
+
+    pos_matrix = zeros(Float64, length(rows), 3)
+    for (i, row) in enumerate(rows)
+        pos_matrix[i, :] .= row
+    end
+
+    links = Tuple{Int,Int}[(1, k) for k in 2:length(ids)]
+    evals = evaluate_isl_batch(pos_matrix, links; constraints=constraints)
+    for (k, ev) in enumerate(evals)
+        push!(results, (ids[k + 1], ev.available, ev.latency_ms))
     end
     return results
 end
