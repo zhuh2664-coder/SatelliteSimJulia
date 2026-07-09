@@ -1,0 +1,16 @@
+# Stub 后端离线 CI 环境：零 SatelliteToolbox
+
+[deps]
+SatelliteSimBackends = "a1a2a3a4-b5b6-7890-cdef-123456789abc"
+SatelliteSimStubBackend = "b2b3b4b5-c6c7-8901-def2-23456789abcd"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[sources]
+SatelliteSimBackends = {path = "../../packages/SatelliteSimBackends"}
+SatelliteSimStubBackend = {path = "../../packages/SatelliteSimStubBackend"}
+
+[compat]
+julia = "1.12"
+
+[targets]
+test = ["Test"]

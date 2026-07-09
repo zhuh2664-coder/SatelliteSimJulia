@@ -1,0 +1,49 @@
+name: Nightly Golden
+
+on:
+  schedule:
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  stub-golden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - uses: julia-actions/cache@v2
+      - name: Instantiate backends-stub
+        run: julia --project=envs/backends-stub -e 'using Pkg; Pkg.instantiate()'
+      - name: Stub golden vectors
+        run: julia --project=envs/backends-stub scripts/check_golden_stub.jl
+      - name: Stub backend package tests
+        run: julia --project=envs/backends-stub test/backends/test_stub_backend_pkg.jl
+
+  julia-space-golden:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - uses: julia-actions/cache@v2
+      - name: Instantiate JuliaSpace backend
+        run: |
+          julia --project=packages/SatelliteSimJuliaSpaceBackend -e 'using Pkg; Pkg.instantiate()'
+      - name: JuliaSpace backend smoke
+        run: |
+          julia --project=packages/SatelliteSimJuliaSpaceBackend -e '
+            using SatelliteSimJuliaSpaceBackend, SatelliteSimBackends, Dates
+            backend = JuliaSpaceOrbitBackend()
+            lines = ["IRIDIUM 100",
+              "1 42804U 17039E   23001.50000000  .00000010  00000-0  20000-4 0  9991",
+              "2 42804  86.3900 260.4200 0002100 273.9700  86.0800 14.34218526  1234"]
+            tles = parse_tle_lines(backend, lines)
+            pos = propagate_sgp4(backend, tles, [0, 60]; epoch=DateTime(2023,1,1,12))
+            @assert size(pos) == (1, 2, 3)
+            println("JuliaSpace backend smoke: PASS")
+          '

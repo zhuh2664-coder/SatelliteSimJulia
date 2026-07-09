@@ -1,0 +1,10 @@
+{
+  "root": { "max_total": 200, "baseline_total": 153, "warn_pct": 0.2 },
+  "core": { "max_total": 160, "baseline_total": 138, "warn_pct": 0.2 },
+  "sim": { "max_total": 200, "baseline_total": 143, "warn_pct": 0.2 },
+  "viz": { "max_total": 350, "warn_pct": 0.2 },
+  "opt": { "max_total": 400, "warn_pct": 0.2 },
+  "security": { "max_total": 200, "baseline_total": 118, "warn_pct": 0.2 },
+  "gmat": { "max_total": 450, "warn_pct": 0.2 },
+  "backends-stub": { "max_total": 20, "warn_pct": 0.2 }
+}

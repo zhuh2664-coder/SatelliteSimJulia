@@ -1,0 +1,15 @@
+name = "SatelliteSimJuliaSpaceBackend"
+uuid = "c3c4c5c6-d7d8-9012-ef34-456789abcdef"
+version = "0.1.0"
+
+[deps]
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+SatelliteSimBackends = "a1a2a3a4-b5b6-7890-cdef-123456789abc"
+SatelliteToolbox = "6ac157d9-b43d-51bb-8fab-48bf53814f4a"
+SatelliteToolboxSgp4 = "ba14ac17-bfc9-4710-a76f-b32930ef2339"
+
+[sources]
+SatelliteSimBackends = {path = "../SatelliteSimBackends"}
+
+[compat]
+julia = "1.12"

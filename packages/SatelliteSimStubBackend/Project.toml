@@ -1,0 +1,13 @@
+name = "SatelliteSimStubBackend"
+uuid = "b2b3b4b5-c6c7-8901-def2-23456789abcd"
+version = "0.1.0"
+
+[deps]
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+SatelliteSimBackends = "a1a2a3a4-b5b6-7890-cdef-123456789abc"
+
+[sources]
+SatelliteSimBackends = {path = "../SatelliteSimBackends"}
+
+[compat]
+julia = "1.12"
