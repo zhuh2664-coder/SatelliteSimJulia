@@ -84,6 +84,12 @@ register_hook!(fn::Function, event::Symbol) = register_hook!(event, fn)
 function clear_hooks!()
     for k in keys(HOOKS); empty!(HOOKS[k]); end
     _DEFAULT_HOOKS_REGISTERED[] = false
+    isdefined(@__MODULE__, :_DEFAULT_SCHEMA_VALIDATION_REGISTERED) && (_DEFAULT_SCHEMA_VALIDATION_REGISTERED[] = false)
+    isdefined(@__MODULE__, :_DEFAULT_TOOL_GUARDS_REGISTERED) && (_DEFAULT_TOOL_GUARDS_REGISTERED[] = false)
+    isdefined(@__MODULE__, :_DEFAULT_LEDGER_HOOKS_REGISTERED) && (_DEFAULT_LEDGER_HOOKS_REGISTERED[] = false)
+    isdefined(@__MODULE__, :_DEFAULT_TOOL_PERMISSIONS_REGISTERED) && (_DEFAULT_TOOL_PERMISSIONS_REGISTERED[] = false)
+    isdefined(@__MODULE__, :_TOOL_PERMISSION_POLICIES) && empty!(_TOOL_PERMISSION_POLICIES)
+    isdefined(@__MODULE__, :_TOOL_APPROVALS) && empty!(_TOOL_APPROVALS)
     return nothing
 end
 
