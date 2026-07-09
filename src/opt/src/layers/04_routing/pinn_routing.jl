@@ -1,6 +1,7 @@
 # ===== PINN 路由 — 类型定义 + 推理 + 训练 =====
 
-export PINNRouting, fit_pinn_routing, predict_latency
+export PINNRouting, fit_pinn_routing, predict_latency,
+       generate_pinn_training_samples, train_pinn_routing, infer_pinn_latency
 
 """
     PINNRouting{M, P, S}
@@ -30,17 +31,101 @@ end
 
 """
     predict_latency(alg::PINNRouting, adj, src, dst) -> Float64
+    infer_pinn_latency(alg::PINNRouting, adj, src, dst) -> Float64
 
-PINN 前向传播预测延迟（ms）。
-输入: 邻接矩阵 + (src, dst) + 星座结构
-输出: 预测延迟（完全可微）
+PINN 前向传播预测延迟（ms）。`infer_pinn_latency` 为显式推理 API 别名。
 """
 function predict_latency(alg::PINNRouting, adj::Matrix{Float64}, src::Int, dst::Int)::Float64
     x = encode_routing_features(adj, src, dst, alg.sats_per_plane, alg.n_planes)
     y_pred_norm, _ = alg.model(x, alg.params, alg.state)
-    # 反归一化
     latency_ms = y_pred_norm[1] * alg.y_std + alg.y_mean
     return max(Float64(latency_ms), 0.0)
+end
+
+infer_pinn_latency(alg::PINNRouting, adj::Matrix{Float64}, src::Int, dst::Int)::Float64 =
+    predict_latency(alg, adj, src, dst)
+
+function _dijkstra_latency(adj::Matrix{Float64}, src::Int, dst::Int)::Float64
+    src == dst && return 0.0
+    N = size(adj, 1)
+    dist = fill(Inf, N)
+    dist[src] = 0.0
+    visited = falses(N)
+    for _ in 1:N
+        u = 0
+        best = Inf
+        for i in 1:N
+            if !visited[i] && dist[i] < best
+                best = dist[i]
+                u = i
+            end
+        end
+        (u == 0 || best == Inf) && break
+        visited[u] = true
+        u == dst && break
+        for v in 1:N
+            w = adj[u, v]
+            if isfinite(w) && dist[u] + w < dist[v]
+                dist[v] = dist[u] + w
+            end
+        end
+    end
+    return dist[dst]
+end
+
+"""
+    generate_pinn_training_samples(adj; n_samples, sats_per_plane, n_planes, rng)
+
+从邻接矩阵随机采样 (src,dst) 对，并用 Dijkstra 最短路延迟作标签。
+返回 `(src_list, dst_list, latency_list)`。
+"""
+function generate_pinn_training_samples(
+    adj::Matrix{Float64};
+    n_samples::Int=64,
+    sats_per_plane::Int=72,
+    n_planes::Int=6,
+    rng::AbstractRNG=Random.default_rng(),
+)
+    N = size(adj, 1)
+    n_samples > 0 || throw(ArgumentError("n_samples must be positive"))
+    src_list = Int[]
+    dst_list = Int[]
+    latency_list = Float64[]
+    reset_pinn_bfs_cache!()
+    attempts = 0
+    max_attempts = max(n_samples * 20, 100)
+    while length(src_list) < n_samples && attempts < max_attempts
+        attempts += 1
+        src = rand(rng, 1:N)
+        dst = rand(rng, 1:N)
+        src == dst && continue
+        latency = _dijkstra_latency(adj, src, dst)
+        isfinite(latency) || continue
+        push!(src_list, src)
+        push!(dst_list, dst)
+        push!(latency_list, latency)
+    end
+    length(src_list) >= 1 || throw(ArgumentError("no reachable OD pairs in adjacency matrix"))
+    return src_list, dst_list, latency_list
+end
+
+"""
+    train_pinn_routing(adj; n_samples, epochs, ...) -> PINNRouting
+
+最小训练闭环：采样标签 → `fit_pinn_routing` → 返回可推理模型。
+"""
+function train_pinn_routing(
+    adj::Matrix{Float64};
+    n_samples::Int=64,
+    rng::AbstractRNG=Random.default_rng(),
+    kwargs...
+)::PINNRouting
+    sats_per_plane = get(kwargs, :sats_per_plane, 72)
+    n_planes = get(kwargs, :n_planes, 6)
+    src_list, dst_list, latency_list = generate_pinn_training_samples(
+        adj; n_samples=n_samples, sats_per_plane=sats_per_plane, n_planes=n_planes, rng=rng,
+    )
+    return fit_pinn_routing(adj, src_list, dst_list, latency_list; kwargs...)
 end
 
 # ===== 训练接口 =====
