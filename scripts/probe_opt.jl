@@ -52,5 +52,7 @@ if ok1 && ok2 && ok3
     println("PROBE OPT: ALL PASS")
 else
     println("PROBE OPT: HAS FAILURES (见上)")
+    println("=" ^ 60)
+    exit(1)
 end
 println("=" ^ 60)

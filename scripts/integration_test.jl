@@ -6,7 +6,9 @@
 # This validates that the multi-package refactor is complete and functional.
 
 using Pkg
-Pkg.activate("src/lab")
+
+const ROOT = normpath(joinpath(@__DIR__, ".."))
+Pkg.activate(joinpath(ROOT, "src", "lab"))
 
 using SatelliteSimCore
 using SatelliteSimNet

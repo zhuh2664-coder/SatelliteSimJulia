@@ -2,11 +2,17 @@
 # 测试几何函数 + ISL 评估的完整调用链。
 
 using Test
+using SatelliteSimJulia
 
-using SatelliteSimCore: distance_km, has_los, propagation_delay_ms,
-    compute_rtn_coordinates, compute_elevation_from_rtn,
-    compute_azimuth_from_rtn,
-    evaluate_isl, LEO_DEFAULTS
+const ISL_CONSTRAINTS_LINK = SatelliteSimJulia.SatelliteSimCore.SatelliteSimLink
+const distance_km = ISL_CONSTRAINTS_LINK.distance_km
+const has_los = ISL_CONSTRAINTS_LINK.has_los
+const propagation_delay_ms = ISL_CONSTRAINTS_LINK.propagation_delay_ms
+const compute_rtn_coordinates = ISL_CONSTRAINTS_LINK.compute_rtn_coordinates
+const compute_elevation_from_rtn = ISL_CONSTRAINTS_LINK.compute_elevation_from_rtn
+const compute_azimuth_from_rtn = ISL_CONSTRAINTS_LINK.compute_azimuth_from_rtn
+const evaluate_isl = ISL_CONSTRAINTS_LINK.evaluate_isl
+const LEO_DEFAULTS = SatelliteSimJulia.LEO_DEFAULTS
 
 @testset "ISL约束检查" begin
     # 模拟两颗卫星的位置和速度（ECI, km）

@@ -1,0 +1,126 @@
+SatelliteSimJulia Experiment Matrix Probe
+=========================================
+
+Goal
+----
+
+Confirm how many experiment combinations the current single-machine code can
+compose from built-in intent menus, then test the matrix with a lightweight,
+repeatable probe.
+
+Important boundary
+------------------
+
+The theoretical experiment space is unbounded because the code accepts direct
+custom inputs:
+
+- arbitrary Walker constellation parameters,
+- arbitrary tspan vectors,
+- arbitrary PhysicalConstraints,
+- arbitrary user/ground-station lists,
+- arbitrary TrafficDemand vectors,
+- direct concrete topology/routing/propagator objects.
+
+Therefore the useful finite answer is the built-in intent-menu product that
+the user/AI-facing Lab layer exposes.
+
+Finite built-in intent dimensions
+---------------------------------
+
+The current Keplerian run_experiment path combines:
+
+- Constellation intent: 3 coverage targets x 3 latency tiers x 3 scales = 27
+- Propagator intent: 3 Keplerian propagators
+  - SpeedFocus -> TwoBodyPropagator
+  - BalancedProp -> J2Propagator
+  - PrecisionFocus -> J4Propagator
+- Time horizon intent: 3
+  - Snapshot
+  - SingleOrbit
+  - FullDay
+- Constraint intent: 3
+  - StrictLink
+  - BalancedLink
+  - RelaxedLink
+- Topology intent: 4
+  - LowLatencyTopo
+  - HighRobustTopo
+  - BalancedTopo
+  - LowCostTopo
+- Routing intent: 3
+  - ShortestPath
+  - LoadBalanced
+  - MultipathIntent
+- Traffic intent: 4
+  - UniformLoad
+  - HotspotLoad
+  - VideoLoad
+  - IoTLoad
+
+Count
+-----
+
+27 x 3 x 3 x 3 x 4 x 3 x 4 = 34,992 built-in intent combinations.
+
+SGP4/TLE note
+-------------
+
+TleBasedProp exists as an intent, but it is not part of the Keplerian
+run_experiment matrix because it returns the :sgp4 marker and needs the
+separate real-TLE path. That path is covered by Lab tests and the AI tool
+run_simulation smoke, not by the Walker/Keplerian ExperimentConfig product.
+
+Registered AbstractExperiment plugins
+-------------------------------------
+
+The current registry contains:
+
+- dead_zone_scan
+
+This is a separate plugin-style experiment surface, not part of the
+run_experiment Cartesian product above.
+
+Probe script
+------------
+
+Run:
+
+    JULIA_NUM_THREADS=6 julia --project=. scripts/probe_experiment_matrix.jl
+
+Current result:
+
+    finite built-in intent combinations: 34992
+    construct probe cases: 28/28
+    executed smoke cases: 28/28
+    registered experiment smoke: PASS
+
+The 28 smoke cases cover every value in every built-in dimension at least once,
+while keeping the execution workload small enough to run routinely.
+
+Why the probe does not execute all 34,992 combinations
+-----------------------------------------------------
+
+Running the full Cartesian product would include FullDay and large constellation
+cases. Those are real experiments, but executing all of them is a benchmark
+campaign, not a health check. The probe therefore uses:
+
+- exact mathematical count for the full finite menu,
+- construction coverage for all dimension values,
+- execution smoke coverage for all dimension values.
+
+To force object construction for every finite built-in config:
+
+    JULIA_NUM_THREADS=6 \
+    SATSIM_EXPERIMENT_MATRIX_FULL_CONSTRUCT=1 \
+    SATSIM_EXPERIMENT_MATRIX_MODE=construct_only \
+    julia --project=. scripts/probe_experiment_matrix.jl
+
+This mode is intentionally opt-in because it is allocation/JIT heavy.
+
+Current conclusion
+------------------
+
+The current code can compose 34,992 finite built-in user/AI-facing Keplerian
+experiments, plus one registered custom experiment surface. The lightweight
+execution probe confirms that every built-in dimension has at least one
+successfully executed representative and that the registered experiment runs.

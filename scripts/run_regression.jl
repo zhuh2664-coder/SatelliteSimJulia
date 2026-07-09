@@ -3,66 +3,88 @@
 #
 # 用法：julia --project=. scripts/run_regression.jl
 #
-# 回归线清单（每条独立可跑，本脚本逐条执行并汇总）：
-#   1. quick_validate.jl        — 各子包加载 + 5 项功能检查
-#   2. integration_test.jl      — Core/Net/Lab 类型与拓扑集成
-#   3. smoke_core_net_lab_experiment.jl — 完整 Lab 实验（Walker→传播→ISL/GSL→路由）
-#   4. probe_e2e.jl             — Core 裸数组主路径数值（66/6 ISL + 路由连通性）
-#   5. probe_opt.jl             — Opt 可微路径数值（三路梯度一致性）
+# 默认只跑部署 smoke 需要的纯 Julia 回归线；耗时/外部环境检查通过环境变量启用：
+#   SATSIM_RUN_PACKAGE_TESTS=1 julia --project=. scripts/run_regression.jl
+#   SATSIM_RUN_PLATFORM=1      julia --project=. scripts/run_regression.jl
+#   SATSIM_RUN_K8S=1           julia --project=. scripts/run_regression.jl
 #
 # 任一失败 → 退出码 1，全绿 → 退出码 0。
 
 using Printf
 
-const SCRIPTS = [
-    ("quick_validate",        "scripts/quick_validate.jl"),
-    ("integration_test",      "scripts/integration_test.jl"),
-    ("smoke_experiment",      "scripts/smoke_core_net_lab_experiment.jl"),
-    ("probe_e2e (Core 主路径)", "scripts/probe_e2e.jl"),
-    ("probe_opt (Opt 可微路径)", "scripts/probe_opt.jl"),
+const ROOT = normpath(joinpath(@__DIR__, ".."))
+
+_script(path...) = joinpath(ROOT, path...)
+
+jobs = Tuple{String,Cmd}[
+    ("root_tests",             `julia --project=$ROOT $(_script("test", "runtests_current.jl"))`),
+    ("quick_validate",         `julia --project=$ROOT $(_script("scripts", "quick_validate.jl"))`),
+    ("integration_test",       `julia --project=$ROOT $(_script("scripts", "integration_test.jl"))`),
+    ("smoke_experiment",       `julia --project=$ROOT $(_script("scripts", "smoke_core_net_lab_experiment.jl"))`),
+    ("probe_e2e (Core 主路径)", `julia --project=$ROOT $(_script("scripts", "probe_e2e.jl"))`),
+    ("probe_opt (Opt 可微路径)", `julia --project=$ROOT $(_script("scripts", "probe_opt.jl"))`),
 ]
 
+if get(ENV, "SATSIM_RUN_PACKAGE_TESTS", "0") == "1"
+    push!(jobs, ("package_tests", `julia --project=$ROOT $(_script("scripts", "package_tests.jl"))`))
+end
+
+if get(ENV, "SATSIM_RUN_PLATFORM", "0") == "1"
+    push!(jobs, ("platform_local_smoke", `bash $(_script("platform", "scripts", "smoke_local.sh"))`))
+end
+
+if get(ENV, "SATSIM_RUN_K8S", "0") == "1"
+    push!(jobs, ("platform_k8s_smoke", `bash $(_script("platform", "scripts", "smoke_k3s.sh"))`))
+end
+
 results = Tuple{String,Bool,String}[]  # (name, pass, marker)
+
+function run_job(cmd::Cmd)
+    output_path = tempname()
+    proc_success = false
+    combined = ""
+
+    try
+        open(output_path, "w") do io
+            proc = run(pipeline(cmd, stdout=io, stderr=io))
+            proc_success = success(proc)
+        end
+        combined = read(output_path, String)
+    catch
+        isfile(output_path) && (combined = read(output_path, String))
+        proc_success = false
+    finally
+        isfile(output_path) && rm(output_path; force=true)
+    end
+
+    return proc_success, combined
+end
 
 println("=" ^ 64)
 println("REGRESSION SUITE — SatelliteSimJulia")
 println("=" ^ 64)
 
-for (name, path) in SCRIPTS
+for (name, cmd) in jobs
     print(rpad("[● $name]", 36))
     flush(stdout)
-    out = Pipe()
-    err = Pipe()
-    cmd = `julia --project=. $path`
-    proc_success = false
-    combined = ""
-    try
-        proc = run(pipeline(cmd, stdout=out, stderr=err))
-        close(out.in)
-        close(err.in)
-        combined = String(read(out)) * String(read(err))
-        proc_success = success(proc)
-    catch ex
-        proc_success = false
-        try
-            combined = String(read(out)) * String(read(err))
-        catch
-        end
-    end
+    proc_success, combined = run_job(cmd)
 
     if proc_success
-        # 提取成功标记
         marker = ""
-        occursin("ALL TESTS PASSED", combined)   && (marker = "ALL TESTS PASSED")
+        occursin("SatelliteSimJulia current test suite", combined) && (marker = "ROOT TESTS PASS")
+        occursin("QUICK VALIDATE: ALL PASS", combined) && isempty(marker) && (marker = "QUICK PASS")
+        occursin("ALL TESTS PASSED", combined) && isempty(marker) && (marker = "ALL TESTS PASSED")
         occursin("Package hierarchy validated", combined) && isempty(marker) && (marker = "hierarchy OK")
-        occursin("SMOKE SUCCESS", combined)       && isempty(marker) && (marker = "SMOKE SUCCESS")
+        occursin("SMOKE SUCCESS", combined) && isempty(marker) && (marker = "SMOKE SUCCESS")
         occursin("PROBE OPT: ALL PASS", combined) && isempty(marker) && (marker = "OPT PASS")
-        occursin("PROBE-2 DONE", combined)        && isempty(marker) && (marker = "E2E PASS")
+        occursin("PACKAGE RESULT: 9/9 passed", combined) && isempty(marker) && (marker = "PACKAGE TESTS PASS")
+        occursin("PROBE-2 DONE", combined) && isempty(marker) && (marker = "E2E PASS")
+        occursin("SMOKE LOCAL: ALL PASS", combined) && isempty(marker) && (marker = "PLATFORM LOCAL PASS")
+        occursin("SMOKE K3S: ALL PASS", combined) && isempty(marker) && (marker = "K8S PASS")
         isempty(marker) && (marker = "exit 0")
         println("✓ PASS  ($marker)")
         push!(results, (name, true, marker))
     else
-        # 失败：打印最后 5 行错误
         println("✗ FAIL")
         for line in split(combined, '\n')[max(1,end-4):end]
             isempty(line) || println("      ", line)
