@@ -5,7 +5,7 @@
 using Statistics
 import SatelliteToolbox
 
-# export AbstractConstellationBuilder, DesignConstellationBuilder, TLEConstellationBuilder  # 收窄：无下游消费者
+export AbstractConstellationBuilder, DesignConstellationBuilder, TLEConstellationBuilder
 # export build_constellation, generate_walker_constellation
 
 """

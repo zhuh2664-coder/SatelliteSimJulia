@@ -48,6 +48,10 @@ SatelliteSimSecurity = {path = "src/security"}
 SatelliteSimTraffic = {path = "src/traffic"}
 SatelliteSimViz = {path = "src/viz"}
 
+
+[extensions]
+SatelliteSimVizGLMakieExt = "SatelliteSimViz"
+
 [compat]
 BenchmarkTools = "1.8.0"
 Comonicon = "1.0.8"

@@ -19,8 +19,25 @@ _cache_dir() = joinpath("data", "cache")
 根据 ExperimentConfig 生成唯一 hash（用于缓存文件名）。
 """
 function config_hash(config::ExperimentConfig)::String
-    # 用关键字段生成 hash
-    key = "$(config.constellation.T)_$(config.constellation.P)_$(config.constellation.F)_$(config.constellation.alt_km)_$(config.constellation.inc_deg)_$(length(config.tspan))_$(config.tspan[end])"
+    key = join(Any[
+        config.constellation.T,
+        config.constellation.P,
+        config.constellation.F,
+        config.constellation.alt_km,
+        config.constellation.inc_deg,
+        length(config.tspan),
+        config.tspan[end],
+        typeof(config.propagator),
+        typeof(config.topology_strategy),
+        typeof(config.routing_algorithm),
+        typeof(config.constraints),
+        length(config.ground_stations),
+        length(config.users),
+        length(config.traffic_demands),
+        config.ground_pairs,
+        config.random_seed,
+        config.alpha,
+    ], "_")
     return string(hash(key))
 end
 

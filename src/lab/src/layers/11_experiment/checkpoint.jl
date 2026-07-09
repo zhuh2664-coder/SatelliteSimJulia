@@ -7,6 +7,7 @@
 using Dates
 using JSON
 using Printf
+using Statistics: mean
 
 export ExperimentCheckpoint, save_checkpoint, load_checkpoint,
        list_checkpoints, checkpoint_dir, run_with_checkpoints
