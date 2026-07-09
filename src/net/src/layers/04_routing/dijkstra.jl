@@ -5,20 +5,29 @@ export DijkstraRouting, build_adjacency, all_pairs_shortest_paths,
 
 struct DijkstraRouting <: AbstractRoutingAlgorithm end
 
-function route(::DijkstraRouting, input::RoutingInput)::RoutingOutput
-    g = input.graph
-    src = input.source
-    dst = input.destination
-
-    # 使用 RoutingGraph 中的实际权重，而非 Graphs.jl 默认单位权重
-    A = fill(Inf, g.n_nodes, g.n_nodes)
-    for i in 1:g.n_nodes; A[i, i] = 0.0; end
-    for (u, nbrs) in g.adj
-        for (v, w) in nbrs
-            A[u, v] = w
+function _routing_graph_adjacency_matrix(graph::RoutingGraph)::Matrix{Float64}
+    A = fill(Inf, graph.n_nodes, graph.n_nodes)
+    for i in 1:graph.n_nodes
+        A[i, i] = 0.0
+    end
+    for (u, neighbors) in graph.adj
+        1 <= u <= graph.n_nodes || throw(ArgumentError("edge source must be in 1:n_nodes"))
+        for (v, weight) in neighbors
+            1 <= v <= graph.n_nodes || throw(ArgumentError("edge destination must be in 1:n_nodes"))
+            isfinite(weight) || throw(ArgumentError("edge weights must be finite"))
+            weight >= 0 || throw(ArgumentError("edge weights must be non-negative"))
+            A[u, v] = min(A[u, v], Float64(weight))
         end
     end
+    return A
+end
 
+function route(::DijkstraRouting, input::RoutingInput)::RoutingOutput
+    src = input.source
+    dst = input.destination
+    src == dst && return RoutingOutput([src], 0.0, "Dijkstra")
+
+    A = _routing_graph_adjacency_matrix(input.graph)
     path, cost = shortest_path_from_adjacency(A, src, dst)
     isempty(path) && return RoutingOutput(Int[], Inf, "Dijkstra-unreachable")
     return RoutingOutput(path, cost, "Dijkstra")
