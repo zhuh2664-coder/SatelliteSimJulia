@@ -12,3 +12,21 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SatelliteSimCore = "99f6b6c7-c40f-4eb3-8423-ddc96d839c0b"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 SatelliteSimTraffic = "e5f6a7b8-c9d0-1234-5678-9abcdef01234"
+
+[sources.SatelliteSimNet]
+path = "../net"
+
+[sources.SatelliteSimCore]
+path = "../core"
+
+[sources.SatelliteSimTraffic]
+path = "../traffic"
+
+[sources.SatelliteSimFoundation]
+path = "../foundation"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
