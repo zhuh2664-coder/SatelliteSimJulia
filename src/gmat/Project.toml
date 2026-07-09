@@ -8,6 +8,9 @@ LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 OrdinaryDiffEq = "1dea7af3-3e70-54e6-95c3-0bf5283fa5ed"
 SatelliteSimFoundation = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
+[sources]
+SatelliteSimFoundation = {path = "../foundation"}
+
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 

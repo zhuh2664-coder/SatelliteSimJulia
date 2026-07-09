@@ -12,8 +12,8 @@
 #   → purple_loop 自演化（漏检补规则）
 
 using Test
-using SatelliteSimJulia
-using SatelliteSimSecurity: LinkBlackhole, TopologySeverance, FaultScenario,
+# Security 是显式选择的高级包；此端到端测试不依赖日常仿真伞包的隐式导出。
+using SatelliteSimSecurity: AbstractDetector, LinkBlackhole, TopologySeverance, FaultScenario,
     attack!, compile_attack, apply_effect!, AttackEffect,
     AnomalyThreshold, Alarm, detect, extract_metric,
     Verdict, ArenaState, run_round, purple_loop, summarize_history,

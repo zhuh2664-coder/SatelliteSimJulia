@@ -1,5 +1,8 @@
 # Julia
 /Manifest.toml
+/envs/*/Manifest.toml
+!/envs/core/Manifest.toml
+!/envs/backends-stub/Manifest.toml
 *.jls
 
 # System
@@ -13,12 +16,14 @@ build/
 artifacts/
 *.dylib
 src/*/Manifest.toml
+packages/*/Manifest.toml
 
 # Visualization temp
 /frames*/
 /frame_*.png
 
 # IDE
+.cursor/
 .vscode/
 .codegraph/
 .codex/
@@ -64,3 +69,16 @@ temp-wolaiyongde
 texput.log
 
 Manifest.toml.bak
+
+# Active architecture truth documents (exceptions to the broad *.md rule above)
+!/CURRENT.md
+!/AGENTS.md
+!/重构计划.md
+
+# Versioned architecture design truth under otherwise-local docs/
+!/docs/
+/docs/*
+!/docs/design/
+/docs/design/*
+!/docs/design/dependency-isolation.md
+!/docs/design/LAYERS.md

@@ -42,9 +42,6 @@ include(joinpath(@__DIR__, "test_intent_closure.jl"))
 include(joinpath(@__DIR__, "test_precomposed_fixes.jl"))
 include(joinpath(@__DIR__, "test_routing_graph.jl"))
 include(joinpath(@__DIR__, "test_access_bounds.jl"))
-include(joinpath(@__DIR__, "test_opt_routing.jl"))
-include(joinpath(@__DIR__, "test_security.jl"))
-include(joinpath(@__DIR__, "test_security_p1.jl"))
 
 if RUN_CURRENT_SUITE
     @info "SATSIM_RUN_CURRENT=1：运行 runtests_current.jl"
@@ -61,3 +58,5 @@ if HAS_GLMAKIE
         @test true
     end
 end
+
+include("test_package_boundaries.jl")

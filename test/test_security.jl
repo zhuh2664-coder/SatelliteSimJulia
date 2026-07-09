@@ -11,7 +11,8 @@
 # 3. 类型树子类型关系正确
 
 using Test
-using SatelliteSimJulia: AbstractAttack, AbstractNetworkAttack, AbstractGroundAttack,
+# Security 是显式选择的高级包，不属于 SatelliteSimJulia 日常伞包的默认导出。
+using SatelliteSimSecurity: AbstractAttack, AbstractNetworkAttack, AbstractGroundAttack,
     AbstractRFAttack, AbstractPayloadAttack, FaultScenario, attack!, measure_capacity,
     find_minimum_cut, find_critical_links, dead_zone_cut_analysis,
     EnergyDrainAttackConfig, energy_drain_attack_demands

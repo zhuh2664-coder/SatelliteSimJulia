@@ -1,33 +1,69 @@
-name: CI
+name: Core CI
 
 on:
   push:
-    branches: [main, "cursor/**"]
+    branches: [main, "refactor/**", "feat/**"]
   pull_request:
     branches: [main]
 
+concurrency:
+  group: core-ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  boundaries:
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - name: Set up Julia
-        uses: julia-actions/setup-julia@v2
+      - uses: julia-actions/setup-julia@v2
         with:
           version: "1.12"
+      - name: Check package dependency boundaries
+        run: julia scripts/check_dependency_boundaries.jl
 
-      - name: Cache Julia artifacts
-        uses: julia-actions/cache@v2
+  core-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - uses: julia-actions/cache@v2
+      - name: Instantiate core environment
+        run: julia --project=envs/core -e 'using Pkg; Pkg.instantiate()'
+      - name: Core package smoke
+        run: julia --project=envs/core test/runtests_core_smoke.jl
+      - name: Bare-array orchestration contract
+        run: julia --project=envs/core test/test_bare_array_contract.jl
+      - name: Manifest growth gate
+        env:
+          SATSIM_MANIFEST_STRICT: "1"
+        run: julia scripts/check_manifest_baseline.jl
 
-      - name: Instantiate project
-        run: julia --project=. -e 'using Pkg; Pkg.instantiate()'
+  lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - uses: julia-actions/cache@v2
+      - name: Test Lab and deterministic AI control plane
+        run: julia --project=src/lab -e 'using Pkg; Pkg.instantiate(); Pkg.test(; coverage=false)'
 
-      - name: Run test suite
-        run: julia --project=. test/runtests.jl
-
-      - name: Run integration test
+  stub-backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - uses: julia-actions/cache@v2
+      - name: Test backend contract and offline stub
         run: |
-          julia --project=src/lab -e 'using Pkg; Pkg.instantiate()'
-          julia --project=. scripts/integration_test.jl
+          julia --project=packages/SatelliteSimBackends -e 'using Pkg; Pkg.instantiate(); Pkg.test()'
+          julia --project=envs/backends-stub -e 'using Pkg; Pkg.instantiate(); include("test/backends/test_stub_backend_pkg.jl")'

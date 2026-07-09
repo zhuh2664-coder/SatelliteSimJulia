@@ -91,7 +91,7 @@ function fit_pinn_routing(
 
     rng = Random.default_rng()
     min_edge_km = use_physics ? minimum(filter(isfinite, adj_matrix)) : 0.0
-    SPEED_OF_LIGHT_KM_S = SatelliteSimCore.SPEED_OF_LIGHT_KM_S
+    SPEED_OF_LIGHT_KM_S = SatelliteSimFoundation.SPEED_OF_LIGHT_KM_S
 
     for k in 1:n_samples
         s, d = src_list[k], dst_list[k]

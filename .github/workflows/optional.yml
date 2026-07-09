@@ -1,0 +1,65 @@
+name: Optional Environments
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "src/opt/**"
+      - "src/security/**"
+      - "src/viz/**"
+      - "src/gmat/**"
+      - "envs/**"
+      - ".github/workflows/optional.yml"
+
+concurrency:
+  group: optional-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  optional-package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: opt
+            project: src/opt
+          - name: security
+            project: src/security
+    name: ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - uses: julia-actions/cache@v2
+      - name: Test optional package
+        run: julia --project=${{ matrix.project }} -e 'using Pkg; Pkg.instantiate(); Pkg.test(; coverage=false)'
+
+  viz-load:
+    name: viz-load
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - uses: julia-actions/cache@v2
+      - name: Instantiate and load visualization environment
+        run: julia --project=envs/viz -e 'using Pkg; Pkg.instantiate(); using SatelliteSimViz'
+
+  gmat-test:
+    name: gmat-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: "1.12"
+      - uses: julia-actions/cache@v2
+      - name: Test GMAT adapter environment
+        run: julia --project=envs/gmat -e 'using Pkg; Pkg.instantiate(); Pkg.test("GMAT"; coverage=false)'
