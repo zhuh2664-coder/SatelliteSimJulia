@@ -37,6 +37,8 @@ import SatelliteToolbox
 export AbstractFrameTransform, SimpleTemeToGeodeticTransform
 export CartesianState, GeodeticPosition
 export ECEF, ECI, TEME
+export geodetic_to_ecef_km, target_datetime, julian_day
+export teme_to_ecef, ecef_to_geodetic, geodetic_position
 
 """
     AbstractFrameTransform
@@ -115,6 +117,20 @@ struct GeodeticPosition
         -180 <= longitude_deg <= 180 || throw(ArgumentError("longitude_deg must be in [-180, 180]"))
         return new(Float64(latitude_deg), Float64(longitude_deg), Float64(altitude_km))
     end
+end
+
+"""
+    geodetic_to_ecef_km(position::GeodeticPosition)::Vector{Float64}
+
+将大地坐标（纬度、经度、海拔）转换为 ECEF 笛卡尔坐标（km）。
+"""
+function geodetic_to_ecef_km(position::GeodeticPosition)::Vector{Float64}
+    ecef_m = SatelliteToolbox.geodetic_to_ecef(
+        deg2rad(position.latitude_deg),
+        deg2rad(position.longitude_deg),
+        position.altitude_km * 1000,
+    )
+    return collect(Float64(value / 1000) for value in ecef_m)
 end
 
 """
