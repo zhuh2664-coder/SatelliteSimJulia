@@ -68,5 +68,6 @@ Manifest.toml.bak
 # Research data store (not source code)
 research_store/
 
-# Local Julia environments
-envs/
+# Local Julia environment manifests and sim env (generated)
+envs/*/Manifest.toml
+envs/sim/
