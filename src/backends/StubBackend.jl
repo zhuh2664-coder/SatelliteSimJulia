@@ -192,7 +192,7 @@ end
 # ── parse_tle_lines ───────────────────────────────────────────────────────────
 # Stub 无法调用 SatelliteToolbox 解析；做最小 TLE 文本解析（行格式固定宽度）。
 
-function _parse_tle_epoch(line1::String)::DateTime
+function _parse_tle_epoch(line1::AbstractString)::DateTime
     # 字段 19-32：epoch（2位年 + 儒略日小数）
     yy  = parse(Int, strip(line1[19:20]))
     ddd = parse(Float64, strip(line1[21:32]))

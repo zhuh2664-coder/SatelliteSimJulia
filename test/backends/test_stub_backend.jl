@@ -49,8 +49,7 @@ function test_propagate_sgp4()
 end
 
 function test_propagate_keplerian()
-    using .StubBackend.OrbitBackend: InternalKeplerianElements
-    elem = InternalKeplerianElements(
+    elem = StubBackend.OrbitBackend.InternalKeplerianElements(
         6928e3, 0.0, deg2rad(53.0), 0.0, 0.0, 0.0,
         DateTime(2023, 1, 1, 12, 0, 0),
     )
