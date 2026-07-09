@@ -71,6 +71,10 @@ include(joinpath(@__DIR__, "test_helpers.jl"))
         include(joinpath(@__DIR__, "integration", "test_e2e.jl"))
     end
 
+    @testset "Bare-array CI contract" begin
+        include(joinpath(@__DIR__, "test_bare_array_contract.jl"))
+    end
+
     @testset "Viz" begin
         if get(ENV, "SATSIM_RUN_VIZ", "0") == "1" && isdefined(SatelliteSimJulia, :SatelliteSimViz)
             Viz = SatelliteSimJulia.SatelliteSimViz

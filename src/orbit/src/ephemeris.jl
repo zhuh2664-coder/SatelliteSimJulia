@@ -1,6 +1,7 @@
 # 星历数据容器模块。
 #
-# 本文件定义了轨道层向网络层输出的核心数据结构：
+# **CI 契约（Phase 2a）**：新代码须走裸 `Array{Float64,3}` 主路径（`propagate_to_ecef` 等）。
+# 本文件的 `ConstellationEphemeris` 嵌套类型仅保留兼容，不再新增调用方。
 #   - EphemerisSample：单个卫星在单个时间片的星历样本。
 #   - SatelliteEphemeris：单颗卫星在整个时间网格上的星历序列。
 #   - ConstellationEphemeris：整个星座在所有时间片上的星历表。

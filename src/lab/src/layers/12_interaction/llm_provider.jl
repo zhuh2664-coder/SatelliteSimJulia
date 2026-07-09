@@ -7,15 +7,23 @@
 using HTTP
 using JSON
 
-export LLMProvider, ToolCall, AssistantMessage,
+export AbstractLLMClient, LLMProvider, ToolCall, AssistantMessage,
        chat, build_tool_schemas, llm_tool_schema
 
 """
-    LLMProvider
+    AbstractLLMClient
 
-LLM 提供者配置。兼容 OpenAI 格式的 API（DeepSeek/GPT/任何 OpenAI 兼容端点）。
+LLM 客户端抽象类型。具体实现（如 `LLMProvider`）须实现 `chat`。
+未来可接入 Anthropic/OpenAI/本地模型而无需改 Agent 层。
 """
-struct LLMProvider
+abstract type AbstractLLMClient end
+
+"""
+    LLMProvider <: AbstractLLMClient
+
+OpenAI 兼容端点的默认 LLM 客户端（DeepSeek/GPT/代理）。
+"""
+struct LLMProvider <: AbstractLLMClient
     api_key::String
     model::String
     base_url::String
