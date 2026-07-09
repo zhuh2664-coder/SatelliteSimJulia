@@ -118,13 +118,16 @@ end
 """
 function isl_neighbors(strategy::AbstractTopologyStrategy, sat_id::Int, T::Int, P::Int)::Vector{Int}
     topo = generate_topology(strategy, T, P)
+    all_links = vcat(topo.static_links, topo.dynamic_candidates)
     neighbors = Int[]
-    for (i, j) in topo.static_links
-        if i == sat_id; push!(neighbors, j)
-        elseif j == sat_id; push!(neighbors, i)
+    for (i, j) in all_links
+        if i == sat_id
+            push!(neighbors, j)
+        elseif j == sat_id
+            push!(neighbors, i)
         end
     end
-    return sort(neighbors)
+    return sort(unique(neighbors))
 end
 
 """

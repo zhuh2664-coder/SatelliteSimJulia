@@ -102,12 +102,16 @@ function route(::ECMPRouting, input::RoutingInput)::RoutingOutput
     g = input.graph
     src, dst = input.source, input.destination
     src == dst && return RoutingOutput([src], 0.0, "ECMP")
-    # 从 RoutingGraph 提取边和权重
+    # 从 RoutingGraph 提取无向边和权重（去重）
     edges = Tuple{Int,Int}[]
     weights = Float64[]
+    seen = Set{Tuple{Int,Int}}()
     for (u, nbrs) in g.adj
         for (v, w) in nbrs
-            push!(edges, (u, v))
+            canonical = u < v ? (u, v) : (v, u)
+            canonical in seen && continue
+            push!(seen, canonical)
+            push!(edges, canonical)
             push!(weights, w)
         end
     end
@@ -137,15 +141,15 @@ function route(::MinLoadRouting, input::RoutingInput)::RoutingOutput
     g = input.graph
     src, dst = input.source, input.destination
     src == dst && return RoutingOutput([src], 0.0, "MinLoad")
-    # 无负载信息 → 退化为 Dijkstra 最短路
-    A = fill(Inf, g.n_nodes, g.n_nodes)
-    for i in 1:g.n_nodes; A[i,i] = 0.0; end
-    for (u, nbrs) in g.adj
-        for (v, w) in nbrs
-            A[u,v] = A[v,u] = w
+    # 无实时负载信息 → 退化为 Dijkstra 最短路（使用 RoutingGraph 权重）
+    distmx = fill(Inf, g.n_nodes, g.n_nodes)
+    for i in 1:g.n_nodes
+        distmx[i, i] = 0.0
+        for (v, w) in g.adj[i]
+            distmx[i, v] = w
         end
     end
-    path, cost = shortest_path_from_adjacency(A, src, dst)
+    path, cost = shortest_path_from_adjacency(distmx, src, dst)
     isempty(path) && return RoutingOutput(Int[], Inf, "MinLoad-unreachable")
     return RoutingOutput(path, cost, "MinLoad")
 end

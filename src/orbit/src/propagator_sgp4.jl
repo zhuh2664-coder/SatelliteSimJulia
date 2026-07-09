@@ -48,8 +48,9 @@ import SatelliteToolbox
 import SatelliteToolboxSgp4
 
 export AbstractPropagator
-export Sgp4PropagatorAdapter
-export propagate_sample, propagate_constellation
+export Sgp4PropagatorAdapter, EarthFixedNodePropagator
+export propagate_sample, propagate_constellation, propagate_satellite
+export supports_orbit_elements
 
 """
     AbstractPropagator
