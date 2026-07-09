@@ -247,7 +247,7 @@ function compute_link_utilization(used_bandwidth::Vector{Float64},
     n = length(used_bandwidth)
     n == 0 && return UtilizationResult(0.0, 0.0, 0.0, Int[])
 
-    utilization = [used / max for (used, max) in zip(used_bandwidth, max_bandwidth)]
+    utilization = [max <= 0 ? 0.0 : used / max for (used, max) in zip(used_bandwidth, max_bandwidth)]
     bottleneck = findall(u -> u >= 0.8, utilization)
 
     return UtilizationResult(

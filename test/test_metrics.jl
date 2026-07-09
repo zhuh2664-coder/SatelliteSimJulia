@@ -91,6 +91,13 @@ using SatelliteSimCore: compute_coverage, compute_latency,
         @test result.connectivity_ratio ≈ 0.0
     end
 
+    @testset "链路利用率 — 零容量" begin
+        result = compute_link_utilization([100.0], [0.0])
+        @test result.avg_utilization ≈ 0.0
+        @test !isnan(result.avg_utilization)
+        @test !isinf(result.avg_utilization)
+    end
+
     @testset "链路利用率 — 正常" begin
         used = [100.0, 500.0, 800.0]
         max_bw = [1000.0, 1000.0, 1000.0]
