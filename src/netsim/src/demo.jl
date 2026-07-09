@@ -1,6 +1,6 @@
 # Standalone NetSim demos (no SatelliteSim* deps)
 
-export demo_netsim, demo_cgr, demo_tcp_reno
+export demo_netsim, demo_cgr, demo_tcp_reno, demo_dtn, demo_ltp
 
 """
     demo_netsim(; load_mbps=130.0, rate_mbps=100.0, duration_s=2.0)
@@ -127,6 +127,64 @@ function demo_tcp_reno(; rate_mbps::Real=10.0, total_bytes::Int=20_000)
     @printf("duration=%.3fs  goodput=%.3f Mbps  cwnd=%d  ssthresh=%d\n",
             r.duration_s, r.goodput_bps / 1e6, r.final_cwnd, r.final_ssthresh)
     @printf("mean RTT=%.3f ms\n", 1000 * r.mean_rtt_s)
+    println("="^60)
+    return r
+end
+
+"""
+    demo_dtn()
+
+Bundle store-and-forward over a ContactPlan (CGR + custody wait).
+"""
+function demo_dtn()
+    println("="^60)
+    println("SatelliteSimNetSim demo — Bundle / BPA store-and-forward")
+    println("="^60)
+    plan = ContactPlan()
+    # early path gone; must wait for 1→4 then 4→3
+    add_contact!(plan, 1, 4, 12.0, 20.0, 0.04)
+    add_contact!(plan, 4, 3, 14.0, 22.0, 0.04)
+    add_contact!(plan, 1, 3, 20.0, 30.0, 0.08)
+
+    payload = Vector{UInt8}("hello-dtn")
+    r = simulate_dtn_forward(plan, 1, 3, payload; t0=10.0)
+    @printf("delivered=%s  t=%.3fs  path=%s  hops=%d  deferred=%d\n",
+            string(r.delivered), r.delivery_time, string(Int.(r.path)), r.hops, r.deferred)
+
+    # also dump a tiny pcap of the serialized bundle
+    pcap_path = joinpath(tempdir(), "satellitesim_dtn_demo.pcap")
+    pw = open_pcap(pcap_path)
+    b = Bundle(BundleEID("dtn://1/bpa"), BundleEID("dtn://3/bpa"), payload)
+    write_pcap_packet!(pw, serialize_bundle(b); t=r.delivery_time)
+    close_pcap!(pw)
+    @printf("pcap: %s  (%d packets)\n", pcap_path, pw.packet_count)
+    println("="^60)
+    return r
+end
+
+"""
+    demo_ltp(; loss=0.2)
+
+LTP red/green transfer with segment loss + red retransmission.
+"""
+function demo_ltp(; loss::Real=0.2, seed::Int=3)
+    println("="^60)
+    println("SatelliteSimNetSim demo — LTP red/green")
+    println("="^60)
+    data = rand(UInt8, 2500)
+    r = simulate_ltp_transfer(
+        data;
+        red_bytes=1500,
+        segment_size=400,
+        prop_delay_s=0.04,
+        rate_bps=5e6,
+        loss=loss,
+        seed=seed,
+    )
+    @printf("red delivered=%s  red_bytes=%d  green_rx/tx=%d/%d\n",
+            string(r.delivered_red), r.red_bytes, r.green_bytes_rx, r.green_bytes_tx)
+    @printf("segs=%d  rexmit=%d  drops=%d  duration=%.3fs\n",
+            r.segments_sent, r.retransmits, r.drops, r.duration_s)
     println("="^60)
     return r
 end

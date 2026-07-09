@@ -128,6 +128,78 @@ using SatelliteSimNetSim
         @test r.goodput_bps > 0
     end
 
+    @testset "Bundle + store" begin
+        reset_bundle_seq!()
+        src = BundleEID("dtn://1/app")
+        dst = BundleEID("dtn://2/app")
+        @test string(src) == "dtn://1/app"
+        data = Vector{UInt8}("payload-bytes")
+        b = Bundle(src, dst, data; lifetime=10.0, creation_time=0.0)
+        @test get_payload(b) == data
+        @test !is_expired(b, 5.0)
+        @test is_expired(b, 11.0)
+        store = BundleStore(max_bundles=2)
+        @test store_bundle!(store, b; now=0.0)
+        @test take_bundle!(store) === b
+        frags = fragment_bundle(b, 5)
+        @test length(frags) >= 2
+        reass = reassemble_bundles(frags)
+        @test reass !== nothing
+        @test get_payload(reass) == data
+        ser = serialize_bundle(b)
+        @test length(ser) > length(data)
+    end
+
+    @testset "LTP red/green" begin
+        data = rand(UInt8, 1200)
+        sess = LtpSession(7, 1, 2; segment_size=300)
+        ltp_segment!(sess, data; red_bytes=900)
+        st = ltp_stats(sess)
+        @test st.red_segments == 3
+        @test st.green_segments == 1
+        @test st.red_pending == 3
+        ltp_ack_red!(sess, [1, 2, 3])
+        @test ltp_reassemble_red(sess) == data[1:900]
+        @test ltp_reassemble_green(sess) == data[901:end]
+
+        r0 = simulate_ltp_transfer(data; red_bytes=900, segment_size=300, loss=0.0, seed=1)
+        @test r0.delivered_red
+        @test r0.red_bytes == 900
+        @test r0.green_bytes_rx == 300
+        @test r0.retransmits == 0
+
+        r_loss = simulate_ltp_transfer(data; red_bytes=900, segment_size=300, loss=0.3, seed=2)
+        @test r_loss.delivered_red
+        @test r_loss.drops > 0 || r_loss.retransmits > 0
+    end
+
+    @testset "DTN BPA forward" begin
+        plan = ContactPlan()
+        add_contact!(plan, 1, 4, 12.0, 20.0, 0.04)
+        add_contact!(plan, 4, 3, 14.0, 22.0, 0.04)
+        add_contact!(plan, 1, 3, 20.0, 30.0, 0.08)
+        r = simulate_dtn_forward(plan, 1, 3, Vector{UInt8}("x"); t0=10.0)
+        @test r.delivered
+        @test r.path == UInt32[1, 4, 3]
+        @test r.deferred >= 1
+        @test r.delivery_time >= 14.04 - 1e-9
+    end
+
+    @testset "PCAP writer" begin
+        path = joinpath(tempdir(), "satellitesim_test_$(getpid()).pcap")
+        pw = open_pcap(path)
+        write_pcap_packet!(pw, UInt8[1, 2, 3, 4]; t=1.5)
+        pkt = create_packet!(64, 1, 2)
+        write_pcap_packet!(pw, pkt; t=2.0)
+        close_pcap!(pw)
+        @test pw.packet_count == 2
+        bytes = read(path)
+        @test length(bytes) >= 24 + 16  # global + at least one record
+        @test reinterpret(UInt32, bytes[1:4])[1] == 0xa1b2c3d4 ||
+              reinterpret(UInt32, bytes[1:4])[1] == 0xd4c3b2a1
+        rm(path; force=true)
+    end
+
     @testset "demos" begin
         r = demo_netsim(load_mbps=130.0, rate_mbps=100.0, duration_s=0.3, seed=7)
         @test r isa PathSimResult
@@ -136,5 +208,9 @@ using SatelliteSimNetSim
         @test rs[1].reachable
         tr = demo_tcp_reno(total_bytes=5_000)
         @test tr.bytes_acked >= 5_000
+        dr = demo_dtn()
+        @test dr.delivered
+        lr = demo_ltp(loss=0.15, seed=3)
+        @test lr.delivered_red
     end
 end
