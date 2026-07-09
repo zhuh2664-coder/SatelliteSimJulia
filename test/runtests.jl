@@ -2894,3 +2894,6 @@ include(joinpath(@__DIR__, "test_security.jl"))
 
 # ===== 攻防对抗层 P1 端到端测试 =====
 include(joinpath(@__DIR__, "test_security_p1.jl"))
+
+# ===== 链路层：ITU-R P.618 雨衰模型测试 =====
+include(joinpath(@__DIR__, "test_rain_attenuation.jl"))
