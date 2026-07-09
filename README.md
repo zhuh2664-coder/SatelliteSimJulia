@@ -16,6 +16,41 @@ julia --project=. -e 'using SatelliteSimJulia; demo()'
 
 `demo()` 会依次演示：Walker 星座生成、二体传播、+Grid 拓扑、ISL 物理评估、最短时延路由、覆盖率计算、GSL 可见性、TwoBody/J2 传播器对比，最后列出可用的 AI 工具。全程无需任何外部数据。
 
+## 多环境工作流（依赖隔离）
+
+根 `Project.toml` 只保留**日常仿真主链**（Foundation → Orbit → Link → Net → Metrics → Traffic → Lab）。重型可选能力拆到独立环境，避免 `demo()` / CI 冷启动拖入 Makie、Flux、SciML、GMAT。
+
+| 环境 | 路径 | 用途 |
+|---|---|---|
+| 主链轻量 | `envs/core` | 纯计算主链冒烟、最快 instantiate |
+| 日常仿真 | `.` 或 `envs/sim` | 与根对齐：主链 + Lab + CLI |
+| 可视化 | `envs/viz` | CairoMakie / GeoMakie，`bin/satnet_viz.jl` |
+| 可微优化 | `envs/opt` | Enzyme / Flux / Lux（慢测试） |
+| 攻防 | `envs/security` | SatelliteSimSecurity |
+| GMAT/ODE | `envs/gmat` | 高精度传播 + OrdinaryDiffEq |
+
+```bash
+# 主链冒烟（不加载伞包）
+julia --project=envs/core test/runtests_core_smoke.jl
+
+# 日常仿真 + 全量回归
+julia --project=. -e 'using Pkg; Pkg.instantiate()'
+SATSIM_RUN_CURRENT=1 julia --project=. test/runtests.jl
+
+# 可视化（子进程，不污染主链预编译）
+julia bin/satnet.jl viz snapshot outputs/cli/positions.jld2 --output snapshot.png
+# 或
+julia --project=envs/viz bin/satnet_viz.jl snapshot outputs/cli/positions.jld2 --output snapshot.png
+
+# 攻防层测试
+julia --project=envs/security -e 'using Pkg; Pkg.instantiate()'
+julia --project=envs/security test/runtests_security.jl
+
+# 依赖边界 / Manifest 基线
+julia scripts/check_dependency_boundaries.jl
+julia scripts/check_manifest_baseline.jl   # 需先 instantiate 各环境
+```
+
 如果想跑预编排实验或交互式 AI 助手：
 
 ```julia

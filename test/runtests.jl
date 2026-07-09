@@ -42,7 +42,12 @@ include(joinpath(@__DIR__, "test_intent_closure.jl"))
 include(joinpath(@__DIR__, "test_precomposed_fixes.jl"))
 include(joinpath(@__DIR__, "test_routing_graph.jl"))
 include(joinpath(@__DIR__, "test_access_bounds.jl"))
-include(joinpath(@__DIR__, "test_opt_routing.jl"))
+
+if isdefined(SatelliteSimJulia, :SatelliteSimOpt)
+    include(joinpath(@__DIR__, "test_opt_routing.jl"))
+else
+    @info "Opt routing tests 跳过（SatelliteSimOpt 不在伞包；见 envs/opt）"
+end
 include(joinpath(@__DIR__, "test_security.jl"))
 include(joinpath(@__DIR__, "test_security_p1.jl"))
 
