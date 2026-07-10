@@ -1,7 +1,7 @@
 module SatelliteSimJuliaSpaceBackend
 
 using SatelliteSimBackends
-import SatelliteSimBackends: backend_capabilities, propagate_orbit
+import SatelliteSimBackends: backend_capabilities, propagate_orbit, register_orbit_backend!
 using SatelliteSimOrbit
 
 export JuliaSpaceOrbitBackend
@@ -27,6 +27,15 @@ function propagate_orbit(backend::JuliaSpaceOrbitBackend, elements, tspan; kwarg
         expected_satellites=length(elements),
         expected_times=length(times),
     )
+end
+
+function __init__()
+    register_orbit_backend!(
+        :julia_space,
+        options -> JuliaSpaceOrbitBackend(; options...);
+        replace=true,
+    )
+    return nothing
 end
 
 end

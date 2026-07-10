@@ -6,6 +6,7 @@ struct ExperimentConfig
     name::String
     constellation::WalkerConstellationConfig
     propagator::AbstractKeplerianPropagator
+    orbit_backend::Union{Nothing,OrbitBackendSpec}
     tspan::Vector{Float64}
     constraints::PhysicalConstraints
     topology_strategy::AbstractTopologyStrategy
@@ -24,6 +25,16 @@ _resolve_constellation_param(c::WalkerConstellationConfig) = c
 # 向后兼容：接受 :walker48 等 catalog 符号（resolve_constellation 来自 SatelliteSimCore）
 _resolve_constellation_param(s::Symbol) = SatelliteSimCore.resolve_constellation(s)
 _resolve_constellation_param(intent::ConstellationIntent) = resolve_constellation_intent(intent)
+
+# 后端选择只保存稳定规格，不把可选包的具体类型泄漏到实验配置。
+_resolve_orbit_backend_param(::Nothing) = nothing
+_resolve_orbit_backend_param(spec::OrbitBackendSpec) = spec
+_resolve_orbit_backend_param(name::Union{Symbol,AbstractString}) = OrbitBackendSpec(name)
+function _resolve_orbit_backend_param(value)
+    throw(ArgumentError(
+        "orbit_backend must be nothing, Symbol, String, or OrbitBackendSpec; got $(typeof(value))",
+    ))
+end
 
 # 把拓扑参数（意图或策略）翻译成具体策略。
 # 防泄漏关键：用户可传 TopologyIntent（推荐）或直接传策略（高级用法）。
@@ -50,6 +61,8 @@ function ExperimentConfig(;
     constellation_params::Union{Nothing,Dict{Symbol,Float64}} = nothing,
     # 接受 PropagatorIntent（推荐）或 :two_body/:j2/:j4 符号或 AbstractKeplerianPropagator（高级）
     propagator = DefaultPropagator,
+    # 可选后端只接受注册名或 OrbitBackendSpec；nothing 保持原生传播路径。
+    orbit_backend = nothing,
     # 接受 TimeHorizonIntent（推荐）或裸 Vector{Float64}（高级）
     tspan = DefaultTimeHorizon,
     # 接受 ConstraintIntent（推荐）或 PhysicalConstraints（高级，如直传 LEO_DEFAULTS）
@@ -95,6 +108,7 @@ function ExperimentConfig(;
         String(name),
         resolved_constellation,
         resolve_propagator(propagator, ctx),
+        _resolve_orbit_backend_param(orbit_backend),
         resolved_tspan,
         resolve_constraint(constraints, ctx),
         _resolve_topo_param(topology_strategy, ctx),

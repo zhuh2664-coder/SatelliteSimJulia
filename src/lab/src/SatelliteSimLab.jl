@@ -3,6 +3,10 @@ module SatelliteSimLab
 using SatelliteSimCore
 using SatelliteSimNet
 using SatelliteSimTraffic: TrafficDemand
+using SatelliteSimBackends: OrbitBackendSpec, create_orbit_backend,
+                            available_orbit_backends, orbit_backend_registered
+
+export OrbitBackendSpec, available_orbit_backends, orbit_backend_registered
 
 # Layer 11: experiment contracts and the single execution path.
 include("layers/11_experiment/intent.jl")

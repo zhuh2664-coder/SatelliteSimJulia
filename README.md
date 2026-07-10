@@ -114,6 +114,25 @@ println("时延: $(round(result.latency.avg_latency_ms, digits=1)) ms")
 println("连通: $(round(result.network.connectivity_ratio*100, digits=1))%")
 ```
 
+可选轨道后端通过稳定规格接入，高层配置不需要引用具体后端类型。具体实现包必须先显式加入当前环境并加载，加载时会注册可选择的名称：
+
+```julia
+using SatelliteSimJulia
+using SatelliteSimStubBackend  # 显式选择；注册 :stub
+
+available_orbit_backends()     # [:stub]
+
+config = ExperimentConfig(
+    orbit_backend = OrbitBackendSpec(
+        :stub;
+        satellite_spacing_km = 25.0,
+    ),
+)
+result = run_experiment(config)
+```
+
+JuliaSpace 后端同理使用 `OrbitBackendSpec(:julia_space; propagator=:j2)`。选择外部后端后，传播器应写在后端规格中；`ExperimentConfig.propagator` 只控制默认原生传播路径。
+
 ## 文档
 
 - [用户手册](docs/USER_GUIDE.md) — 6 个场景（覆盖评估 / 参数扫描 / 星座对比 / AI 仿真 / 可微优化 / TLE 仿真）
@@ -132,6 +151,8 @@ SATSIM_RUN_OPTIONAL=1 julia --project=. scripts/test_all.jl
 ```
 
 本轮本地验收结果：默认统一入口 `14 passed, 0 failed, 5 skipped`；根当前回归 `200/200`；`demo()` 七个步骤全部通过。三份 GitHub Actions 工作流已通过 YAML 静态解析和本地命令验证，但尚未在 GitHub 托管 runner 上实跑。
+
+Orbit 还提供显式的可选后端入口：`propagate_with_backend(backend, elements, tspan)` 可保留 `OrbitResult` 元数据，`propagate_to_ecef(backend, elements, tspan)` 则返回主链所需的 ECEF km 裸数组。`OrbitBackendSpec`、`available_orbit_backends()` 和 session-local 注册表负责发现与配置；JuliaSpace 二体适配已由固定 ECEF golden vector（`1 m` 容差）约束，具体后端仍需显式导入。
 
 完整现状与剩余缺口见 [`CURRENT.md`](CURRENT.md)。
 

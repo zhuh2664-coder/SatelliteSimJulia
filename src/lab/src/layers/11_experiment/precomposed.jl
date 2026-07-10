@@ -43,7 +43,12 @@ function propagate_constellation_positions(config)
         T = constellation.T, P = constellation.P, F = constellation.F,
         alt_km = constellation.alt_km, inc_deg = constellation.inc_deg,
     )
-    positions = propagate_to_ecef(elems, config.tspan; propagator = config.propagator)
+    positions = if config.orbit_backend === nothing
+        propagate_to_ecef(elems, config.tspan; propagator = config.propagator)
+    else
+        backend = create_orbit_backend(config.orbit_backend)
+        propagate_to_ecef(backend, elems, config.tspan)
+    end
     return elems, positions
 end
 

@@ -1,7 +1,7 @@
 module SatelliteSimStubBackend
 
 using SatelliteSimBackends
-import SatelliteSimBackends: backend_capabilities, propagate_orbit
+import SatelliteSimBackends: backend_capabilities, propagate_orbit, register_orbit_backend!
 
 export StubOrbitBackend
 
@@ -33,6 +33,11 @@ function propagate_orbit(backend::StubOrbitBackend, elements, tspan; kwargs...)
         expected_satellites=n_satellites,
         expected_times=length(times),
     )
+end
+
+function __init__()
+    register_orbit_backend!(:stub, options -> StubOrbitBackend(; options...); replace=true)
+    return nothing
 end
 
 end

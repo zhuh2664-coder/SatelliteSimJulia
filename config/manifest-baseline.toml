@@ -2,6 +2,6 @@
 max_growth_percent = 20.0
 
 [environments]
-root = {path = "Manifest.toml", packages = 154}
-core = {path = "envs/core/Manifest.toml", packages = 138}
+root = {path = "Manifest.toml", packages = 155}
+core = {path = "envs/core/Manifest.toml", packages = 139}
 backends_stub = {path = "envs/backends-stub/Manifest.toml", packages = 12}

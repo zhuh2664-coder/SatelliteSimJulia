@@ -28,12 +28,8 @@ function run_multiframe_experiment(config::ExperimentConfig)
     constellation = config.constellation
     T = constellation.T
     P = constellation.P
-    F = constellation.F
-    alt_km = constellation.alt_km
-    inc_deg = constellation.inc_deg
 
-    elems = generate_walker_delta(T=T, P=P, F=F, alt_km=alt_km, inc_deg=inc_deg)
-    positions = propagate_to_ecef(elems, config.tspan; propagator=config.propagator)
+    _, positions = propagate_constellation_positions(config)
 
     n_sat = T
     n_time = size(positions, 2)
