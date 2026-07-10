@@ -362,6 +362,21 @@ elevation: 最大相对误差 2.11e-11
 测试脚本使用 warmup，并对 GPU 计时进行同步；详见开发环境中的
 `cuda_parity.jl`。
 
+独立轨道传播也已在 Modal Tesla T4 上验证。TwoBody/J2/J4 在
+`24×61` 规模均通过真实 CUDA parity；J4 在一日 `1441` 个时间步下的
+规模测试结果如下：
+
+| 规模 `(N, NT)` | GPU compute 加速比 | 含 host/传输的 pipeline 加速比 | 最大绝对误差 |
+|---|---:|---:|---:|
+| `(132, 1441)` | `41.56×` | `1.81×` | `1.95e-10 km` |
+| `(512, 1441)` | `52.55×` | `8.33×` | `1.98e-10 km` |
+| `(2048, 1441)` | `60.78×` | `10.92×` | `2.01e-10 km` |
+| `(4096, 1441)` | `86.40×` | `20.75×` | `1.98e-10 km` |
+
+每个规模在新的 Julia 子进程中运行，因此 pipeline 数值包含一次性 CUDA
+传输和分配开销。完整环境、计时分项、误差和复现方式见
+[`ORBIT_BENCHMARK.md`](ORBIT_BENCHMARK.md)。
+
 ### Apple M2 Max / Metal / Float32
 
 在用户 Mac 的隔离临时项目中实测，`Metal.functional() == true`：
@@ -412,3 +427,13 @@ julia --project=/path/to/optional-env \
 
 脚本分别报告 CPU golden、host TEME→PEF 旋转预计算和 kernel 耗时，
 并同时给出纯 kernel 与包含 host 预处理的端到端加速比。
+
+CUDA 分项 benchmark：
+
+```bash
+julia --project=/path/to/optional-env \
+  bench_orbit_cuda.jl N NT [two_body|j2|j4]
+```
+
+该脚本额外报告 H2D、同步 GPU compute、D2H、完整 pipeline 加速比和
+CPU golden parity 误差。
