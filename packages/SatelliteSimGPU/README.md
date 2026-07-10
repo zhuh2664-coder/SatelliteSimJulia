@@ -140,6 +140,52 @@ objective:
 CPU `coverage_loss` 仍是 golden reference。GPU 版本是显式 opt-in
 加速路径，不替代 CPU 默认路径。
 
+## GSL 可见性批量评估
+
+`evaluate_gsl_batch_gpu` 评估所有卫星、地面站和时间步的 GSL
+可见性。GPU 核心不依赖 SatelliteToolbox；调用方需要在 host 侧使用
+SatelliteToolbox 预先计算每个地面站的 ECEF 坐标和 ECEF→NED 旋转矩阵。
+旋转矩阵的每一列应通过官方 `ecef_to_ned(...; translate=true)` 对 ECEF
+基向量的响应提取，避免手写坐标约定。
+
+```julia
+evaluate_gsl_batch_gpu(
+    positions,
+    ground_ecef,
+    ned_rotation;
+    gsl_min_elevation_deg,
+    gsl_max_range_km,
+)
+```
+
+输入契约：
+
+```text
+positions    : (N, NT, 3), ECEF km
+ground_ecef : (M, 3),     ECEF km
+ned_rotation: (M, 3, 3),  每站 ECEF→NED 矩阵
+```
+
+输出均为 `(N, M, NT)`：
+
+```text
+available   : Bool
+distance_km : 输入浮点类型
+elevation_deg
+delay_ms
+```
+
+默认门限与 CPU reference 的 `LEO_DEFAULTS` 一致：
+
+```text
+gsl_min_elevation_deg = 25.0
+gsl_max_range_km      = 2000.0
+```
+
+GSL 仰角严格使用 CPU reference 的 NED 公式，而不是 coverage kernel
+使用的 ECEF 法向量 atan2 公式。SatelliteToolbox 仅作为测试和 host
+预处理依赖，未加入包的运行时 `[deps]`。
+
 ## 实现结构
 
 核心 kernel 对 `(ground_point, time)` 并行，每个线程顺序遍历卫星并
@@ -158,7 +204,12 @@ CPU `coverage_loss` 仍是 golden reference。GPU 版本是显式 opt-in
 ```text
 golden/
 ├── golden_coverage_source.jl
-└── golden_reference.jl
+├── golden_reference.jl
+├── golden_gsl_geometry_constants.jl
+├── golden_gsl_geometry_source.jl
+├── golden_gsl_constraints_source.jl
+├── golden_gsl_evaluator_source.jl
+└── golden_gsl_reference.jl
 ```
 
 `golden_coverage_source.jl` 是
@@ -176,6 +227,19 @@ src/opt/src/layers/06_optimization/coverage.jl
 它只用于独立 CPU parity 测试，不 include SatelliteSimJulia 主项目，
 因此不会引入 SatelliteToolbox 等重依赖。
 
+GSL golden 模块逐字保存了以下 CPU reference 文件，并在测试中通过
+`using SatelliteToolbox` 运行真实的 `evaluate_gsl_batch`：
+
+```text
+foundation__geometry_constants.jl
+link__geometry.jl
+link__constraints.jl
+link__evaluator.jl
+```
+
+四个逐字副本分别与本机 `reference/` 快照 SHA-256 一致。SatelliteToolbox
+只在 `[extras]`/测试与可选 benchmark 环境中出现，不是包运行时依赖。
+
 ## CPU parity 测试
 
 ```bash
@@ -190,10 +254,26 @@ julia --project=. -e 'using Pkg; Pkg.test()'
 (N, NT, G) = (132, 60, 500)
 ```
 
+GSL 测试规模：
+
+```text
+(N, M, NT) = (66, 10, 30)
+(N, M, NT) = (132, 20, 60)
+```
+
 Float64 CPU 后端实测最大相对误差：
 
 ```text
 2.87e-13
+```
+
+GSL CPU 后端实测：
+
+```text
+available: 完全一致
+distance:  相对误差 0
+delay:     相对误差 0
+elevation: 最大相对误差 2.11e-11
 ```
 
 ## 已验证硬件结果
@@ -237,3 +317,15 @@ julia --project=. bench_coverage.jl 132 60 500
 ```
 
 该脚本在正式计时前执行 warmup，并输出两个实现的耗时、loss 和相对误差。
+
+GSL benchmark：
+
+```bash
+julia --project=/path/to/optional-env \
+  bench_gsl.jl N M NT
+```
+
+该 optional environment 需要同时提供 `SatelliteToolbox` 和本地
+`SatelliteSimGPU`（例如先执行 `Pkg.develop(path=".../SatelliteSimGPU")`）。
+脚本输出 CPU golden 与 KernelAbstractions 实现的耗时、speedup、三个
+浮点输出的最大相对误差以及 `available` 是否完全一致。
