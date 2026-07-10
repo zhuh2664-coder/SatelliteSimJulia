@@ -62,6 +62,7 @@
 | Orbit backend 增量回归 | registry/config `13/13`；Orbit dispatch `4/4`；JuliaSpace 二体 ECEF golden vector（`1 m` 容差）通过 |
 | optional/nightly 本地开关 | Opt、Security、Viz、GMAT、JuliaSpace 均通过 |
 | PlatformRunner | package contract `21/21`，CLI artifact smoke 通过 |
+| Platform Alpha storage / scheduler / benchmark | Storage `17/17`；FakeScheduler `18/18`；Constellation Optimization v1 `11/11`；CLI `--verify` 通过 |
 
 本次 backend 与 Platform Alpha 增量后，默认统一入口已重跑为 `14 passed, 0 failed, 5 skipped`；Opt、Security、JuliaSpace 的筛选入口为 `3 passed, 0 failed`。Lab、根回归、Orbit、Link、Net、Traffic、后端包、PlatformRunner、依赖边界、Manifest 基线、core smoke 与 bare-array 均在当前本地环境通过。
 
@@ -74,7 +75,7 @@
 
 ## 下一阶段缺口
 
-1. Platform Alpha 目前只有本地 Runner；公开注册、OIDC 认证、免费配额、对象存储、提交 API 与 Kubernetes 调度均未实现。
+1. Platform Alpha 已有本地 Runner、可替换 LocalFilesystemStorage、内存 FakeScheduler 与第一个固定优化 benchmark；S3/MinIO、提交 API、OIDC/配额、Kubernetes、数据库元数据与公开注册仍未实现。
 2. Orbit 只迁移了一个显式 dispatch 入口，尚未让 Link/frames 与所有 Orbit 调用点经由 backend dispatch。
 3. JuliaSpace 已有二体 ECEF golden vector（`1 m` 容差），但仍缺跨实现对标、其它传播器误差阈值和性能基线。
 4. 远程 GitHub Actions runner 尚未产生实际运行证据。
@@ -82,8 +83,8 @@
 
 ## 下一阶段优先级
 
-1. 在 PlatformRunner schema/artifact 契约上实现可替换存储、作业渲染与本地 fake；随后再接单区域 Kubernetes 和 OIDC/配额，不把云依赖引回仿真主链。
-2. 发布第一个公开可复现 benchmark：固定星座优化场景、版本化输入、baseline、数值/性能阈值及独立复跑记录。
+1. 在既有 PlatformRunner/Storage/FakeScheduler/artifact 契约上补可测试的 Job 渲染、取消/重试/幂等语义与远程适配器设计；随后才接单区域 Kubernetes 和 OIDC/配额，不把云依赖引回仿真主链。
+2. 扩展已发布的 constellation-optimization/v1：多场景、独立参考实现、golden vectors、数值误差预算及跨提交性能历史；在有抗噪证据前不设硬时间门禁。
 3. 为 JuliaSpace/Stub 或其它参考实现补充 golden vectors、误差阈值与性能基线。
 4. 按调用链逐步迁移 Orbit/frames/Link，而不是把可选后端回灌进主链；并为 backend options 增加冲突校验。
 5. 在远程 runner 验证 Core/Optional/Nightly，并记录平台特有失败而不是修改业务逻辑迎合环境。

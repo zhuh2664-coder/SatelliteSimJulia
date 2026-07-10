@@ -88,3 +88,11 @@ git diff --check:                  PASS
 
 **生成文件控制**：将 `platform/**/Manifest.toml` 统一忽略；此次运行产生的 benchmark 输出仅写入 `/tmp` 并已清理。
 平台 README、输入、baseline、源代码、测试与本实施记录是需要版本控制的源文件。
+
+## 2026-07-09 — Step 4：根现状同步
+
+**执行**：将本切片的已完成能力、实测结果与下一阶段边界同步到根 `CURRENT.md`：不再将 Platform Alpha
+描述为“只有 Runner”，但仍明确其缺少远程存储、Kubernetes、OIDC、配额、数据库元数据和公开服务。
+
+**工作区保护**：`CURRENT.md` 同时存在独立的 backend-integration 更新；本次只暂存平台相关的四个文档 hunk，
+其余 hunk 继续留在工作区，未被覆盖或提交。
