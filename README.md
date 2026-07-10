@@ -154,6 +154,20 @@ SATSIM_RUN_OPTIONAL=1 julia --project=. scripts/test_all.jl
 
 Orbit 还提供显式的可选后端入口：`propagate_with_backend(backend, elements, tspan)` 可保留 `OrbitResult` 元数据，`propagate_to_ecef(backend, elements, tspan)` 则返回主链所需的 ECEF km 裸数组。`OrbitBackendSpec`、`available_orbit_backends()` 和 session-local 注册表负责发现与配置；JuliaSpace 二体适配已由固定 ECEF golden vector（`1 m` 容差）约束，具体后端仍需显式导入。
 
+## Platform Alpha（本地可复现实验）
+
+研究团队的在线平台目前先以 API/CLI-first 的本地 Runner 垂直切片落地：严格校验
+版本化 JSON 配置，执行 `SatelliteSimLab`，并产出可哈希复跑的配置、结果和元数据工件。
+
+```bash
+julia --project=platform/runner platform/runner/bin/satnet-run.jl \
+  --config platform/examples/walker8-local-v1.json \
+  --output-dir /tmp/satnet-walker8
+```
+
+它**不是已部署的公共云服务**：对象存储、OIDC/注册、免费配额、HTTP API 与 Kubernetes
+调度尚未实现。配置和工件契约、验证方式与后续边界见 [`platform/README.md`](platform/README.md)。
+
 完整现状与剩余缺口见 [`CURRENT.md`](CURRENT.md)。
 
 ## 许可

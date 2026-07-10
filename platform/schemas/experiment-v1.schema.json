@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://satellitesim.org/schemas/experiment-v1.schema.json",
+  "title": "SatelliteSimJulia reproducible experiment",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "name", "constellation"],
+  "properties": {
+    "schema_version": {"const": "satellitesim.experiment/v1"},
+    "name": {"type": "string", "minLength": 1, "maxLength": 128},
+    "constellation": {
+      "oneOf": [
+        {"type": "string", "minLength": 1},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["T", "P", "F", "alt_km", "inc_deg"],
+          "properties": {
+            "T": {"type": "integer", "minimum": 1},
+            "P": {"type": "integer", "minimum": 1},
+            "F": {"type": "integer", "minimum": 0},
+            "alt_km": {"type": "number", "exclusiveMinimum": 0},
+            "inc_deg": {"type": "number", "minimum": 0, "maximum": 180}
+          }
+        }
+      ]
+    },
+    "propagator": {"type": "string", "enum": ["two_body", "j2", "j4"]},
+    "orbit_backend": {
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "minLength": 1},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "options": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}}
+          }
+        }
+      ]
+    },
+    "tspan": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {"type": "number"}
+    },
+    "steps": {"type": "integer", "minimum": 2, "maximum": 10000},
+    "topology_strategy": {"type": "string", "enum": ["balanced", "mesh", "gridplus", "grid_plus"]},
+    "routing_algorithm": {"type": "string", "enum": ["dijkstra", "ecmp", "min_load"]},
+    "traffic": {"type": "string", "enum": ["uniform", "hotspot"]},
+    "ground_pairs": {
+      "type": "array",
+      "items": {
+        "type": "array",
+        "minItems": 2,
+        "maxItems": 2,
+        "items": {"type": "integer", "minimum": 1}
+      }
+    },
+    "random_seed": {"type": "integer", "minimum": 0},
+    "alpha": {"type": "number", "minimum": 0, "maximum": 1}
+  }
+}

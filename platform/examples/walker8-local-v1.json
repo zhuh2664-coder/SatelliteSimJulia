@@ -1,0 +1,20 @@
+{
+  "schema_version": "satellitesim.experiment/v1",
+  "name": "walker8-local-smoke",
+  "constellation": {
+    "T": 8,
+    "P": 2,
+    "F": 1,
+    "alt_km": 550.0,
+    "inc_deg": 53.0
+  },
+  "propagator": "two_body",
+  "tspan": [0.0, 300.0],
+  "steps": 3,
+  "topology_strategy": "balanced",
+  "routing_algorithm": "dijkstra",
+  "traffic": "uniform",
+  "ground_pairs": [],
+  "random_seed": 42,
+  "alpha": 0.5
+}

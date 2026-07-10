@@ -17,6 +17,7 @@ artifacts/
 *.dylib
 src/*/Manifest.toml
 packages/*/Manifest.toml
+platform/*/Manifest.toml
 
 # Visualization temp
 /frames*/
@@ -82,3 +83,9 @@ Manifest.toml.bak
 /docs/design/*
 !/docs/design/dependency-isolation.md
 !/docs/design/LAYERS.md
+
+# Platform source documentation (the global *.md rule otherwise hides these contracts)
+!/platform/
+!/platform/README.md
+!/platform/*/
+!/platform/*/README.md

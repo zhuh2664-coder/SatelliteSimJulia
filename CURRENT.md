@@ -39,6 +39,7 @@
 - 后端统一返回 `(satellite, time, xyz)`、ECEF、km 的 `OrbitResult`；Orbit 提供显式 `propagate_with_backend` / `propagate_to_ecef(backend, ...)` 转回下游裸数组契约，原生传播 API 不变。
 - `SatelliteSimBackends` 已提供 `OrbitBackendSpec`、注册/注销、发现和按规格构造 API；注册表是 session-local，具体可选包通过 `__init__()` 注册 `:stub` / `:julia_space`，仍必须由用户显式加载。
 - `ExperimentConfig.orbit_backend` 只接受 `nothing`、名称或 `OrbitBackendSpec`，不接受具体后端对象；默认 `nothing` 完全保留原生传播路径。Lab 的单帧、多帧、缓存 hash 和实验记录已经统一纳入后端选择。
+- 已建立 Platform Alpha 的本地 `PlatformRunner`：版本化 JSON schema、严格配置验证、CLI 和四份可复现工件（配置快照、结果、元数据、SHA-256 索引）均已实现；它只在本地运行，未实现公共 API、注册/认证、配额、对象存储或 Kubernetes 调度。
 - 已建立 `envs/core`、`envs/sim`、`envs/viz`、`envs/gmat`、`envs/security`、`envs/backends-stub`；既有 `envs/opt` 保持独立。
 - `envs/core/Manifest.toml` 与 `envs/backends-stub/Manifest.toml` 作为核心可复现基线提交；optional 环境 Manifest 保持本地生成并忽略。
 - Manifest 基线实测：root 155、core 139、backends-stub 12，增长门禁 `PASS`。
@@ -60,8 +61,9 @@
 | GitHub Actions YAML | 三份工作流通过 Ruby YAML 静态解析 |
 | Orbit backend 增量回归 | registry/config `13/13`；Orbit dispatch `4/4`；JuliaSpace 二体 ECEF golden vector（`1 m` 容差）通过 |
 | optional/nightly 本地开关 | Opt、Security、Viz、GMAT、JuliaSpace 均通过 |
+| PlatformRunner | package contract `21/21`，CLI artifact smoke 通过 |
 
-本次 backend 增量后，默认统一入口已重跑为 `14 passed, 0 failed, 5 skipped`；Opt、Security、JuliaSpace 的筛选入口为 `3 passed, 0 failed`。Lab、根回归、Orbit、Link、Net、Traffic、后端包、依赖边界、Manifest 基线、core smoke 与 bare-array 均在当前本地环境通过。
+本次 backend 与 Platform Alpha 增量后，默认统一入口已重跑为 `14 passed, 0 failed, 5 skipped`；Opt、Security、JuliaSpace 的筛选入口为 `3 passed, 0 failed`。Lab、根回归、Orbit、Link、Net、Traffic、后端包、PlatformRunner、依赖边界、Manifest 基线、core smoke 与 bare-array 均在当前本地环境通过。
 
 ## CI 分层
 
@@ -72,18 +74,20 @@
 
 ## 下一阶段缺口
 
-1. Orbit 只迁移了一个显式 dispatch 入口，尚未让 Link/frames 与所有 Orbit 调用点经由 backend dispatch。
-2. JuliaSpace 已有二体 ECEF golden vector（`1 m` 容差），但仍缺跨实现对标、其它传播器误差阈值和性能基线。
-3. 远程 GitHub Actions runner 尚未产生实际运行证据。
-4. 根 Manifest 仍设计为不提交；增长门禁只对当前存在或已提交的环境 Manifest 生效。
+1. Platform Alpha 目前只有本地 Runner；公开注册、OIDC 认证、免费配额、对象存储、提交 API 与 Kubernetes 调度均未实现。
+2. Orbit 只迁移了一个显式 dispatch 入口，尚未让 Link/frames 与所有 Orbit 调用点经由 backend dispatch。
+3. JuliaSpace 已有二体 ECEF golden vector（`1 m` 容差），但仍缺跨实现对标、其它传播器误差阈值和性能基线。
+4. 远程 GitHub Actions runner 尚未产生实际运行证据。
+5. 根 Manifest 仍设计为不提交；增长门禁只对当前存在或已提交的环境 Manifest 生效。
 
 ## 下一阶段优先级
 
-1. 扩展 golden vectors 到跨实现/多传播器，并为耗时建立可复现性能基线。
-2. 按调用链逐步迁移 Orbit/frames/Link，而不是把可选后端回灌进主链。
-3. 为 backend options 增加更明确的 schema/冲突校验，避免原生 `propagator` 与后端专属选项产生歧义。
-4. 在远程 runner 验证 Core/Optional/Nightly，并记录平台特有失败而不是修改业务逻辑迎合环境。
-5. 本轮分支合并稳定后，将 `重构计划.md` 迁入归档，避免继续生长为长期总规划。
+1. 在 PlatformRunner schema/artifact 契约上实现可替换存储、作业渲染与本地 fake；随后再接单区域 Kubernetes 和 OIDC/配额，不把云依赖引回仿真主链。
+2. 发布第一个公开可复现 benchmark：固定星座优化场景、版本化输入、baseline、数值/性能阈值及独立复跑记录。
+3. 为 JuliaSpace/Stub 或其它参考实现补充 golden vectors、误差阈值与性能基线。
+4. 按调用链逐步迁移 Orbit/frames/Link，而不是把可选后端回灌进主链；并为 backend options 增加冲突校验。
+5. 在远程 runner 验证 Core/Optional/Nightly，并记录平台特有失败而不是修改业务逻辑迎合环境。
+6. 本轮分支合并稳定后，将 `重构计划.md` 迁入归档，避免继续生长为长期总规划。
 
 ## 明确不做
 

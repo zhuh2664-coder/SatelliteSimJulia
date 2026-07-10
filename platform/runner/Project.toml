@@ -1,0 +1,20 @@
+name = "PlatformRunner"
+uuid = "c8302b0a-46a2-4f81-9ea9-cb0d56cb7a01"
+version = "0.1.0"
+
+[deps]
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+SHA = "ea8e919c-243c-51af-8825-aaa63cd721ce"
+SatelliteSimBackends = "8f4bd5d1-6a1c-4d2e-9d7f-4e1c8b6a2101"
+SatelliteSimLab = "456db33b-f2e9-44a1-91e6-796f5949196b"
+
+[sources]
+SatelliteSimBackends = {path = "../../packages/SatelliteSimBackends"}
+SatelliteSimLab = {path = "../../src/lab"}
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
