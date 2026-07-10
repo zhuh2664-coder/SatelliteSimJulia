@@ -1,7 +1,8 @@
 # SatelliteSimGPU
 
 `SatelliteSimGPU` 是 SatelliteSimJulia 的可选 GPU 加速包，当前提供
-`coverage_loss` 的 KernelAbstractions 后端无关实现。
+覆盖损失、GSL 可见性和独立轨道解析传播的 KernelAbstractions
+后端无关实现。
 
 它被设计为未来放入主项目 `packages/` 的独立包：
 
@@ -15,6 +16,8 @@
 
 ```julia
 coverage_loss_gpu(positions, ground_pts, weights; kwargs...)
+evaluate_gsl_batch_gpu(positions, ground_ecef, ned_rotation; kwargs...)
+independent_positions_gpu(orbital_elements, times, ecef_rotation; kwargs...)
 ```
 
 ## 安装
@@ -186,14 +189,62 @@ GSL 仰角严格使用 CPU reference 的 NED 公式，而不是 coverage kernel
 使用的 ECEF 法向量 atan2 公式。SatelliteToolbox 仅作为测试和 host
 预处理依赖，未加入包的运行时 `[deps]`。
 
+## 独立轨道解析传播
+
+`independent_positions_gpu` 对应
+`SatelliteSimJuliaSpaceBackend._independent_positions` 的
+TwoBody/J2/J4 secular-element 解析实现。每个 `(satellite, time)` 由
+GPU kernel 独立计算，输出保持主链契约 `(N, NT, 3)`、ECEF、km。
+
+```julia
+positions = independent_positions_gpu(
+    orbital_elements,
+    times,
+    ecef_rotation;
+    propagator=:j4,
+)
+```
+
+输入契约：
+
+```text
+orbital_elements: (N, 6)
+  columns = (a_m, e, i_rad, Ω_rad, ω_rad, f_rad)
+times          : (NT,), seconds
+ecef_rotation  : (NT, 3, 3), TEME→PEF
+```
+
+`ecef_rotation[t, :, :]` 必须在 host 侧通过官方 SatelliteToolbox
+预计算，再与其它输入一起移动到目标后端：
+
+```julia
+for (time_index, elapsed_s) in pairs(times)
+    ecef_rotation[time_index, :, :] .=
+        SatelliteToolbox.r_eci_to_ecef(
+            SatelliteToolbox.TEME(),
+            SatelliteToolbox.PEF(),
+            elapsed_s / 86_400,
+        )
+end
+```
+
+这与 GSL 的 host 几何预处理采用相同边界：GPU 包不重新实现官方参考系
+转换，也不把 SatelliteToolbox 加入运行时依赖。支持的传播器为
+`:two_body`、`:j2`、`:j4`。
+
 ## 实现结构
 
-核心 kernel 对 `(ground_point, time)` 并行，每个线程顺序遍历卫星并
-完成 noisy-OR。随后：
+coverage 核心 kernel 对 `(ground_point, time)` 并行，每个线程顺序遍历
+卫星并完成 noisy-OR。随后：
 
 1. 每个 ground point 顺序扫描时间维度，计算 leaky revisit；
 2. 使用数组后端的 `sum` / `maximum` 和广播完成归约；
 3. CUDA/Metal 的设备数组由 KernelAbstractions 和底层数组包负责执行。
+
+GSL kernel 对 `(satellite, station, time)` 并行。轨道传播先用一个
+`N` 规模 kernel 预计算每颗卫星的 mean motion、RAAN/近地点进动率和
+初始 mean anomaly，再用 `N×NT` 规模 kernel 求解 Kepler 方程、计算
+ECI 位置并应用 host 预计算的 TEME→PEF 旋转。
 
 没有在包中加入 CUDA 或 Metal 专用分支。
 
@@ -209,7 +260,9 @@ golden/
 ├── golden_gsl_geometry_source.jl
 ├── golden_gsl_constraints_source.jl
 ├── golden_gsl_evaluator_source.jl
-└── golden_gsl_reference.jl
+├── golden_gsl_reference.jl
+├── golden_orbit_source.jl
+└── golden_orbit_reference.jl
 ```
 
 `golden_coverage_source.jl` 是
@@ -240,6 +293,17 @@ link__evaluator.jl
 四个逐字副本分别与本机 `reference/` 快照 SHA-256 一致。SatelliteToolbox
 只在 `[extras]`/测试与可选 benchmark 环境中出现，不是包运行时依赖。
 
+`golden_orbit_source.jl` 是用户开发分支中
+`packages/SatelliteSimJuliaSpaceBackend/src/SatelliteSimJuliaSpaceBackend.jl`
+的逐字快照：
+
+```text
+fd24bff9ea252558b36a265b02b2e613b13875a1a54cea8f1bbae7257dcda111
+```
+
+测试会现场校验 SHA-256，并通过 `golden_orbit_reference.jl` 中独立保存的
+CPU 解析实现运行 TwoBody/J2/J4 parity。
+
 ## CPU parity 测试
 
 ```bash
@@ -259,6 +323,15 @@ GSL 测试规模：
 ```text
 (N, M, NT) = (66, 10, 30)
 (N, M, NT) = (132, 20, 60)
+```
+
+轨道传播测试覆盖：
+
+```text
+propagator = two_body / j2 / j4
+(N, NT) = (24, 61)
+duration = 5400 s
+Float64 + Float32
 ```
 
 Float64 CPU 后端实测最大相对误差：
@@ -329,3 +402,13 @@ julia --project=/path/to/optional-env \
 `SatelliteSimGPU`（例如先执行 `Pkg.develop(path=".../SatelliteSimGPU")`）。
 脚本输出 CPU golden 与 KernelAbstractions 实现的耗时、speedup、三个
 浮点输出的最大相对误差以及 `available` 是否完全一致。
+
+轨道传播 benchmark：
+
+```bash
+julia --project=/path/to/optional-env \
+  bench_orbit.jl N NT [two_body|j2|j4]
+```
+
+脚本分别报告 CPU golden、host TEME→PEF 旋转预计算和 kernel 耗时，
+并同时给出纯 kernel 与包含 host 预处理的端到端加速比。

@@ -3,9 +3,15 @@ module SatelliteSimGPU
 using Adapt
 using KernelAbstractions
 
-export coverage_loss_gpu, evaluate_gsl_batch_gpu
+export coverage_loss_gpu, evaluate_gsl_batch_gpu, independent_positions_gpu
 
 const _SPEED_OF_LIGHT_KM_S = 299_792.458
+const _EARTH_RADIUS_M = 6_378_137.0
+const _EARTH_MU_M3_S2 = 3.986004415e14
+const _EARTH_J2 = 0.0010826261738522227
+const _EARTH_J4 = -1.6198975999169731e-6
+const _NORMALIZED_MU = sqrt(_EARTH_MU_M3_S2 / _EARTH_RADIUS_M^3)
+const _SUPPORTED_PROPAGATORS = (:two_body, :j2, :j4)
 
 @inline _wait_event(event) = event === nothing ? nothing : wait(event)
 
@@ -340,6 +346,321 @@ function evaluate_gsl_batch_gpu(
     ))
 
     return available, distances, elevations, delays
+end
+
+@inline function _propagator_code(propagator::Symbol)
+    propagator === :two_body && return Int32(0)
+    propagator === :j2 && return Int32(1)
+    propagator === :j4 && return Int32(2)
+    throw(ArgumentError(
+        "unsupported propagator :$propagator; expected one of " *
+        join(":" .* String.(_SUPPORTED_PROPAGATORS), ", "),
+    ))
+end
+
+function _validate_orbit_inputs(orbital_elements, times, ecef_rotation)
+    ndims(orbital_elements) == 2 && size(orbital_elements, 2) == 6 ||
+        throw(ArgumentError("orbital_elements must have shape (N, 6)"))
+    ndims(times) == 1 ||
+        throw(ArgumentError("times must have shape (NT,)"))
+    ndims(ecef_rotation) == 3 &&
+        size(ecef_rotation, 1) == length(times) &&
+        size(ecef_rotation, 2) == 3 &&
+        size(ecef_rotation, 3) == 3 ||
+        throw(ArgumentError("ecef_rotation must have shape (NT, 3, 3)"))
+    size(orbital_elements, 1) > 0 && length(times) > 0 ||
+        throw(ArgumentError("orbital_elements and times must be non-empty"))
+    eltype(orbital_elements) <: AbstractFloat ||
+        throw(ArgumentError("orbital_elements eltype must be Float32 or Float64"))
+    eltype(times) == eltype(orbital_elements) ||
+        throw(ArgumentError("times and orbital_elements must have the same eltype"))
+    eltype(ecef_rotation) == eltype(orbital_elements) ||
+        throw(ArgumentError(
+            "ecef_rotation and orbital_elements must have the same eltype",
+        ))
+
+    backend_type = typeof(get_backend(orbital_elements))
+    typeof(get_backend(times)) == backend_type &&
+        typeof(get_backend(ecef_rotation)) == backend_type ||
+        throw(ArgumentError("all orbit inputs must reside on the same backend"))
+    all(isfinite, orbital_elements) ||
+        throw(ArgumentError("orbital_elements must be finite"))
+    all(isfinite, times) ||
+        throw(ArgumentError("times must be finite"))
+    all(isfinite, ecef_rotation) ||
+        throw(ArgumentError("ecef_rotation must be finite"))
+
+    semi_major_axes = @view orbital_elements[:, 1]
+    eccentricities = @view orbital_elements[:, 2]
+    minimum(semi_major_axes) > zero(eltype(orbital_elements)) ||
+        throw(ArgumentError("semi-major axes must be positive"))
+    minimum(eccentricities) >= zero(eltype(orbital_elements)) &&
+        maximum(eccentricities) < one(eltype(orbital_elements)) ||
+        throw(ArgumentError("eccentricities must be in [0, 1)"))
+    return nothing
+end
+
+@inline function _true_to_mean_anomaly_gpu(e::T, true_anomaly::T) where T <: AbstractFloat
+    half_anomaly = true_anomaly / T(2)
+    eccentric_anomaly = T(2) * atan(
+        sqrt(one(T) - e) * sin(half_anomaly),
+        sqrt(one(T) + e) * cos(half_anomaly),
+    )
+    return eccentric_anomaly - e * sin(eccentric_anomaly)
+end
+
+@inline function _mean_to_true_anomaly_gpu(
+    e::T,
+    mean_anomaly::T,
+) where T <: AbstractFloat
+    normalized_mean = mod(mean_anomaly, T(2π))
+    eccentric_anomaly = e < T(0.8) ? normalized_mean : T(π)
+    for _ in 1:20
+        sine, cosine = sincos(eccentric_anomaly)
+        residual = eccentric_anomaly - e * sine - normalized_mean
+        correction = residual / (one(T) - e * cosine)
+        eccentric_anomaly -= correction
+        abs(correction) <= T(8) * eps(T) && break
+    end
+    sine, cosine = sincos(eccentric_anomaly)
+    denominator = one(T) - e * cosine
+    sin_f = sqrt(one(T) - e^2) * sine / denominator
+    cos_f = (cosine - e) / denominator
+    return atan(sin_f, cos_f)
+end
+
+@inline function _secular_rates_gpu(
+    semi_major_axis::T,
+    eccentricity::T,
+    inclination::T,
+    propagator_code::Int32,
+) where T <: AbstractFloat
+    normalized_a = semi_major_axis / T(_EARTH_RADIUS_M)
+    eccentricity2 = eccentricity^2
+    parameter = normalized_a * (one(T) - eccentricity2)
+    parameter2 = parameter^2
+    n0 = T(_NORMALIZED_MU) / sqrt(normalized_a^3)
+    propagator_code == Int32(0) &&
+        return n0, zero(T), zero(T)
+
+    sin_i, cos_i = sincos(inclination)
+    sin_i2 = sin_i^2
+    beta2 = one(T) - eccentricity2
+    beta = sqrt(beta2)
+    kn2 = T(_EARTH_J2) / parameter2 * beta
+
+    if propagator_code == Int32(1)
+        mean_motion = n0 * (
+            one(T) + T(3) / T(4) * kn2 * (T(2) - T(3) * sin_i2)
+        )
+        k2_bar = mean_motion * T(_EARTH_J2) / parameter2
+        raan_rate = -T(3) / T(2) * k2_bar * cos_i
+        argp_rate = T(3) / T(4) * k2_bar * (T(4) - T(5) * sin_i2)
+        return mean_motion, raan_rate, argp_rate
+    end
+
+    parameter4 = parameter^4
+    sin_i4 = sin_i^4
+    cos_i4 = cos_i^4
+    j2_squared = T(_EARTH_J2)^2
+    kn22 = j2_squared / parameter4 * beta
+    kn4 = T(_EARTH_J4) / parameter4 * beta
+    mean_motion = n0 * (
+        one(T) +
+        T(3) / T(4) * kn2 * (T(2) - T(3) * sin_i2) +
+        T(3) / T(128) * kn22 * (
+            T(120) + T(64) * beta - T(40) * beta2 +
+            (-T(240) - T(192) * beta + T(40) * beta2) * sin_i2 +
+            (T(105) + T(144) * beta + T(25) * beta2) * sin_i4
+        ) -
+        T(45) / T(128) * kn4 * eccentricity2 * (
+            -T(8) + T(40) * sin_i2 - T(35) * sin_i4
+        )
+    )
+
+    k2_bar = mean_motion * T(_EARTH_J2) / parameter2
+    k22_bar = mean_motion * j2_squared / parameter4
+    k22 = n0 * j2_squared / parameter4
+    k4 = n0 * T(_EARTH_J4) / parameter4
+    raan_rate =
+        -T(3) / T(2) * k2_bar * cos_i +
+        T(3) / T(32) * k22_bar * cos_i * (
+            -T(36) - T(4) * eccentricity2 + T(48) * beta +
+            (T(40) - T(5) * eccentricity2 - T(72) * beta) * sin_i2
+        ) +
+        T(15) / T(32) * k4 * cos_i * (
+            T(8) + T(12) * eccentricity2 -
+            (T(14) + T(21) * eccentricity2) * sin_i2
+        )
+    argp_rate =
+        T(3) / T(4) * k2_bar * (T(4) - T(5) * sin_i2) +
+        T(3) / T(128) * k22_bar * (
+            T(384) + T(96) * eccentricity2 - T(384) * beta +
+            (-T(824) - T(116) * eccentricity2 + T(1056) * beta) * sin_i2 +
+            (T(430) - T(5) * eccentricity2 - T(720) * beta) * sin_i4
+        ) -
+        T(15) / T(16) * k22 * eccentricity2 * cos_i4 -
+        T(15) / T(128) * k4 * (
+            T(64) + T(72) * eccentricity2 -
+            (T(248) + T(252) * eccentricity2) * sin_i2 +
+            (T(196) + T(189) * eccentricity2) * sin_i4
+        )
+    return mean_motion, raan_rate, argp_rate
+end
+
+@kernel function _orbit_coefficients_kernel!(
+    mean_motion,
+    raan_rate,
+    argp_rate,
+    initial_mean_anomaly,
+    orbital_elements,
+    propagator_code,
+)
+    satellite_index = @index(Global)
+    semi_major_axis = orbital_elements[satellite_index, 1]
+    eccentricity = orbital_elements[satellite_index, 2]
+    inclination = orbital_elements[satellite_index, 3]
+    true_anomaly = orbital_elements[satellite_index, 6]
+
+    mean_motion_value, raan_rate_value, argp_rate_value = _secular_rates_gpu(
+        semi_major_axis,
+        eccentricity,
+        inclination,
+        propagator_code,
+    )
+    mean_motion[satellite_index] = mean_motion_value
+    raan_rate[satellite_index] = raan_rate_value
+    argp_rate[satellite_index] = argp_rate_value
+    initial_mean_anomaly[satellite_index] =
+        _true_to_mean_anomaly_gpu(eccentricity, true_anomaly)
+end
+
+@kernel function _orbit_positions_kernel!(
+    positions,
+    orbital_elements,
+    times,
+    ecef_rotation,
+    mean_motion,
+    raan_rate,
+    argp_rate,
+    initial_mean_anomaly,
+    n_times,
+)
+    linear_index = @index(Global)
+    linear_index -= 1
+    time_index = linear_index % n_times + 1
+    satellite_index = linear_index ÷ n_times + 1
+
+    semi_major_axis = orbital_elements[satellite_index, 1]
+    eccentricity = orbital_elements[satellite_index, 2]
+    inclination = orbital_elements[satellite_index, 3]
+    initial_raan = orbital_elements[satellite_index, 4]
+    initial_argp = orbital_elements[satellite_index, 5]
+    elapsed_s = times[time_index]
+
+    true_anomaly = _mean_to_true_anomaly_gpu(
+        eccentricity,
+        initial_mean_anomaly[satellite_index] +
+        mean_motion[satellite_index] * elapsed_s,
+    )
+    raan = mod(
+        initial_raan + raan_rate[satellite_index] * elapsed_s,
+        eltype(positions)(2π),
+    )
+    argument_of_perigee = mod(
+        initial_argp + argp_rate[satellite_index] * elapsed_s,
+        eltype(positions)(2π),
+    )
+    radius = semi_major_axis * (one(eltype(positions)) - eccentricity^2) / (
+        one(eltype(positions)) + eccentricity * cos(true_anomaly)
+    )
+    argument_of_latitude = argument_of_perigee + true_anomaly
+    sin_raan, cos_raan = sincos(raan)
+    sin_u, cos_u = sincos(argument_of_latitude)
+    sin_i, cos_i = sincos(inclination)
+
+    eci_x = radius * (
+        cos_raan * cos_u - sin_raan * sin_u * cos_i
+    )
+    eci_y = radius * (
+        sin_raan * cos_u + cos_raan * sin_u * cos_i
+    )
+    eci_z = radius * sin_u * sin_i
+    positions[satellite_index, time_index, 1] = (
+        ecef_rotation[time_index, 1, 1] * eci_x +
+        ecef_rotation[time_index, 1, 2] * eci_y +
+        ecef_rotation[time_index, 1, 3] * eci_z
+    ) / eltype(positions)(1000)
+    positions[satellite_index, time_index, 2] = (
+        ecef_rotation[time_index, 2, 1] * eci_x +
+        ecef_rotation[time_index, 2, 2] * eci_y +
+        ecef_rotation[time_index, 2, 3] * eci_z
+    ) / eltype(positions)(1000)
+    positions[satellite_index, time_index, 3] = (
+        ecef_rotation[time_index, 3, 1] * eci_x +
+        ecef_rotation[time_index, 3, 2] * eci_y +
+        ecef_rotation[time_index, 3, 3] * eci_z
+    ) / eltype(positions)(1000)
+end
+
+"""
+    independent_positions_gpu(
+        orbital_elements,
+        times,
+        ecef_rotation;
+        propagator=:two_body,
+    ) -> positions
+
+Backend-independent KernelAbstractions implementation of the JuliaSpace
+backend's independent secular-element propagation. `orbital_elements` has
+shape `(N, 6)` with columns `(a_m, e, i_rad, Ω_rad, ω_rad, f_rad)`, `times`
+has shape `(NT,)` in seconds, and `ecef_rotation` has shape `(NT, 3, 3)`.
+Each rotation is the official SatelliteToolbox TEME-to-PEF matrix for the
+corresponding time. All three arrays must already reside on the same backend.
+
+The output has shape `(N, NT, 3)` and contains ECEF positions in kilometres.
+Supported propagators are `:two_body`, `:j2`, and `:j4`.
+"""
+function independent_positions_gpu(
+    orbital_elements::AbstractMatrix{T},
+    times::AbstractVector{T},
+    ecef_rotation::AbstractArray{T,3};
+    propagator::Symbol = :two_body,
+) where T <: AbstractFloat
+    _validate_orbit_inputs(orbital_elements, times, ecef_rotation)
+    propagator_code = _propagator_code(propagator)
+    n_satellites = size(orbital_elements, 1)
+    n_times = length(times)
+    backend = get_backend(orbital_elements)
+
+    mean_motion = similar(orbital_elements, T, n_satellites)
+    raan_rate = similar(orbital_elements, T, n_satellites)
+    argp_rate = similar(orbital_elements, T, n_satellites)
+    initial_mean_anomaly = similar(orbital_elements, T, n_satellites)
+    positions = similar(orbital_elements, T, (n_satellites, n_times, 3))
+
+    _wait_event(_orbit_coefficients_kernel!(backend)(
+        mean_motion,
+        raan_rate,
+        argp_rate,
+        initial_mean_anomaly,
+        orbital_elements,
+        propagator_code;
+        ndrange=n_satellites,
+    ))
+    _wait_event(_orbit_positions_kernel!(backend)(
+        positions,
+        orbital_elements,
+        times,
+        ecef_rotation,
+        mean_motion,
+        raan_rate,
+        argp_rate,
+        initial_mean_anomaly,
+        n_times;
+        ndrange=n_satellites * n_times,
+    ))
+    return positions
 end
 
 end

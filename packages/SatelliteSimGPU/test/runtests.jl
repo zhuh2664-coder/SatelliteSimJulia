@@ -1,5 +1,6 @@
 using Test
 using Random
+using SHA
 using KernelAbstractions
 using SatelliteToolbox
 using SatelliteSimGPU
@@ -233,5 +234,123 @@ end
     )
     @test_throws ArgumentError evaluate_gsl_batch_gpu(
         positions, ground_ecef, zeros(Float64, 4, 2, 3),
+    )
+end
+
+include(joinpath(GOLDEN_DIR, "golden_orbit_reference.jl"))
+
+function random_orbital_elements(n_satellites, T)
+    elements = Matrix{T}(undef, n_satellites, 6)
+    for satellite_index in 1:n_satellites
+        phase = T(2π * (satellite_index - 1) / n_satellites)
+        elements[satellite_index, 1] =
+            T(6_378_137.0 + 500_000.0 + 2_000.0 * mod(satellite_index, 7))
+        elements[satellite_index, 2] =
+            T(0.0001 + 0.0008 * mod(satellite_index, 5) / 4)
+        elements[satellite_index, 3] =
+            T(deg2rad(45.0 + 35.0 * mod(satellite_index, 9) / 8))
+        elements[satellite_index, 4] = T(mod(phase * 3, 2π))
+        elements[satellite_index, 5] = T(mod(phase * 5 + 0.1, 2π))
+        elements[satellite_index, 6] = phase
+    end
+    return elements
+end
+
+function teme_to_pef_rotations(times, T)
+    rotations = Array{T}(undef, length(times), 3, 3)
+    for (time_index, elapsed_s) in pairs(times)
+        rotation = SatelliteToolbox.r_eci_to_ecef(
+            SatelliteToolbox.TEME(),
+            SatelliteToolbox.PEF(),
+            Float64(elapsed_s) / 86_400.0,
+        )
+        rotations[time_index, :, :] .= T.(rotation)
+    end
+    return rotations
+end
+
+@testset "independent_positions_gpu golden source" begin
+    source_path = joinpath(GOLDEN_DIR, "golden_orbit_source.jl")
+    @test bytes2hex(sha256(read(source_path))) ==
+        GoldenOrbitReference.SOURCE_SHA256
+end
+
+@testset "independent_positions_gpu CPU parity" begin
+    for propagator in (:two_body, :j2, :j4)
+        n_satellites = 24
+        times = collect(range(0.0, 5_400.0; length=61))
+        elements = random_orbital_elements(n_satellites, Float64)
+        rotations = teme_to_pef_rotations(times, Float64)
+
+        reference = GoldenOrbitReference.independent_positions(
+            elements,
+            times,
+            propagator,
+        )
+        candidate = independent_positions_gpu(
+            elements,
+            times,
+            rotations;
+            propagator=propagator,
+        )
+
+        @test isapprox(candidate, reference; rtol=1e-11, atol=1e-9)
+        absolute_error = maximum(abs.(candidate .- reference))
+        relative_error = maximum(
+            abs.(candidate .- reference) ./
+            max.(abs.(reference), eps(Float64)),
+        )
+        @info "orbit parity" propagator n_satellites n_times=length(times) absolute_error relative_error
+    end
+end
+
+@testset "independent_positions_gpu Float32 parity" begin
+    times64 = collect(range(0.0, 5_400.0; length=61))
+    elements64 = random_orbital_elements(24, Float64)
+    reference = GoldenOrbitReference.independent_positions(
+        elements64,
+        times64,
+        :j4,
+    )
+    elements32 = Float32.(elements64)
+    times32 = Float32.(times64)
+    rotations32 = teme_to_pef_rotations(times32, Float32)
+    candidate32 = independent_positions_gpu(
+        elements32,
+        times32,
+        rotations32;
+        propagator=:j4,
+    )
+
+    @test size(candidate32) == (24, 61, 3)
+    @test isapprox(candidate32, reference; rtol=2e-4, atol=0.1)
+end
+
+@testset "independent_positions_gpu validation" begin
+    elements = random_orbital_elements(2, Float64)
+    times = [0.0, 60.0]
+    rotations = teme_to_pef_rotations(times, Float64)
+    @test_throws ArgumentError independent_positions_gpu(
+        elements[:, 1:5],
+        times,
+        rotations,
+    )
+    @test_throws ArgumentError independent_positions_gpu(
+        elements,
+        times,
+        rotations[1:1, :, :],
+    )
+    @test_throws ArgumentError independent_positions_gpu(
+        elements,
+        times,
+        rotations;
+        propagator=:sgp4,
+    )
+    invalid_elements = copy(elements)
+    invalid_elements[1, 1] = -1.0
+    @test_throws ArgumentError independent_positions_gpu(
+        invalid_elements,
+        times,
+        rotations,
     )
 end
