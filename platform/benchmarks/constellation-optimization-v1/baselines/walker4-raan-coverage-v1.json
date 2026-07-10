@@ -1,0 +1,22 @@
+{
+  "benchmark_id": "satellitesim.constellation-optimization/v1",
+  "baseline_version": 1,
+  "scenario_id": "walker4-raan-coverage-v1",
+  "numerical_reference": {
+    "initial_loss": -0.03489635925158924,
+    "final_loss": -0.035134686822005705,
+    "improvement_percent": 0.6829582670737024,
+    "final_parameters_deg": [-0.29999713357478336, 179.7002431177428],
+    "trace_loss": [-0.03489635925158924, -0.034975839329830456, -0.0350552876984391]
+  },
+  "tolerances": {
+    "initial_loss_abs": 1.0e-10,
+    "final_loss_abs": 1.0e-8,
+    "improvement_percent_abs": 1.0e-6,
+    "final_parameters_deg_abs": 1.0e-6,
+    "trace_loss_abs": 1.0e-8
+  },
+  "requirements": {
+    "minimum_improvement_percent": 0.1
+  }
+}

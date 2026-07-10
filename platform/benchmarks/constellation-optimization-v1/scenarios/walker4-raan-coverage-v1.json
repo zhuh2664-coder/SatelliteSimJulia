@@ -1,0 +1,24 @@
+{
+  "benchmark_id": "satellitesim.constellation-optimization/v1",
+  "scenario_id": "walker4-raan-coverage-v1",
+  "constellation": {
+    "planes": 2,
+    "satellites_per_plane": 2,
+    "phasing": 1,
+    "altitude_km": 550.0,
+    "inclination_deg": 53.0
+  },
+  "coverage": {
+    "ground_latitudes": 3,
+    "ground_longitudes": 4,
+    "times_s": [0.0, 300.0, 600.0],
+    "minimum_elevation_deg": 10.0,
+    "softness_deg": 5.0,
+    "target_coverage_depth": 1.0
+  },
+  "optimizer": {
+    "name": "adam-enzyme",
+    "steps": 3,
+    "learning_rate": 0.1
+  }
+}

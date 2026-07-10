@@ -1,0 +1,19 @@
+name = "SatelliteSimPlatformScheduler"
+uuid = "b67ec32a-af87-4fe6-b461-c65fe00b3cba"
+version = "0.1.0"
+
+[deps]
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+SatelliteSimPlatformStorage = "b35ff6da-ef20-4246-8527-f3c478659baf"
+PlatformRunner = "c8302b0a-46a2-4f81-9ea9-cb0d56cb7a01"
+UUIDs = "cf7118a7-6976-5b1a-9a39-7adc72f591a4"
+
+[sources]
+SatelliteSimPlatformStorage = {path = "../storage"}
+PlatformRunner = {path = "../runner"}
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

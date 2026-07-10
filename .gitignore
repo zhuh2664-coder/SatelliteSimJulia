@@ -17,7 +17,7 @@ artifacts/
 *.dylib
 src/*/Manifest.toml
 packages/*/Manifest.toml
-platform/*/Manifest.toml
+platform/**/Manifest.toml
 
 # Visualization temp
 /frames*/

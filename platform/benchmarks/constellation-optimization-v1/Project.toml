@@ -1,0 +1,16 @@
+name = "SatelliteSimPlatformBenchmarks"
+uuid = "c5f96b18-c07c-4542-8fef-73f4ba68bc40"
+version = "0.1.0"
+
+[deps]
+JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
+SatelliteSimOpt = "6ed3806a-63e5-4264-b3e5-1647cc02f284"
+
+[sources]
+SatelliteSimOpt = {path = "../../../src/opt"}
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
