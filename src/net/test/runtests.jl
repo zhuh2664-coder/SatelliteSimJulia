@@ -1,10 +1,9 @@
 # src/net/test/runtests.jl — SatelliteSimNet 独立 smoke 测试
 #
 # 网络层：拓扑策略 + ISL 候选生成 + 路由（Dijkstra/ECMP/MinLoad/CGR）。
-# 依赖 Core。测试用已知小图验证距离矩阵，秒级完成。
+# 测试用已知小图验证距离矩阵，秒级完成。
 
 using SatelliteSimNet
-using SatelliteSimCore
 using Test
 
 @testset "SatelliteSimNet" begin

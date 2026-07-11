@@ -1,10 +1,9 @@
 # src/traffic/test/runtests.jl — SatelliteSimTraffic 独立 smoke 测试
 #
 # 流量层：需求模式 + AON 分配 + 时变需求 + 电池 SOC + 桥接 evaluate_traffic。
-# 依赖 Foundation/Link/Net/Core。测试最小场景验证类型与桥接函数存在，秒级完成。
+# 依赖 Foundation/Link/Net。测试最小场景验证类型与桥接函数存在，秒级完成。
 
 using SatelliteSimTraffic
-using SatelliteSimCore
 using Test
 
 @testset "SatelliteSimTraffic" begin

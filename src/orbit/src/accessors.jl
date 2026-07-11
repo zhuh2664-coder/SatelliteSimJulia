@@ -15,14 +15,14 @@ export position_at_instant, positions_at_last, satellite_positions, n_satellites
 
 位置矩阵中的卫星数量（第一维大小）。
 """
-n_satellites(positions::Array{Float64,3})::Int = size(positions, 1)
+n_satellites(positions::AbstractArray{<:Real,3})::Int = size(positions, 1)
 
 """
     n_timesteps(positions) -> Int
 
 位置矩阵中的时间步数（第二维大小）。
 """
-n_timesteps(positions::Array{Float64,3})::Int = size(positions, 2)
+n_timesteps(positions::AbstractArray{<:Real,3})::Int = size(positions, 2)
 
 """
     position_at_instant(positions, time_index) -> AbstractMatrix{Float64}
@@ -30,7 +30,7 @@ n_timesteps(positions::Array{Float64,3})::Int = size(positions, 2)
 取某个时刻所有卫星的位置（N×3 矩阵）。
 替代难读的 `positions[:, time_index, :]`。
 """
-function position_at_instant(positions::Array{Float64,3}, time_index::Int)::AbstractMatrix{Float64}
+function position_at_instant(positions::AbstractArray{<:Real,3}, time_index::Int)::AbstractMatrix{<:Real}
     return @view positions[:, time_index, :]
 end
 
@@ -40,7 +40,7 @@ end
 取最后一步所有卫星的位置（N×3 矩阵）。
 替代反复出现的 `positions[:, end, :]`。
 """
-positions_at_last(positions::Array{Float64,3})::AbstractMatrix{Float64} = position_at_instant(positions, size(positions, 2))
+positions_at_last(positions::AbstractArray{<:Real,3})::AbstractMatrix{<:Real} = position_at_instant(positions, size(positions, 2))
 
 """
     satellite_positions(positions, sat_index) -> AbstractMatrix{Float64}
@@ -48,6 +48,6 @@ positions_at_last(positions::Array{Float64,3})::AbstractMatrix{Float64} = positi
 取某颗卫星在所有时间步的位置（T×3 矩阵）。
 替代 `positions[sat_index, :, :]`——命名明确"这是单颗卫星的轨迹"。
 """
-function satellite_positions(positions::Array{Float64,3}, sat_index::Int)::AbstractMatrix{Float64}
+function satellite_positions(positions::AbstractArray{<:Real,3}, sat_index::Int)::AbstractMatrix{<:Real}
     return @view positions[sat_index, :, :]
 end

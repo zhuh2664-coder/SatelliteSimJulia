@@ -48,7 +48,9 @@ julia --project=. test/runtests_current.jl
 using SatelliteSimJulia
 
 run_examples()                  # 跑 3 个预编排示例（覆盖/路由/全套评估）
-agent_repl(LLMProvider())       # 启动 AI 仿真助手 REPL（需配 DEEPSEEK_API_KEY）
+# AI 控制面是显式选择的 Lab 包：
+using SatelliteSimLab
+agent_repl(LLMProvider())       # 在线 provider 需配置对应 API key
 ```
 
 ## 三层架构
@@ -75,7 +77,7 @@ agent_repl(LLMProvider())       # 启动 AI 仿真助手 REPL（需配 DEEPSEEK_
 
 ## 包结构
 
-项目由 `SatelliteSimJulia` 这个聚合包统一 re-export，普通用户 `using SatelliteSimJulia` 即可拿到全部符号。底层按依赖方向拆成 9 个子包：
+项目由 `SatelliteSimJulia` 提供日常仿真门面，并暂时保留 Core/Net/Traffic/Lab 的兼容 re-export；Opt、Security、Viz、GMAT 等可选重依赖不再由根包隐式导出，需要显式 `using` 对应包/环境。底层按依赖方向拆分为稳定领域包：
 
 | 包 (`src/<dir>`) | 领域 | 一句话说明 |
 |---|---|---|
@@ -129,13 +131,19 @@ println("连通: $(round(result.network.connectivity_ratio*100, digits=1))%")
 - [开发者指南](docs/DEVELOPER_GUIDE.md) — 怎么加新拓扑 / 路由 / 传播器 / AI 工具 / 实验
 - [平台状态报告](docs/PLATFORM_STATUS_REPORT.md) — 当前能力边界与路线图
 
-## 测试
+## 测试与验证
 
 ```bash
-julia --project=. -e 'using Pkg; Pkg.test()'
-# 或直接跑
-julia --project=. test/runtests.jl
+# 默认：边界、主链领域包、根回归、Lab、离线后端
+julia --project=. scripts/test_all.jl
+
+# 可选：Opt / Security；Viz / GMAT / JuliaSpace 另有独立开关
+SATSIM_RUN_OPTIONAL=1 julia --project=. scripts/test_all.jl
 ```
+
+本轮本地验收结果：默认统一入口 `14 passed, 0 failed, 5 skipped`；根当前回归 `200/200`；`demo()` 七个步骤全部通过。三份 GitHub Actions 工作流已通过 YAML 静态解析和本地命令验证，但尚未在 GitHub 托管 runner 上实跑。
+
+完整现状与剩余缺口见 [`CURRENT.md`](CURRENT.md)。
 
 ## 许可
 

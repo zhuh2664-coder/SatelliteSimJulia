@@ -47,3 +47,5 @@ const RUN_SLOW = get(ENV, "SATSIM_RUN_SLOW", "0") == "1"
         end
     end
 end
+
+include(joinpath(@__DIR__, "..", "..", "..", "test", "test_opt_routing.jl"))
