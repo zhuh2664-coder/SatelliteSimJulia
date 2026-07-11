@@ -1,0 +1,9 @@
+# 日常主链环境：伞包 + Lab，不含 Opt/Viz/GMAT/Security。
+[deps]
+SatelliteSimJulia = "e31c032d-6d32-4f65-b334-1daae2022f3d"
+
+[sources]
+SatelliteSimJulia = {path = "../.."}
+
+[compat]
+julia = "1.12"

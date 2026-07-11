@@ -26,7 +26,6 @@ using SatelliteSimLink
 using SatelliteSimNet
 using SatelliteSimTraffic
 using SatelliteSimMetrics
-using SatelliteSimCore
 
 # 子文件按依赖顺序加载
 include("types.jl")

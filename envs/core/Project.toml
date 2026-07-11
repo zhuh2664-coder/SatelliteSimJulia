@@ -1,5 +1,5 @@
 # 仿真主链轻量环境（Phase 0）
-# 目标: Manifest < 80 包，冷启动 < 15s
+# 目标: Manifest 约 130–140 包；作为主链 CI 冒烟环境
 # 不含: Flux, Lux, Zygote, Enzyme, CairoMakie, GeoMakie, OrdinaryDiffEq
 # 注意: 纯环境文件，不含 name/uuid/version（否则 Julia 会当包处理导致 precompile 错误）
 

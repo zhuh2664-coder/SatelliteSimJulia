@@ -1,0 +1,9 @@
+# 攻防实验独立环境。
+[deps]
+SatelliteSimSecurity = "2f9bb05b-df41-45cf-bf58-b6d7827d3b2d"
+
+[sources]
+SatelliteSimSecurity = {path = "../../src/security"}
+
+[compat]
+julia = "1.12"

@@ -9,9 +9,9 @@
 #   MU_KM3_S2, R_EARTH_KM, OMEGA_EARTH
 # =============================================================================
 
-const MU_KM3_S2  = SatelliteSimCore.MU_KM3_S2      # → Core/L0
-const R_EARTH_KM = SatelliteSimCore.WGS84_EQUATORIAL_RADIUS_KM  # → Core/L0
-const OMEGA_EARTH = SatelliteSimCore.OMEGA_EARTH          # → Core/L0
+const MU_KM3_S2  = SatelliteSimFoundation.MU_KM3_S2      # → Foundation/L0
+const R_EARTH_KM = SatelliteSimFoundation.WGS84_EQUATORIAL_RADIUS_KM  # → Foundation/L0
+const OMEGA_EARTH = SatelliteSimFoundation.OMEGA_EARTH          # → Foundation/L0
 
 """
     satellite_ecef(raan_rad, ma_rad, inc_rad, alt_km, t_sec) -> (x, y, z)

@@ -1,0 +1,7 @@
+# 已提交环境的依赖数量基线。Manifest 未存在的环境由检查器跳过。
+max_growth_percent = 20.0
+
+[environments]
+root = {path = "Manifest.toml", packages = 154}
+core = {path = "envs/core/Manifest.toml", packages = 138}
+backends_stub = {path = "envs/backends-stub/Manifest.toml", packages = 12}

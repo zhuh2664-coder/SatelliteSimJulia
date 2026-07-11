@@ -1,0 +1,11 @@
+# 可视化独立环境；Makie 栈不得回流根环境。
+[deps]
+SatelliteSimJulia = "e31c032d-6d32-4f65-b334-1daae2022f3d"
+SatelliteSimViz = "ff7a557c-e75a-48d5-b139-702143da64b9"
+
+[sources]
+SatelliteSimJulia = {path = "../.."}
+SatelliteSimViz = {path = "../../src/viz"}
+
+[compat]
+julia = "1.12"
