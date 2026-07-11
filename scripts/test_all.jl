@@ -7,7 +7,7 @@
 #   SATSIM_RUN_OPTIONAL=1             Run Opt and Security package tests
 #   SATSIM_RUN_VIZ=1                  Instantiate/load envs/viz
 #   SATSIM_RUN_GMAT=1                 Test GMAT package in envs/gmat
-#   SATSIM_RUN_NIGHTLY=1              Test JuliaSpace backend adapter
+#   SATSIM_RUN_NIGHTLY=1              Test JuliaSpace adapter + backend integration/baseline
 #   SATSIM_VERBOSE=1                  Print a longer failure tail
 
 using Printf
@@ -40,7 +40,10 @@ end
 pkgtest(path::String) = `julia --project=$(joinpath(ROOT, path)) -e "using Pkg; Pkg.test(; coverage=false)"`
 
 function load_smoke(project::String, package::String)
-    code = "using Pkg; Pkg.instantiate(); Base.eval(Main, Meta.parse(\"using $package\"))"
+    # Optional environments may keep an ignored local Manifest.toml. Resolve it
+    # before loading so newly added path dependencies do not leave the smoke
+    # test using a stale dependency graph.
+    code = "using Pkg; Pkg.resolve(); Pkg.instantiate(); Base.eval(Main, Meta.parse(\"using $package\"))"
     return `julia --project=$(joinpath(ROOT, project)) -e $code`
 end
 
@@ -69,6 +72,15 @@ function build_targets()
     push!(targets, target("viz", load_smoke(joinpath("envs", "viz"), "SatelliteSimViz"); enabled=RUN_VIZ, reason="set SATSIM_RUN_VIZ=1"))
     push!(targets, target("gmat", pkgtest(joinpath("src", "gmat")); enabled=RUN_GMAT, reason="set SATSIM_RUN_GMAT=1"))
     push!(targets, target("juliaspace-backend", pkgtest(joinpath("packages", "SatelliteSimJuliaSpaceBackend")); enabled=RUN_NIGHTLY, reason="set SATSIM_RUN_NIGHTLY=1"))
+    backend_project = joinpath(ROOT, "envs", "backends-integration")
+    backend_e2e_path = joinpath(ROOT, "test", "backends", "test_backend_end_to_end.jl")
+    backend_e2e_code = "using Pkg; Pkg.resolve(); Pkg.instantiate(); include($(repr(backend_e2e_path)))"
+    backend_e2e = `julia --project=$backend_project -e $backend_e2e_code`
+    push!(targets, target("backend-e2e", backend_e2e; enabled=RUN_NIGHTLY, reason="set SATSIM_RUN_NIGHTLY=1"))
+    backend_benchmark_path = joinpath(ROOT, "scripts", "benchmark_orbit_backends.jl")
+    backend_benchmark_code = "using Pkg; Pkg.resolve(); Pkg.instantiate(); include($(repr(backend_benchmark_path))); exit(main([\"--smoke\"]))"
+    backend_benchmark = `julia --project=$backend_project -e $backend_benchmark_code`
+    push!(targets, target("backend-benchmark", backend_benchmark; enabled=RUN_NIGHTLY, reason="set SATSIM_RUN_NIGHTLY=1"))
     return targets
 end
 
