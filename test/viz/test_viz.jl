@@ -1,9 +1,8 @@
 # ===== Viz 单元测试 =====
 
-using SatelliteSimJulia
 using Test
 
-Viz = SatelliteSimJulia.SatelliteSimViz
+Viz = SatelliteSimViz
 # Makie 仅在 SatelliteSimViz 包内是显式依赖；顶层测试环境没有 Makie，
 # 因此通过 Viz 模块的命名空间访问它。
 const Makie = Viz.Makie

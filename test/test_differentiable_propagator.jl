@@ -5,7 +5,8 @@ using Test
 import ForwardDiff
 import SatelliteToolboxSgp4
 using LinearAlgebra: dot, norm
-using SatelliteSimJulia: propagate_with_gradient, constellation_gradient, smooth_step, smooth_abs
+# 可微传播属于 SatelliteSimOpt；不从日常仿真伞包隐式导入。
+using SatelliteSimOpt: propagate_with_gradient, constellation_gradient, smooth_step, smooth_abs
 
 const D2R = π / 180
 const REV_DAY_TO_RAD_MIN = 2π / (24 * 60)

@@ -105,10 +105,10 @@ end
 批量评估多条 ISL。若有速度矩阵则自动启用激光终端检查。
 """
 function evaluate_isl_batch(
-    pos_matrix::Matrix{Float64},
+    pos_matrix::AbstractMatrix{<:Real},
     isl_pairs::Vector{Tuple{Int,Int}};
     constraints::PhysicalConstraints=LEO_DEFAULTS,
-    vel_matrix::Union{Matrix{Float64},Nothing}=nothing,
+    vel_matrix::Union{AbstractMatrix{<:Real},Nothing}=nothing,
     time_horizon::Float64=300.0,
 )
     results = []
@@ -166,8 +166,8 @@ end
 批量评估 N 颗卫星对 M 个地面站的 GSL。
 """
 function evaluate_gsl_batch(
-    pos_matrix::Matrix{Float64},
-    gs_stations::Vector{NTuple{3,Float64}};
+    pos_matrix::AbstractMatrix{<:Real},
+    gs_stations::AbstractVector{<:NTuple{3,<:Real}};
     constraints::PhysicalConstraints=LEO_DEFAULTS,
 )
     N = size(pos_matrix, 1)

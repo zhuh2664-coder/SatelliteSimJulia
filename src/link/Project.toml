@@ -10,6 +10,10 @@ SatelliteToolbox = "6ac157d9-b43d-51bb-8fab-48bf53814f4a"
 Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SatelliteSimFoundation = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
+[sources]
+SatelliteSimOrbit = {path = "../orbit"}
+SatelliteSimFoundation = {path = "../foundation"}
+
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 

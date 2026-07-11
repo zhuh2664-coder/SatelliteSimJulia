@@ -8,6 +8,14 @@
 push!(LOAD_PATH, "@stdlib")
 
 using SatelliteSimJulia
+using SatelliteSimFoundation
+using SatelliteSimOrbit
+using SatelliteSimLink
+using SatelliteSimNet
+using SatelliteSimTraffic
+using SatelliteSimCore
+using SatelliteSimLab
+using SatelliteSimViz
 using Dates
 using Test
 
@@ -28,8 +36,8 @@ include(joinpath(@__DIR__, "test_helpers.jl"))
 @testset "SatelliteSimJulia current test suite" begin
     @testset "Foundation" begin
         # 时间、坐标、实体等基础类型已有 smoke 覆盖；后续拆分为独立文件
-        @test SatelliteSimJulia.SimulationEpoch isa DataType
-        @test SatelliteSimJulia.CartesianState isa DataType
+@test SatelliteSimFoundation.SimulationEpoch isa DataType
+        @test SatelliteSimFoundation.CartesianState isa DataType
         include(joinpath(@__DIR__, "foundation", "test_time_grid.jl"))
     end
 

@@ -5,6 +5,7 @@
 push!(LOAD_PATH, "@stdlib")
 
 using SatelliteSimJulia
+using SatelliteSimCore
 using Test
 
 const HAS_GLMAKIE = try
@@ -17,18 +18,25 @@ end
 const RUN_LEGACY_TESTS = get(ENV, "SATSIM_RUN_LEGACY", "0") == "1"
 const RUN_CURRENT_SUITE = get(ENV, "SATSIM_RUN_CURRENT", "0") == "1"
 
-@testset "SatelliteSimJulia bootstrap" begin
-    @test isdefined(SatelliteSimJulia, :supports_orbit_elements)
-    @test isdefined(SatelliteSimJulia, :propagate_satellite)
-    @test isdefined(SatelliteSimJulia, :EarthFixedNodePropagator)
-    @test isdefined(SatelliteSimJulia, :EarthFixedOrbitElementSet)
-    @test isdefined(SatelliteSimJulia, :ecef_to_geodetic)
+@testset "SatelliteSimJulia root facade" begin
+    for name in (:satnet, :demo, :run_examples, :ExperimentConfig, :ExperimentResult,
+                 :run_experiment, :study, :walker, :run_study, :assess_coverage,
+                 :assess_routing, :full_constellation_assessment)
+        @test isdefined(SatelliteSimJulia, name)
+    end
+
+    # 交互适配层与底层领域实现必须从相应子包显式导入。
+    for name in (:agent_repl, :LLMProvider, :GridPlusStrategy, :generate_walker_delta,
+                 :compute_latency)
+        @test !isdefined(SatelliteSimJulia, name)
+    end
+
     @test AbstractPropagator isa DataType
     @test AbstractOrbitElementSet isa DataType
     @test AbstractConstellationBuilder isa DataType
 
     struct FixturePropagator <: AbstractPropagator end
-    SatelliteSimJulia.supports_orbit_elements(
+    SatelliteSimCore.supports_orbit_elements(
         ::FixturePropagator,
         ::DesignOrbitElementSet,
     ) = true
@@ -42,6 +50,7 @@ include(joinpath(@__DIR__, "test_intent_closure.jl"))
 include(joinpath(@__DIR__, "test_precomposed_fixes.jl"))
 include(joinpath(@__DIR__, "test_routing_graph.jl"))
 include(joinpath(@__DIR__, "test_access_bounds.jl"))
+include(joinpath(@__DIR__, "test_package_boundaries.jl"))
 include(joinpath(@__DIR__, "test_opt_routing.jl"))
 include(joinpath(@__DIR__, "test_security.jl"))
 include(joinpath(@__DIR__, "test_security_p1.jl"))

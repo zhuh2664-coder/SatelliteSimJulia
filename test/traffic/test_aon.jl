@@ -1,9 +1,8 @@
 # test/traffic/test_aon.jl — AON 流量分配回归测试
 
-using SatelliteSimJulia
 using Test
 
-const TRAFFIC_AON_LINK = SatelliteSimJulia.SatelliteSimCore.SatelliteSimLink
+const TRAFFIC_AON_LINK = SatelliteSimLink
 
 const TRAFFIC_AON_ATOL = 1e-9
 

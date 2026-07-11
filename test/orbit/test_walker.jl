@@ -1,6 +1,6 @@
 # test/orbit/test_walker.jl — Walker delta 星座生成测试
 
-using SatelliteSimJulia
+using SatelliteSimCore
 using Test
 
 @testset "Walker delta generation" begin

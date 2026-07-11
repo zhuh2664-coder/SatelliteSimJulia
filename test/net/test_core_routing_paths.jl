@@ -1,9 +1,8 @@
 # test/net/test_core_routing_paths.jl — 接入决策与端到端路由回归测试
 
-using SatelliteSimJulia
 using Test
 
-const CORE_ROUTING_LINK = SatelliteSimJulia.SatelliteSimCore.SatelliteSimLink
+const CORE_ROUTING_LINK = SatelliteSimLink
 const CORE_ROUTING_ATOL = 1e-9
 
 core_routing_grid() = SimulationTimeGrid(default_starlink_simulation_epoch(), 60, 60)

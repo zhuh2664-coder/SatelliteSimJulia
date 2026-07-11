@@ -1,10 +1,9 @@
 # test/foundation/test_time_grid.jl — 时间网格边界回归测试
 
-using SatelliteSimJulia
 using Dates
 using Test
 
-const FOUNDATION_TIME = SatelliteSimJulia.SatelliteSimCore.SatelliteSimFoundation
+const FOUNDATION_TIME = SatelliteSimFoundation
 
 @testset "SimulationTimeGrid includes exact and non-divisible endpoints" begin
     epoch = default_starlink_simulation_epoch()

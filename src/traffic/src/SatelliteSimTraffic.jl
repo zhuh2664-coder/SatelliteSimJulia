@@ -6,7 +6,6 @@ module SatelliteSimTraffic
 
 using SatelliteSimFoundation
 using SatelliteSimLink
-using SatelliteSimCore
 using SatelliteSimNet
 
 include("aon.jl")

@@ -2,7 +2,8 @@
 #
 # walker → propagate → topology → ISL → routing → GSL
 
-using SatelliteSimJulia
+using SatelliteSimCore
+using SatelliteSimNet
 using Test
 
 @testset "End-to-end Walker → routing pipeline" begin
