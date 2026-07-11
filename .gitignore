@@ -71,10 +71,19 @@ texput.log
 
 Manifest.toml.bak
 
+# Local AI/runtime configuration and logs (never versioned)
+/codex_config_backup.toml
+/codex_cpa_config.toml
+/cpa_new_config_final.yaml
+/reasonix.toml
+/switch_codex_to_cpa.command
+/tmp_cpa_log*.txt
+
 # Active architecture truth documents (exceptions to the broad *.md rule above)
 !/CURRENT.md
 !/AGENTS.md
 !/重构计划.md
+!/DEBUG_REVIEW_2026-07-09.md
 
 # Versioned architecture design truth under otherwise-local docs/
 !/docs/
@@ -89,3 +98,8 @@ Manifest.toml.bak
 !/platform/README.md
 !/platform/*/
 !/platform/*/README.md
+
+# Versioned validation evidence requested for the backend-integration acceptance audit
+!/docs/audits/
+/docs/audits/*
+!/docs/audits/2026-07-09_backend_integration_validation.md
