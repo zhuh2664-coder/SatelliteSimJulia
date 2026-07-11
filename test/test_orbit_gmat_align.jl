@@ -1,7 +1,7 @@
 # Phase 4 orbit alignment: GMAT Kepler must match Orbit TwoBody with true RV
 
 using Test
-using SatelliteSimJulia
+using SatelliteSimOrbit
 using GMAT
 using LinearAlgebra
 using Statistics

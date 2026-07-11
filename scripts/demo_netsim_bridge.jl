@@ -3,7 +3,10 @@
 # Usage (from repo root):
 #   julia --project=. scripts/demo_netsim_bridge.jl
 
-using SatelliteSimJulia
+using SatelliteSimLink
+using SatelliteSimNet
+using SatelliteSimNetSim
+using SatelliteSimOrbit
 using Printf
 
 println("【解析层】Iridium 66/6 → ISL → Dijkstra 路径")

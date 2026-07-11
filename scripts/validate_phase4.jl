@@ -8,7 +8,10 @@
 # Usage (from repo root):
 #   julia --project=. scripts/validate_phase4.jl
 
-using SatelliteSimJulia
+using SatelliteSimLink
+using SatelliteSimNet
+using SatelliteSimNetSim
+using SatelliteSimOrbit
 using GMAT
 using LinearAlgebra
 using Printf
