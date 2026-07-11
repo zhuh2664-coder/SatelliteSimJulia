@@ -1,7 +1,7 @@
 # ===== Opt 路由数值修复（C5 aon_throughput）=====
 
 using Test
-using SatelliteSimJulia: aon_throughput
+using SatelliteSimOpt: aon_throughput
 
 @testset "aon_throughput link_load" begin
     # 三角链 1-2-3，容量 1.0，三条 OD 各走最短路径 → 边 (1,2) 负载 2，(2,3) 负载 2
