@@ -1,16 +1,17 @@
 # SatelliteSimJulia Platform Alpha
 
-> **当前状态（2026-07-09）：已实现本地 Runner、可替换的本地对象存储、内存 fake
-> scheduler 和第一个可复现优化 benchmark。**
+> **当前状态（2026-07-09）：已实现本地 Runner、对象存储/本地 fake scheduler、固定优化 benchmark、
+> 受限 Kubernetes Job renderer/fake client，以及本地 identity + quota 提交控制面。**
 >
-> 这仍然**不是**已上线的公共云服务：没有 PostgreSQL、S3/MinIO、HTTP API、OIDC、配额、
-> Kubernetes 控制器或公开注册入口。任何未来远程服务只能运输既有的 schema、作业和 artifact
-> 契约，不能改写仿真语义，也不能把云依赖回灌进主仿真链。
+> 这仍然**不是**已上线的公共云服务：没有 PostgreSQL、S3/MinIO、HTTP API、真实 OIDC/JWKS 验签、
+> 分布式 quota lease、Kubernetes SDK/client、真实集群运行证据或公开注册入口。任何未来远程服务只能运输既有的
+> schema、作业和 artifact 契约，不能改写仿真语义，也不能把云依赖回灌进主仿真链。
 
 Platform Alpha 为未来面向研究团队的 API/CLI-first 仿真平台定义可在本地独立验证的最小垂直切片：
 
 ```text
 严格 JSON 配置 → 本地运行 → SHA-256 artifact → Storage 接口 → Fake Scheduler
+            ↘ 认证/配额控制面 → 受限 Kubernetes Job renderer/fake client
                                      ↘ 固定优化基准 + source-controlled baseline
 ```
 
@@ -23,6 +24,8 @@ platform/
 ├── runner/                                            # local execution + artifact producer
 ├── storage/                                           # AbstractExperimentStorage + local filesystem adapter
 ├── scheduler/                                         # AbstractExperimentScheduler + local fake implementation
+├── kubernetes/                                        # restricted batch/v1 Job renderer + fake client
+├── control/                                           # identity/quota admission + tenant submission composition
 └── benchmarks/constellation-optimization-v1/          # fixed scenario + baseline + verifier
 ```
 
@@ -67,6 +70,23 @@ submit! / run_next! / run_all! / get_job / list_jobs
 `artifacts.index.json` 中的 SHA-256，再把作业标记为 `:succeeded` 或 `:failed`。它没有 Kubernetes、消息队列、数据库
 或网络依赖；因此是未来 Job renderer / queue adapter 的行为参考，而不是云调度的伪宣称。
 
+### Kubernetes：受限 Job 渲染，不携带任意 PodSpec
+
+`SatelliteSimPlatformKubernetes` 是 provider/client 无关的 Job 契约。`KubernetesJobSpec` 仅接收明确的 image、
+namespace、service account、Storage config key/output prefix、CPU/memory、TTL/backoff 和 allowlisted metadata；
+`render_job` 确定性生成 `batch/v1 Job` 字典。渲染结果固定非 root、只读根文件系统、禁用 privilege escalation、
+禁用 service-account token 自动挂载，不允许 caller 注入 PodSpec、volume、host network、command/args 或任意 env。
+
+`FakeKubernetesJobClient` 只服务本地测试；真实 client 的凭据、TLS、RBAC 和 cluster endpoint 必须由部署层实现，
+不得加入 Runner、Storage、Scheduler 或仿真主链。
+
+### Control：认证/配额 admission，而非伪装生产身份系统
+
+`SatelliteSimPlatformControl` 在提交边缘组合 `AbstractIdentityVerifier`、`AbstractQuotaStore`、Storage 和 Job renderer。
+它先用既有 Runner schema 验证配置，再以 tenant 为命名空间预留并发/CPU/memory/每日 job/声明 artifact bytes，
+写入 `tenants/<tenant>/...` objects，最后提交受限 Job。`StaticIdentityVerifier` 与 `InMemoryQuotaStore` 仅用于本地测试；
+它们不会保存 API key，也不声称可替代 OIDC、JWKS 验签或分布式 lease。terminal/cancel 状态同步后会释放 quota reservation。
+
 ### Benchmark：公开、固定、可独立复跑
 
 [`benchmarks/constellation-optimization-v1`](benchmarks/constellation-optimization-v1/) 定义
@@ -110,8 +130,11 @@ julia --project=platform/benchmarks/constellation-optimization-v1 \
 julia --project=platform/runner -e 'using Pkg; Pkg.test(; coverage=false)'
 julia --project=platform/storage -e 'using Pkg; Pkg.test(; coverage=false)'
 julia --project=platform/scheduler -e 'using Pkg; Pkg.test(; coverage=false)'
+julia --project=platform/kubernetes -e 'using Pkg; Pkg.test(; coverage=false)'
+julia --project=platform/control -e 'using Pkg; Pkg.test(; coverage=false)'
 julia --project=platform/benchmarks/constellation-optimization-v1 -e 'using Pkg; Pkg.test(; coverage=false)'
 
+# 该 gate 也检查 Runner/Storage/Scheduler/Kubernetes/Control/Benchmark 的本地依赖方向和 [sources]
 julia scripts/check_dependency_boundaries.jl
 julia scripts/check_manifest_baseline.jl
 ```
@@ -122,8 +145,8 @@ julia scripts/check_manifest_baseline.jl
 ## 明确尚未实施
 
 1. 存储适配器：S3/MinIO、保留策略、跨区域复制、数据库元数据索引。
-2. 远程调度：队列、Kubernetes Job renderer/controller、取消/重试/幂等语义和资源隔离。
-3. 面向公众的服务：`validate` / `submit` / `status` / `download` / `reproduce` HTTP API、OIDC、组织与配额。
+2. 远程调度：真实 Kubernetes client/controller、队列、真实集群取消/重试/幂等、RBAC/NetworkPolicy 与资源隔离证据。
+3. 面向公众的服务：`validate` / `submit` / `status` / `download` / `reproduce` HTTP API、真实 OIDC、组织、审计和持久化配额。
 4. Benchmark 规模化：多情景、独立参考物理实现、黄金数据、性能历史与抗噪回归判定。
 
 在这些能力及远程运行证据出现前，不得将 Platform Alpha 描述为可公开注册、云端提交任务或生产级多租户系统。

@@ -9,6 +9,8 @@ const LOCAL_PACKAGES = Set([
     "SatelliteSimCore", "SatelliteSimLab", "SatelliteSimSecurity",
     "SatelliteSimOpt", "GMAT",
     "SatelliteSimBackends", "SatelliteSimStubBackend", "SatelliteSimJuliaSpaceBackend",
+    "PlatformRunner", "SatelliteSimPlatformStorage", "SatelliteSimPlatformScheduler",
+    "SatelliteSimPlatformKubernetes", "SatelliteSimPlatformControl", "SatelliteSimPlatformBenchmarks",
 ])
 
 const PACKAGE_PROJECTS = Dict(
@@ -26,6 +28,12 @@ const PACKAGE_PROJECTS = Dict(
     "SatelliteSimBackends" => "packages/SatelliteSimBackends",
     "SatelliteSimStubBackend" => "packages/SatelliteSimStubBackend",
     "SatelliteSimJuliaSpaceBackend" => "packages/SatelliteSimJuliaSpaceBackend",
+    "PlatformRunner" => "platform/runner",
+    "SatelliteSimPlatformStorage" => "platform/storage",
+    "SatelliteSimPlatformScheduler" => "platform/scheduler",
+    "SatelliteSimPlatformKubernetes" => "platform/kubernetes",
+    "SatelliteSimPlatformControl" => "platform/control",
+    "SatelliteSimPlatformBenchmarks" => "platform/benchmarks/constellation-optimization-v1",
 )
 
 const ALLOWED_LOCAL_DEPS = Dict(
@@ -52,6 +60,14 @@ const ALLOWED_LOCAL_DEPS = Dict(
     "SatelliteSimBackends" => Set{String}(),
     "SatelliteSimStubBackend" => Set(["SatelliteSimBackends"]),
     "SatelliteSimJuliaSpaceBackend" => Set(["SatelliteSimBackends", "SatelliteSimOrbit"]),
+    "PlatformRunner" => Set(["SatelliteSimBackends", "SatelliteSimLab"]),
+    "SatelliteSimPlatformStorage" => Set{String}(),
+    "SatelliteSimPlatformScheduler" => Set(["SatelliteSimPlatformStorage", "PlatformRunner"]),
+    "SatelliteSimPlatformKubernetes" => Set{String}(),
+    "SatelliteSimPlatformControl" => Set([
+        "PlatformRunner", "SatelliteSimPlatformStorage", "SatelliteSimPlatformKubernetes",
+    ]),
+    "SatelliteSimPlatformBenchmarks" => Set(["SatelliteSimOpt"]),
 )
 
 failures = String[]
