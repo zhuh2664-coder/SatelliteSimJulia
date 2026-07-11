@@ -75,7 +75,7 @@ agent_repl(LLMProvider())       # 启动 AI 仿真助手 REPL（需配 DEEPSEEK_
 
 ## 包结构
 
-项目由 `SatelliteSimJulia` 这个聚合包统一 re-export，普通用户 `using SatelliteSimJulia` 即可拿到全部符号。底层按依赖方向拆成 9 个子包：
+项目由 `SatelliteSimJulia` 这个聚合包统一 re-export，普通用户 `using SatelliteSimJulia` 即可拿到全部符号。底层按依赖方向拆成 10 个子包：
 
 | 包 (`src/<dir>`) | 领域 | 一句话说明 |
 |---|---|---|
@@ -83,6 +83,7 @@ agent_repl(LLMProvider())       # 启动 AI 仿真助手 REPL（需配 DEEPSEEK_
 | `orbit` | Orbit | Walker 星座生成、二体/J2/J4/SGP4 传播、星历容器、TLE 数据源 |
 | `link` | Link | ISL/GSL 物理链路评估（距离/LOS/仰角/方位/时延）、容量模型、约束 |
 | `net` | Net | ISL 拓扑策略（Grid+/T/Honeycomb/Ring/...）、路由（Dijkstra/ECMP/MinLoad）、接入决策 |
+| `netsim` | NetSim | 分组级离散事件仿真：队列、传输协议、DTN、监控与双保真验证 |
 | `metrics` | Metrics | 覆盖率、时延、网络指标、链路利用率、图论分析（介数/PageRank/Fiedler）、网络容量 |
 | `traffic` | Traffic | AoN 流量分配：demand → RoutePath → ISL/GSL 链路负载样本 |
 | `opt` | Opt | 可微 J2 传播、软 ISL/覆盖、端到端梯度、Adam、`optimize_coverage` 覆盖优化 driver |
