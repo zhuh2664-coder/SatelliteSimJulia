@@ -42,6 +42,7 @@ include(joinpath(@__DIR__, "test_intent_closure.jl"))
 include(joinpath(@__DIR__, "test_precomposed_fixes.jl"))
 include(joinpath(@__DIR__, "test_routing_graph.jl"))
 include(joinpath(@__DIR__, "test_access_bounds.jl"))
+include(joinpath(@__DIR__, "test_netsim.jl"))
 
 if RUN_CURRENT_SUITE
     @info "SATSIM_RUN_CURRENT=1：运行 runtests_current.jl"

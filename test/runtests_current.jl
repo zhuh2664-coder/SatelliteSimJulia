@@ -36,6 +36,7 @@ include(joinpath(@__DIR__, "test_helpers.jl"))
     @testset "Orbit" begin
         include(joinpath(@__DIR__, "orbit", "test_walker.jl"))
         include(joinpath(@__DIR__, "orbit", "test_ephemeris.jl"))
+        include(joinpath(@__DIR__, "test_orbit_gmat_align.jl"))
     end
 
     @testset "Link" begin
@@ -49,6 +50,10 @@ include(joinpath(@__DIR__, "test_helpers.jl"))
         include(joinpath(@__DIR__, "net", "test_routing.jl"))
         include(joinpath(@__DIR__, "net", "test_core_routing_paths.jl"))
         include(joinpath(@__DIR__, "test_cgr.jl"))
+    end
+
+    @testset "NetSim" begin
+        include(joinpath(@__DIR__, "test_netsim.jl"))
     end
 
     @testset "Traffic" begin
