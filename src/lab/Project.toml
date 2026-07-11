@@ -21,6 +21,15 @@ path = "../net"
 [sources.SatelliteSimCore]
 path = "../core"
 
+[sources.SatelliteSimLink]
+path = "../link"
+
+[sources.SatelliteSimOrbit]
+path = "../orbit"
+
+[sources.SatelliteSimMetrics]
+path = "../metrics"
+
 [sources.SatelliteSimTraffic]
 path = "../traffic"
 
