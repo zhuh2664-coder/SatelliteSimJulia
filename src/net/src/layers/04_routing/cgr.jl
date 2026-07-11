@@ -110,12 +110,16 @@ end
 从 N×T×3 位置矩阵构建 ISL 接触计划。
 """
 function build_contact_plan_from_positions!(cp::CGRContactPlan,
-                                            pos::AbstractArray{Float64,3},
+                                            pos::AbstractArray{<:Real,3},
                                             node_ids::Vector{UInt32};
                                             max_dist::Real=5000.0,
                                             t_start::Real=0.0,
                                             dt::Real=1.0)
     n, T = size(pos, 1), size(pos, 2)
+    size(pos, 3) == 3 || throw(ArgumentError("pos must have xyz size 3"))
+    length(node_ids) == n || throw(ArgumentError("node_ids length must match pos satellite dimension"))
+    dt > 0 || throw(ArgumentError("dt must be positive"))
+    max_dist >= 0 || throw(ArgumentError("max_dist must be non-negative"))
     for t_idx in 1:T
         sim_time = t_start + (t_idx - 1) * dt
         for i in 1:n, j in (i+1):n

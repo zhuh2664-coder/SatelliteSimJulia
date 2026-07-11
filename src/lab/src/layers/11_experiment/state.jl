@@ -4,7 +4,7 @@ export ExperimentState
 
 mutable struct ExperimentState
     step::Int
-    positions::Array{Float64,3}
+    positions::AbstractArray{<:Real,3}
     isl_links::Vector{Tuple{Int,Int}}
     gsl_available::Matrix{Bool}
     distance_matrix::Matrix{Float64}

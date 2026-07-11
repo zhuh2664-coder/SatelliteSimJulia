@@ -47,7 +47,7 @@ checkpoint_dir() = joinpath("data", "checkpoints")
 function save_checkpoint(
     step::Int,
     config_name::String,
-    positions::Union{Nothing,Array{Float64,3}},
+    positions::Union{Nothing,AbstractArray{<:Real,3}},
     metrics::Dict{String,Any},
     duration_s::Float64,
 )::String

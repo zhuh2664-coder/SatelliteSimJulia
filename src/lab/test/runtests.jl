@@ -654,3 +654,26 @@ end
     @test assignments_t2[1].route.reason == :isl_unreachable
     @test assignments_t2[1].dropped_mbps == 100.0
 end
+
+@testset "Lab state and checkpoint accept position views" begin
+    parent_positions = zeros(Float32, 2, 2, 3)
+    positions = @view parent_positions[:, :, :]
+
+    state = ExperimentState()
+    state.positions = positions
+    @test state.positions === positions
+
+    mktempdir() do directory
+        cd(directory) do
+            path = save_checkpoint(
+                1,
+                "view-contract",
+                positions,
+                Dict{String,Any}("ok" => true),
+                0.1,
+            )
+            @test isfile(path)
+            @test load_checkpoint(path).step == 1
+        end
+    end
+end

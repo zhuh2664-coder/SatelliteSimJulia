@@ -6,7 +6,7 @@
 # 设计原则：
 #   - 内部只调原子工具，不引入新物理实现（单一真相源）
 #   - 用户可以调预编排工具（省事），也可以拆开调原子工具（灵活）
-#   - 数据用标准结构衔接：Array{Float64,3} 位置、Vector{NamedTuple} ISL 结果等
+#   - 数据用标准结构衔接：AbstractArray 三维位置、Vector{NamedTuple} ISL 结果等
 #
 # 三层架构定位：
 #   第一层（工具）：原子工具 + 本文件的预编排工具
@@ -62,13 +62,13 @@ end
 预编排：位置矩阵 → GSL 批评估 → 覆盖率计算。
 
 输入：
-- `positions::Array{Float64,3}`：N×T×3 ECEF 位置
+- `positions::AbstractArray{<:Real,3}`：N×T×3 ECEF 位置
 - `users::Vector{GroundUser}`：地面用户列表
 - `constraints::PhysicalConstraints`：物理约束
 
 返回 GSL 可用矩阵和覆盖结果。
 """
-function assess_coverage(positions::Array{Float64,3}, users, constraints)
+function assess_coverage(positions::AbstractArray{<:Real,3}, users, constraints)
     n_sat = n_satellites(positions)
     user_tuples = [(u.lat, u.lon, 0.0) for u in users]
     gsl_available = isempty(user_tuples) ?
@@ -88,7 +88,7 @@ end
 预编排：位置 → 拓扑生成 → ISL 批评估 → 邻接表 → 全对最短路径。
 
 输入：
-- `positions::Array{Float64,3}`：N×T×3 ECEF 位置
+- `positions::AbstractArray{<:Real,3}`：N×T×3 ECEF 位置
 - `T::Int, P::Int`：卫星总数和轨道面数
 - `strategy`：拓扑策略（如 GridPlusStrategy()）
 - `constraints`：物理约束
@@ -101,7 +101,7 @@ function _topology_isl_candidates(strategy, T::Int, P::Int)
 end
 
 function assess_routing(
-    positions::Array{Float64,3}, T::Int, P::Int,
+    positions::AbstractArray{<:Real,3}, T::Int, P::Int,
     strategy, constraints,
 )
     last_pos = positions_at_last(positions)
@@ -144,7 +144,7 @@ end
 返回 Vector{Matrix{Float64}}，第 t 个元素是第 t 个时间步的距离矩阵。
 """
 function assess_routing_temporal(
-    positions::Array{Float64,3}, T::Int, P::Int,
+    positions::AbstractArray{<:Real,3}, T::Int, P::Int,
     strategy, constraints,
 )
     n_time = n_timesteps(positions)
@@ -186,7 +186,7 @@ end
 旧的 `assess_routing_temporal` 保持固定拓扑语义；本函数是并行新增入口。
 """
 function assess_routing_temporal_dynamic(
-    positions::Array{Float64,3}, T::Int, P::Int,
+    positions::AbstractArray{<:Real,3}, T::Int, P::Int,
     strategy_builder::Function, constraints,
 )
     n_time = n_timesteps(positions)
@@ -233,7 +233,7 @@ end
 通过 `evaluate_traffic_from_bare_arrays` 返回 `TrafficEvaluation`。
 """
 function assess_temporal_flow_routes(
-    positions::Array{Float64,3}, T::Int, P::Int,
+    positions::AbstractArray{<:Real,3}, T::Int, P::Int,
     strategy_builder::Function, constraints,
     demands::Vector{TrafficDemand}, algorithm;
     elapsed_by_time = collect(0:(n_timesteps(positions)-1)),
@@ -310,7 +310,7 @@ link id 稳定，构造 GSL access，再通过 Traffic bridge 进入 AON/MinLoad
 当前 GSL 接入沿用 bridge 的 max-elevation 策略。
 """
 function assess_ground_traffic_temporal_dynamic(
-    positions::Array{Float64,3}, T::Int, P::Int,
+    positions::AbstractArray{<:Real,3}, T::Int, P::Int,
     strategy_builder::Function, constraints,
     ground_stations::Vector{GroundStation},
     demands::Vector{TrafficDemand};
@@ -923,7 +923,7 @@ function _evaluate_traffic_full(config, positions, isl_pairs)
 
     # 每时间步评估 ISL + GSL
     isl_results_by_time = [
-        evaluate_isl_batch(positions[:,t,:], isl_pairs; constraints=config.constraints)
+        evaluate_isl_batch(position_at_instant(positions, t), isl_pairs; constraints=config.constraints)
         for t in 1:n_time
     ]
     gsl_avail = Matrix{Bool}[]
@@ -931,7 +931,8 @@ function _evaluate_traffic_full(config, positions, isl_pairs)
     gsl_elev = Matrix{Float64}[]
     gsl_delay = Matrix{Float64}[]
     for t in 1:n_time
-        a, d, e, delay = evaluate_gsl_batch(positions[:,t,:], gs_tuples; constraints=config.constraints)
+        pos_t = position_at_instant(positions, t)
+        a, d, e, delay = evaluate_gsl_batch(pos_t, gs_tuples; constraints=config.constraints)
         push!(gsl_avail, a); push!(gsl_dist, d); push!(gsl_elev, e); push!(gsl_delay, delay)
     end
 

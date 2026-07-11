@@ -3,15 +3,18 @@
 
 export NearestNeighborStrategy
 
-Base.@kwdef struct NearestNeighborStrategy <: AbstractTopologyStrategy
-    positions::Array{Float64,3}  # (N×T×3) 位置数组，N=T 颗卫星
+Base.@kwdef struct NearestNeighborStrategy{A<:AbstractArray{<:Real,3}} <: AbstractTopologyStrategy
+    positions::A                 # (N×T×3) 位置数组，允许 view/SubArray
     k::Int = 4                    # 每星连接数
     time_step::Int = 1            # 用 positions[:, time_step, :] 算距离
 end
 
 function generate_topology(strategy::NearestNeighborStrategy, T::Int, P::Int)::TopologyOutput
     N = size(strategy.positions, 1)
-    pos = strategy.positions[:, strategy.time_step, :]  # N×3
+    1 <= strategy.time_step <= size(strategy.positions, 2) ||
+        throw(ArgumentError("time_step must be in 1:$(size(strategy.positions, 2))"))
+    strategy.k >= 0 || throw(ArgumentError("k must be non-negative"))
+    pos = @view strategy.positions[:, strategy.time_step, :]  # N×3
 
     links = Set{Tuple{Int,Int}}()
     for i in 1:N

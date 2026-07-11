@@ -56,7 +56,7 @@ end
 
 function _gsl_delay_s(
     gsl_delay_ms_by_time,
-    gsl_dist_by_time::Vector{Matrix{Float64}},
+    gsl_dist_by_time::AbstractVector{<:AbstractMatrix{<:Real}},
     time_index::Int,
     sat_id::Int,
     ground_local::Int,
@@ -77,7 +77,7 @@ end
 从裸数组位置矩阵序列 + evaluate_isl_batch 结果构造 ISLPhysicalLinkSeries。
 
 # 参数
-- `positions::Array{Float64,3}`: (N_sat × N_time × 3) ECEF 位置 km
+- `positions::AbstractArray{<:Real,3}`: (N_sat × N_time × 3) ECEF 位置 km
 - `isl_pairs::Vector{Tuple{Int,Int}}`: ISL 边列表（卫星索引，1-based）
 - `isl_results_by_time::Vector{Vector{NamedTuple}}`: 每个时间步的 evaluate_isl_batch 结果
 - `time_grid::SimulationTimeGrid`: 时间网格
@@ -85,7 +85,7 @@ end
 - `capacity_mbps::Float64`: ISL 容量（可用时）
 """
 function _build_isl_series(
-    positions::Array{Float64,3},
+    positions::AbstractArray{<:Real,3},
     isl_pairs::Vector{Tuple{Int,Int}},
     isl_results_by_time::Vector,
     time_grid::SimulationTimeGrid,
@@ -140,9 +140,9 @@ end
 - `capacity_mbps`: GSL 容量
 """
 function _build_access_table(
-    gsl_avail_by_time::Vector{Matrix{Bool}},
-    gsl_dist_by_time::Vector{Matrix{Float64}},
-    gsl_elev_by_time::Vector{Matrix{Float64}},
+    gsl_avail_by_time::AbstractVector{<:AbstractMatrix{Bool}},
+    gsl_dist_by_time::AbstractVector{<:AbstractMatrix{<:Real}},
+    gsl_elev_by_time::AbstractVector{<:AbstractMatrix{<:Real}},
     ground_ids::Vector{Int},
     time_grid::SimulationTimeGrid;
     capacity_mbps::Float64 = 500.0,
@@ -196,8 +196,8 @@ function _build_access_table(
 end
 
 function _gsl_sample_from_matrices(
-    gsl_dist_by_time::Vector{Matrix{Float64}},
-    gsl_elev_by_time::Vector{Matrix{Float64}},
+    gsl_dist_by_time::AbstractVector{<:AbstractMatrix{<:Real}},
+    gsl_elev_by_time::AbstractVector{<:AbstractMatrix{<:Real}},
     gsl_delay_ms_by_time,
     ground_id::Int,
     sat_id::Int,
@@ -252,7 +252,7 @@ end
 不再需要降级到 _assign_demands_to_isls 占位函数。
 
 # 参数
-- `positions::Array{Float64,3}`: (N_sat × N_time × 3) 卫星 ECEF 位置
+- `positions::AbstractArray{<:Real,3}`: (N_sat × N_time × 3) 卫星 ECEF 位置
 - `isl_pairs`: ISL 边列表
 - `isl_results_by_time`: 每时间步的 evaluate_isl_batch 结果（NamedTuple 向量）
 - `gsl_avail/dist/elev_by_time`: 每时间步的 GSL 评估矩阵
@@ -269,12 +269,12 @@ end
 - `TrafficEvaluation`: 完整流量评估（含 assignments、link_loads、拥塞、dropped）
 """
 function evaluate_traffic_from_bare_arrays(
-    positions::Array{Float64,3},
+    positions::AbstractArray{<:Real,3},
     isl_pairs::Vector{Tuple{Int,Int}},
     isl_results_by_time::Vector,
-    gsl_avail_by_time::Vector{Matrix{Bool}},
-    gsl_dist_by_time::Vector{Matrix{Float64}},
-    gsl_elev_by_time::Vector{Matrix{Float64}},
+    gsl_avail_by_time::AbstractVector{<:AbstractMatrix{Bool}},
+    gsl_dist_by_time::AbstractVector{<:AbstractMatrix{<:Real}},
+    gsl_elev_by_time::AbstractVector{<:AbstractMatrix{<:Real}},
     ground_ids::Vector{Int},
     time_grid::SimulationTimeGrid,
     demands::Vector{TrafficDemand};

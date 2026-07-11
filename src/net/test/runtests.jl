@@ -67,3 +67,30 @@ end
     @test [1, 3, 4] in paths
     @test !([1, 4] in paths)
 end
+
+@testset "position views remain zero-copy through topology and CGR" begin
+    parent_positions = zeros(Float32, 4, 2, 3)
+    parent_positions[:, 1, 1] .= Float32[0, 1, 10, 11]
+    positions = @view parent_positions[:, :, :]
+
+    strategy = NearestNeighborStrategy(positions=positions, k=1, time_step=1)
+    @test strategy.positions === positions
+    topology = generate_topology(strategy, 4, 2)
+    @test !isempty(topology.dynamic_candidates)
+    @test_throws ArgumentError generate_topology(
+        NearestNeighborStrategy(positions=positions, k=-1, time_step=1), 4, 2,
+    )
+
+    contact_plan = CGRContactPlan("view-contract")
+    build_contact_plan_from_positions!(
+        contact_plan,
+        positions,
+        UInt32[1, 2, 3, 4];
+        max_dist=20.0,
+        dt=1.0,
+    )
+    @test !isempty(contact_plan.contacts)
+    @test_throws ArgumentError build_contact_plan_from_positions!(
+        CGRContactPlan(), positions, UInt32[1, 2]; dt=1.0,
+    )
+end
