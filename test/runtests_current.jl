@@ -36,6 +36,7 @@ include(joinpath(@__DIR__, "test_helpers.jl"))
     @testset "Orbit" begin
         include(joinpath(@__DIR__, "orbit", "test_walker.jl"))
         include(joinpath(@__DIR__, "orbit", "test_ephemeris.jl"))
+        include(joinpath(@__DIR__, "test_orbit_gmat_align.jl"))
     end
 
     @testset "Link" begin
