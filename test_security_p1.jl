@@ -15,7 +15,7 @@ using Test
 using SatelliteSimJulia
 using SatelliteSimSecurity: LinkBlackhole, TopologySeverance, FaultScenario,
     attack!, compile_attack, apply_effect!, AttackEffect,
-    AnomalyThreshold, Alarm, detect, extract_metric,
+    AbstractDetector, AnomalyThreshold, Alarm, detect, extract_metric,
     Verdict, ArenaState, run_round, purple_loop, summarize_history,
     network_attack_summary
 
