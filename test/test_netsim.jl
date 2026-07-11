@@ -1,3 +1,5 @@
+module SatelliteSimNetSimTests
+
 using Test
 using Random
 using SatelliteSimNetSim
@@ -301,4 +303,6 @@ using SatelliteSimNetSim
         cr = demo_tcp_cubic(total_bytes=5_000)
         @test cr.bytes_acked >= 5_000
     end
+end
+
 end
