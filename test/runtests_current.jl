@@ -51,6 +51,10 @@ include(joinpath(@__DIR__, "test_helpers.jl"))
         include(joinpath(@__DIR__, "test_cgr.jl"))
     end
 
+    @testset "NetSim" begin
+        include(joinpath(@__DIR__, "test_netsim.jl"))
+    end
+
     @testset "Traffic" begin
         include(joinpath(@__DIR__, "traffic", "test_aon.jl"))
         include(joinpath(@__DIR__, "traffic", "test_traffic_bridge.jl"))
