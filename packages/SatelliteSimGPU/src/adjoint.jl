@@ -129,12 +129,14 @@ end
         elev = _elevation_deg_gpu(sx, sy, sz, gx, gy, gz)
         z = (elev - min_el) / τ_cov
         c = one(T) / (one(T) + exp(-z))
-        one_minus_c = one(T) - c
-        # ∂step_cov/∂c_s = Π_{s'≠s}(1-c') = (1-step_cov)/(1-c)
-        prod_excl = (one(T) - step_cov[g, time_index]) / one_minus_c
-        dc_dz = c * one_minus_c
         egx, egy, egz = _elevation_deg_grad_gpu(sx, sy, sz, gx, gy, gz)
-        coef = d_step_cov[g, time_index] * prod_excl * dc_dz * inv_tau
+        # Algebraically combines noisy-OR and sigmoid derivatives without the
+        # 0/0 produced by `(1-step_cov)/(1-c)` when `c` saturates to one.
+        coef =
+            d_step_cov[g, time_index] *
+            (one(T) - step_cov[g, time_index]) *
+            c *
+            inv_tau
         gxa += coef * egx
         gya += coef * egy
         gza += coef * egz

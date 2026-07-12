@@ -261,7 +261,10 @@ end
     @test compute_backend_fingerprint(backend).implementation_module ==
           "SatelliteSimGPU"
     @test compute_backend_cache_token(backend) !== nothing
-    @test all(isfile, compute_backend_source_files(backend))
+    backend_source_files = compute_backend_source_files(backend)
+    @test all(isfile, backend_source_files)
+    @test any(endswith("adjoint.jl"), backend_source_files)
+    @test any(endswith("isl.jl"), backend_source_files)
     @test compute_backend_capabilities(KernelComputeBackend(CPU())).precision ===
           Float64
     @test_throws ArgumentError register_kernel_compute_backend!(:not_gpu, CPU())
@@ -390,6 +393,141 @@ end
     )
 end
 
+@testset "device-resident reductions (GSL/ISL aggregates)" begin
+    # ── GSL：每 (站,时) 可见卫星计数 + 每站可见时间比 ──
+    for (n_satellites, n_stations, n_times) in ((66, 10, 30), (132, 20, 24))
+        Random.seed!(500 + n_satellites + n_stations + n_times)
+        positions = random_positions(n_satellites, n_times, Float64)
+        stations = random_gsl_stations(n_stations)
+        ground_ecef, ned_rotation = gsl_station_geometry(stations)
+
+        full = evaluate_gsl_batch_gpu(
+            positions, ground_ecef, ned_rotation;
+            gsl_min_elevation_deg=25.0, gsl_max_range_km=2000.0,
+        )
+        golden = golden_gsl_batch(positions, stations)
+        @test full[1] == golden[1]   # 前提：完整可见性与 golden 逐位一致
+
+        counts = gsl_visible_counts_gpu(
+            positions, ground_ecef, ned_rotation;
+            gsl_min_elevation_deg=25.0, gsl_max_range_km=2000.0,
+        )
+        counts_full = dropdims(sum(full[1]; dims=1); dims=1)        # (M, NT)
+        counts_golden = dropdims(sum(golden[1]; dims=1); dims=1)
+        @test size(counts) == (n_stations, n_times)
+        @test counts isa Array{Int32,2}
+        @test counts == counts_full           # 设备聚合 == 完整数组再 host 归约
+        @test counts == counts_golden         # 设备聚合 == golden 归约
+
+        ratio = gsl_station_visible_ratio_gpu(
+            positions, ground_ecef, ned_rotation;
+            gsl_min_elevation_deg=25.0, gsl_max_range_km=2000.0,
+        )
+        ratio_full = [
+            count(t -> any(@view full[1][:, m, t]), 1:n_times) / n_times
+            for m in 1:n_stations
+        ]
+        @test length(ratio) == n_stations
+        @test ratio == ratio_full
+        @test ratio == dropdims(sum(counts .> 0; dims=2); dims=2) ./ n_times
+
+        # 设备驻留：一次上传 → 设备聚合 → 只下载 (M,NT) 与 (M,)（不下载 (N,M,NT)）
+        agg = device_pipeline(CPU(), positions, ground_ecef, ned_rotation) do p, g, n
+            (
+                counts=gsl_visible_counts_gpu(
+                    p, g, n; gsl_min_elevation_deg=25.0, gsl_max_range_km=2000.0,
+                ),
+                ratio=gsl_station_visible_ratio_gpu(
+                    p, g, n; gsl_min_elevation_deg=25.0, gsl_max_range_km=2000.0,
+                ),
+            )
+        end
+        @test agg.counts == counts
+        @test agg.ratio == ratio
+        @test agg.counts isa Array{Int32,2}
+    end
+
+    # Float32 后端可运行且形状/类型正确
+    Random.seed!(777)
+    p32 = Float32.(random_positions(66, 20, Float64))
+    st = random_gsl_stations(8)
+    ge64, nr64 = gsl_station_geometry(st)
+    c32 = gsl_visible_counts_gpu(
+        p32, Float32.(ge64), Float32.(nr64);
+        gsl_min_elevation_deg=25.0f0, gsl_max_range_km=2000.0f0,
+    )
+    @test c32 isa Array{Int32,2}
+    @test size(c32) == (8, 20)
+
+    # ── ISL：每时刻可用链路数 + 每跳平均可用度 ──
+    for (n_sat, n_times) in ((12, 5), (30, 8))
+        positions, velocities =
+            random_isl_scenario(n_sat, n_times, Float64; seed=600 + n_sat + n_times)
+        pairs = Tuple{Int,Int}[]
+        for i in 1:n_sat, j in (i + 1):n_sat
+            push!(pairs, (i, j))
+        end
+
+        # 带速度路径
+        full = evaluate_isl_batch_gpu(positions, pairs; velocities=velocities)
+        golden = GoldenISLReference.evaluate_isl_series(
+            positions, pairs; velocities=velocities,
+        )
+        @test full.available == golden.available
+
+        counts = isl_available_counts_gpu(positions, pairs; velocities=velocities)
+        @test length(counts) == n_times
+        @test counts isa Array{Int32,1}
+        @test counts == vec(sum(full.available; dims=1))     # == 完整数组沿 pair 维求和
+        @test counts == vec(sum(golden.available; dims=1))
+
+        ratio = isl_pair_available_ratio_gpu(positions, pairs; velocities=velocities)
+        @test length(ratio) == length(pairs)
+        @test ratio == vec(sum(full.available; dims=2)) ./ n_times
+
+        # 每卫星可用链路度（连通度/邻接度指标）
+        degree = isl_satellite_degree_gpu(positions, pairs; velocities=velocities)
+        degree_ref = zeros(Int32, n_sat, n_times)
+        for (pair_index, (i, j)) in enumerate(pairs), t in 1:n_times
+            if full.available[pair_index, t]
+                degree_ref[i, t] += Int32(1)
+                degree_ref[j, t] += Int32(1)
+            end
+        end
+        @test size(degree) == (n_sat, n_times)
+        @test degree isa Array{Int32,2}
+        @test degree == degree_ref
+        # 度之和 = 2×每时刻可用链路数（每条可用链路贡献两个端点）
+        @test vec(sum(degree; dims=1)) == 2 .* counts
+
+        # 位置-only 路径（无速度）
+        full0 = evaluate_isl_batch_gpu(positions, pairs)
+        @test isl_available_counts_gpu(positions, pairs) ==
+              vec(sum(full0.available; dims=1))
+        @test isl_pair_available_ratio_gpu(positions, pairs) ==
+              vec(sum(full0.available; dims=2)) ./ n_times
+
+        # 设备驻留：只下载 (NT,) 与 (pairs,) 与 (N,NT)（不下载 (pairs,NT)）
+        agg = device_pipeline(CPU(), positions, velocities) do p, v
+            (
+                counts=isl_available_counts_gpu(p, pairs; velocities=v),
+                ratio=isl_pair_available_ratio_gpu(p, pairs; velocities=v),
+                degree=isl_satellite_degree_gpu(p, pairs; velocities=v),
+            )
+        end
+        @test agg.counts == counts
+        @test agg.ratio == ratio
+        @test agg.degree == degree
+        @test agg.counts isa Array{Int32,1}
+    end
+
+    # 空 pairs → (NT,) 全零 / (0,) / (N,NT) 全零
+    positions, _ = random_isl_scenario(8, 4, Float64; seed=1)
+    @test isl_available_counts_gpu(positions, Tuple{Int,Int}[]) == zeros(Int32, 4)
+    @test length(isl_pair_available_ratio_gpu(positions, Tuple{Int,Int}[])) == 0
+    @test isl_satellite_degree_gpu(positions, Tuple{Int,Int}[]) == zeros(Int32, 8, 4)
+end
+
 @testset "device residency pipeline" begin
     positions, velocities = random_isl_scenario(20, 6, Float64; seed=7)
     pairs = [(i, i + 1) for i in 1:19]
@@ -438,6 +576,24 @@ end
               coverage_loss_gpu(Pm, ground_pts, weights; kw...)) / (2h)
         @test isapprox(gradP[s, t, c], fd; atol=1e-5, rtol=1e-3)
     end
+
+    saturated_positions = reshape([7000.0, 0.0, 0.0], 1, 1, 3)
+    saturated_ground = reshape([6378.137, 0.0, 0.0], 1, 3)
+    saturated_weights = [1.0]
+    _, saturated_pullback = ChainRulesCore.rrule(
+        coverage_loss_gpu,
+        saturated_positions,
+        saturated_ground,
+        saturated_weights;
+        min_el=-90.0,
+        τ_cov=1e-3,
+        dt=1.0,
+        τ_revisit=1.0,
+        λ=0.1,
+    )
+    _, saturated_gradient, _, _ = saturated_pullback(1.0)
+    @test all(isfinite, saturated_gradient)
+    @test all(iszero, saturated_gradient)
 end
 
 @testset "Float32 cutoff policy" begin
@@ -694,4 +850,101 @@ end
     @info "ECEF vs ECI GSL visibility" ecef_visible=sum(host_gsl[1]) eci_visible=sum(
         gsl_from_eci[1]
     )
+end
+
+include(joinpath(GOLDEN_DIR, "golden_sgp4_reference.jl"))
+
+# 生成近地 SGP4 平均根数：n₀ 由半长轴反推（rad/min），角度 rad，bstar 小阻力。
+function random_sgp4_elements(n_sat; seed=0, a_range=(6700.0, 7200.0), e_range=(0.001, 0.02))
+    Random.seed!(seed)
+    mu = 398600.5
+    n0 = Vector{Float64}(undef, n_sat)
+    e0 = Vector{Float64}(undef, n_sat)
+    i0 = Vector{Float64}(undef, n_sat)
+    raan = Vector{Float64}(undef, n_sat)
+    argp = Vector{Float64}(undef, n_sat)
+    M0 = Vector{Float64}(undef, n_sat)
+    bstar = Vector{Float64}(undef, n_sat)
+    for s in 1:n_sat
+        a = a_range[1] + (a_range[2] - a_range[1]) * rand()
+        n0[s] = sqrt(mu / a^3) * 60
+        e0[s] = e_range[1] + (e_range[2] - e_range[1]) * rand()
+        i0[s] = deg2rad(20.0 + 130.0 * rand())
+        raan[s] = deg2rad(360.0 * rand())
+        argp[s] = deg2rad(360.0 * rand())
+        M0[s] = deg2rad(360.0 * rand())
+        bstar[s] = 1e-4 * randn()
+    end
+    return n0, e0, i0, raan, argp, M0, bstar
+end
+
+@testset "sgp4_propagate_gpu near-Earth parity (vs SatelliteToolbox)" begin
+    # 主对标：近地 :sgp4（近地点≥220km）与 :sgp4_lowper（低近地点截断）两分支
+    for (label, seed, a_range, e_range, want_algo) in (
+        ("sgp4", 41, (6750.0, 7200.0), (0.001, 0.02), Int32(1)),
+        ("sgp4_lowper", 42, (6560.0, 6605.0), (0.0005, 0.0030), Int32(0)),
+    )
+        n0, e0, i0, raan, argp, M0, bstar =
+            random_sgp4_elements(24; seed=seed, a_range=a_range, e_range=e_range)
+        tspan = collect(0.0:10.0:120.0)   # 0..2h，分钟
+
+        gold_pos, gold_vel = GoldenSGP4Reference.propagate_series(
+            n0, e0, i0, raan, argp, M0, bstar, tspan,
+        )
+        el = sgp4_init_host(n0, e0, i0, raan, argp, M0, bstar)
+        pos, vel = sgp4_propagate_gpu(el, tspan; velocities=true)
+
+        @test pos isa Array{Float64,3}
+        @test size(pos) == (24, length(tspan), 3)
+        @test want_algo in el.algo          # 该分支确被触发
+        pos_err = maximum(abs.(pos .- gold_pos))
+        vel_err = maximum(abs.(vel .- gold_vel))
+        @test pos_err < 1e-6                 # ≈机器精度（近地 SGP4 位置逐位对齐参考）
+        @test vel_err < 1e-9
+        @info "SGP4 parity" branch=label algos=Tuple(sort(unique(el.algo))) max_pos_err_km=pos_err max_vel_err_km_s=vel_err
+    end
+
+    # 深空（周期 ≥ 225 min）→ 明确抛错（本档不支持 SDP4）
+    mu = 398600.5
+    a_deep = 20000.0
+    n0_deep = [sqrt(mu / a_deep^3) * 60]
+    @test_throws ArgumentError sgp4_init_host(
+        n0_deep, [0.01], [deg2rad(55.0)], [0.0], [0.0], [0.0], [0.0],
+    )
+
+    # 校验：向量长度不一致 / n₀ 非正
+    n0, e0, i0, raan, argp, M0, bstar = random_sgp4_elements(4; seed=7)
+    @test_throws ArgumentError sgp4_init_host(n0[1:3], e0, i0, raan, argp, M0, bstar)
+    @test_throws ArgumentError sgp4_init_host(
+        [-1.0, 0.06, 0.06, 0.06], e0, i0, raan, argp, M0, bstar,
+    )
+
+    # 设备驻留：SGP4(TEME) → ISL 全程设备（元素一次上传 → 设备传播 → 设备 ISL → 一次下载）
+    n0, e0, i0, raan, argp, M0, bstar = random_sgp4_elements(12; seed=9)
+    tspan = collect(0.0:30.0:180.0)
+    pairs = [(i, i + 1) for i in 1:11]
+    el = sgp4_init_host(n0, e0, i0, raan, argp, M0, bstar)
+    pos_h, vel_h = sgp4_propagate_gpu(el, tspan; velocities=true)
+    isl_host = evaluate_isl_batch_gpu(pos_h, pairs; velocities=vel_h)
+    out = device_pipeline(CPU(), el, tspan) do e, ts
+        p, v = sgp4_propagate_gpu(e, ts; velocities=true)
+        evaluate_isl_batch_gpu(p, pairs; velocities=v)
+    end
+    @test out.available == isl_host.available
+    @test isapprox(out.distance_km, isl_host.distance_km; rtol=1e-12, atol=1e-12)
+
+    # Float32 后端可运行、有限，且短时段内与 Float64 golden 物理接近
+    n0, e0, i0, raan, argp, M0, bstar = random_sgp4_elements(16; seed=5)
+    tspan32 = collect(Float32, 0.0:10.0:60.0)
+    gold32, _ = GoldenSGP4Reference.propagate_series(
+        n0, e0, i0, raan, argp, M0, bstar, Float64.(tspan32),
+    )
+    el32 = sgp4_init_host(
+        Float32.(n0), Float32.(e0), Float32.(i0),
+        Float32.(raan), Float32.(argp), Float32.(M0), Float32.(bstar),
+    )
+    pos32 = sgp4_propagate_gpu(el32, tspan32)
+    @test pos32 isa Array{Float32,3}
+    @test all(isfinite, pos32)
+    @test isapprox(Float64.(pos32), gold32; rtol=1e-2, atol=5.0)
 end

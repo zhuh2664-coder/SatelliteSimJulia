@@ -400,10 +400,17 @@ function compute_backend_fingerprint(backend::KernelComputeBackend)
     )
 end
 
-compute_backend_source_files(::KernelComputeBackend) = [
-    String(@__FILE__),
-    joinpath(@__DIR__, "..", "Project.toml"),
-]
+function compute_backend_source_files(::KernelComputeBackend)
+    files = String[]
+    for (root, _, names) in walkdir(@__DIR__)
+        append!(
+            files,
+            joinpath(root, name) for name in names if endswith(name, ".jl"),
+        )
+    end
+    push!(files, joinpath(@__DIR__, "..", "Project.toml"))
+    return sort!(files)
+end
 
 function _compute_precision(options::NamedTuple)
     unknown = setdiff(keys(options), (:precision,))
@@ -673,9 +680,11 @@ function evaluate_isl_series(
 end
 
 include("isl.jl")
+include("reductions.jl")
 include("residency.jl")
 include("adjoint.jl")
 include("propagator_gpu.jl")
 include("frames_gpu.jl")
+include("sgp4_gpu.jl")
 
 end

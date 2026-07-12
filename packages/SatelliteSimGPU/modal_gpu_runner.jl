@@ -7,11 +7,14 @@ catch instantiate_error
     @warn "Pkg.instantiate failed; attempting to load anyway" exception = instantiate_error
 end
 
+using Adapt
 using CUDA
+using ChainRulesCore
 using KernelAbstractions
 using Random
 using SatelliteSimBackends
 using SatelliteSimGPU
+using SatelliteToolboxSgp4: sgp4_init, sgp4!, sgp4c_wgs84
 
 const EARTH_RADIUS_KM = 6378.137
 const SPEED_OF_LIGHT_KM_S = 299_792.458
@@ -26,6 +29,24 @@ function random_positions(n_satellites::Int, n_times::Int, ::Type{T}) where T
         positions[satellite_index, time_index, :] .= radius .* direction
     end
     return positions
+end
+
+function random_kepler_elements(n_satellites::Int, ::Type{T}; seed::Int) where T
+    Random.seed!(seed)
+    semi_major_axis_km = T.(6771 .+ 400 .* rand(n_satellites))
+    eccentricity = T.(0.0005 .+ 0.02 .* rand(n_satellites))
+    inclination_rad = T.(deg2rad.(30 .+ 120 .* rand(n_satellites)))
+    raan_rad = T.(deg2rad.(360 .* rand(n_satellites)))
+    argument_of_perigee_rad = T.(deg2rad.(360 .* rand(n_satellites)))
+    true_anomaly_rad = T.(deg2rad.(360 .* rand(n_satellites)))
+    return (
+        semi_major_axis_km,
+        eccentricity,
+        inclination_rad,
+        raan_rad,
+        argument_of_perigee_rad,
+        true_anomaly_rad,
+    )
 end
 
 function ground_grid(n_latitudes::Int, n_longitudes::Int, ::Type{T}) where T
@@ -536,10 +557,18 @@ function validate_isl(::Type{T}) where T
         (available_mismatch == 0 && los_mismatch == 0) ||
             error("ISL Float64 boolean parity failed: available=$available_mismatch los=$los_mismatch")
         distance_error <= 1e-9 || error("ISL Float64 distance parity failed: $distance_error")
+        delay_error <= 1e-9 || error("ISL Float64 delay parity failed: $delay_error")
         elevation_error <= 1e-8 || error("ISL Float64 elevation parity failed: $elevation_error")
+        cos_psi_error <= 1e-8 || error("ISL Float64 azimuth parity failed: $cos_psi_error")
         duration_error <= 1e-6 || error("ISL Float64 duration parity failed: $duration_error")
     else
+        (available_mismatch == 0 && los_mismatch == 0) ||
+            error("ISL Float32 boolean parity failed: available=$available_mismatch los=$los_mismatch")
         distance_error <= 2e-4 || error("ISL Float32 distance parity failed: $distance_error")
+        delay_error <= 2e-4 || error("ISL Float32 delay parity failed: $delay_error")
+        elevation_error <= 2e-4 || error("ISL Float32 elevation parity failed: $elevation_error")
+        cos_psi_error <= 2e-4 || error("ISL Float32 azimuth parity failed: $cos_psi_error")
+        duration_error <= 2e-4 || error("ISL Float32 duration parity failed: $duration_error")
     end
 
     println(
@@ -590,6 +619,87 @@ function validate_registered_compute_backend(::Type{T}) where T
     println(
         "REGISTERED_COMPUTE_BACKEND type=$T status=PASS backend=$(compute_backend_name(selected))",
     )
+end
+
+function validate_cuda_pipeline_and_adjoint()
+    T = Float64
+    elements = random_kepler_elements(12, T; seed=20260718)
+    tspan = collect(T, 0:120:1200)
+    host_eci = propagate_kepler_gpu(elements..., tspan; model=:j2)
+    device_elements = map(CuArray, elements)
+    device_tspan = CuArray(tspan)
+    device_eci = propagate_kepler_gpu(device_elements..., device_tspan; model=:j2)
+    device_eci isa CuArray || error("propagation output was not allocated on CUDA")
+    isapprox(Array(device_eci), host_eci; rtol=1e-10, atol=1e-8) ||
+        error("CUDA propagation parity failed")
+
+    host_ecef = teme_to_pef_gpu(host_eci, tspan)
+    device_ecef = teme_to_pef_gpu(device_eci, device_tspan)
+    device_ecef isa CuArray || error("frame output was not allocated on CUDA")
+    isapprox(Array(device_ecef), host_ecef; rtol=1e-10, atol=1e-8) ||
+        error("CUDA TEME-to-PEF parity failed")
+
+    Random.seed!(20260719)
+    positions = random_positions(8, 4, T)
+    ground_points, weights = ground_grid(4, 6, T)
+    coverage_options = (
+        min_el=T(10),
+        τ_cov=T(5),
+        dt=one(T),
+        τ_revisit=one(T),
+        λ=T(0.1),
+    )
+    host_loss, host_pullback = ChainRulesCore.rrule(
+        coverage_loss_gpu,
+        positions,
+        ground_points,
+        weights;
+        coverage_options...,
+    )
+    _, host_gradient, _, _ = host_pullback(one(T))
+
+    device_positions = CuArray(positions)
+    device_ground_points = CuArray(ground_points)
+    device_weights = CuArray(weights)
+    device_loss, device_pullback = ChainRulesCore.rrule(
+        coverage_loss_gpu,
+        device_positions,
+        device_ground_points,
+        device_weights;
+        coverage_options...,
+    )
+    _, device_gradient, _, _ = device_pullback(one(T))
+    device_gradient isa CuArray || error("adjoint output was not allocated on CUDA")
+    isapprox(device_loss, host_loss; rtol=1e-10, atol=1e-12) ||
+        error("CUDA adjoint forward parity failed")
+    all(isfinite, Array(device_gradient)) ||
+        error("CUDA adjoint returned non-finite gradients")
+    isapprox(Array(device_gradient), host_gradient; rtol=1e-8, atol=1e-8) ||
+        error("CUDA adjoint gradient parity failed")
+
+    saturated_positions = CuArray(reshape(T[7000, 0, 0], 1, 1, 3))
+    saturated_ground = CuArray(reshape(T[EARTH_RADIUS_KM, 0, 0], 1, 3))
+    saturated_weights = CuArray(T[1])
+    _, saturated_pullback = ChainRulesCore.rrule(
+        coverage_loss_gpu,
+        saturated_positions,
+        saturated_ground,
+        saturated_weights;
+        min_el=T(-90),
+        τ_cov=T(1e-3),
+        dt=one(T),
+        τ_revisit=one(T),
+        λ=T(0.1),
+    )
+    _, saturated_gradient, _, _ = saturated_pullback(one(T))
+    saturated_gradient_host = Array(saturated_gradient)
+    all(isfinite, saturated_gradient_host) ||
+        error("saturated CUDA adjoint returned non-finite gradients")
+    all(iszero, saturated_gradient_host) ||
+        error("saturated CUDA adjoint returned non-zero gradients")
+
+    println("CUDA_PIPELINE_ADJOINT status=PASS")
+    return nothing
 end
 
 # ── timing ───────────────────────────────────────────────────────────────────
@@ -803,53 +913,355 @@ function bench_isl_case(n_satellites::Int, n_pairs::Int, n_times::Int, ::Type{T}
     return nothing
 end
 
+# ── reduction benchmark: full-download+host-reduce vs device-aggregate ────────
+# 真机瓶颈是下载 (N,M,NT)/(pairs,NT) 大数组。这里对比"只要摘要"调用方的两条端到端
+# 路径（各含 H2D + 设备算 + D2H），量化设备端归约省下的传输与时间。
+
+function bench_gsl_reduction_case(n_satellites::Int, n_stations::Int, n_times::Int, ::Type{T}) where T
+    Random.seed!(4000 + n_satellites + n_stations + n_times)
+    positions = random_positions(n_satellites, n_times, T)
+    ground_ecef, ned_rotation = station_geometry(n_stations, T)
+
+    # full-download：设备算完整 (N,M,NT)×4 → 全部下载 → host 归约得 (M,NT) 计数
+    full_call() = device_pipeline(
+        (p, g, n) -> evaluate_gsl_batch_gpu(p, g, n),
+        CUDA.CUDABackend(), positions, ground_ecef, ned_rotation,
+    )
+    full_reduce() = begin
+        host = full_call()
+        Int32.(dropdims(sum(host[1]; dims=1); dims=1))
+    end
+    # device-aggregate：设备端归约核 → 只下载 (M,NT) 计数
+    agg_call() = device_pipeline(
+        (p, g, n) -> gsl_visible_counts_gpu(p, g, n),
+        CUDA.CUDABackend(), positions, ground_ecef, ned_rotation,
+    )
+
+    parity = (full_reduce() == agg_call()) ? "PASS" : "FAIL"
+    CUDA.synchronize()
+    full_s = best_elapsed(full_reduce, GPU_SAMPLES; synchronize=true)
+    agg_s = best_elapsed(agg_call, GPU_SAMPLES; synchronize=true)
+
+    bytes_full = n_satellites * n_stations * n_times * (sizeof(Bool) + 3 * sizeof(T))
+    bytes_agg = n_stations * n_times * sizeof(Int32)
+
+    println(
+        "BENCH op=gsl_reduction type=$T N=$n_satellites M=$n_stations NT=$n_times " *
+        "full_e2e_s=$full_s agg_e2e_s=$agg_s speedup=$(full_s / agg_s) " *
+        "download_bytes_full=$bytes_full download_bytes_agg=$bytes_agg " *
+        "transfer_reduction=$(bytes_full / bytes_agg) parity=$parity " *
+        "gpu_samples=$GPU_SAMPLES",
+    )
+    parity == "PASS" || error("GSL reduction parity failed for $T N=$n_satellites")
+    GC.gc()
+    CUDA.reclaim()
+    return nothing
+end
+
+function bench_isl_reduction_case(n_satellites::Int, n_pairs::Int, n_times::Int, ::Type{T}) where T
+    positions, velocities = isl_scenario(n_satellites, n_times, T; seed=5000 + n_satellites + n_times)
+    pairs = make_pairs(n_satellites, n_pairs)
+    actual_pairs = length(pairs)
+
+    # full-download：设备算完整 (pairs,NT)×7 → 全部下载 → host 归约得 (NT,) 计数
+    full_call() = device_pipeline(
+        (p, v) -> evaluate_isl_batch_gpu(p, pairs; velocities=v),
+        CUDA.CUDABackend(), positions, velocities,
+    )
+    full_reduce() = Int32.(vec(sum(full_call().available; dims=1)))
+    # device-aggregate：设备端归约核 → 只下载 (NT,) 计数
+    agg_call() = device_pipeline(
+        (p, v) -> isl_available_counts_gpu(p, pairs; velocities=v),
+        CUDA.CUDABackend(), positions, velocities,
+    )
+
+    parity = (full_reduce() == agg_call()) ? "PASS" : "FAIL"
+    CUDA.synchronize()
+    full_s = best_elapsed(full_reduce, GPU_SAMPLES; synchronize=true)
+    agg_s = best_elapsed(agg_call, GPU_SAMPLES; synchronize=true)
+
+    bytes_full = actual_pairs * n_times * (2 * sizeof(Bool) + 5 * sizeof(T))
+    bytes_agg = n_times * sizeof(Int32)
+
+    println(
+        "BENCH op=isl_reduction type=$T N=$n_satellites P=$actual_pairs NT=$n_times " *
+        "full_e2e_s=$full_s agg_e2e_s=$agg_s speedup=$(full_s / agg_s) " *
+        "download_bytes_full=$bytes_full download_bytes_agg=$bytes_agg " *
+        "transfer_reduction=$(bytes_full / bytes_agg) parity=$parity " *
+        "gpu_samples=$GPU_SAMPLES",
+    )
+    parity == "PASS" || error("ISL reduction parity failed for $T N=$n_satellites")
+    GC.gc()
+    CUDA.reclaim()
+    return nothing
+end
+
 function run_case(f, args...)
     try
         f(args...)
+        return true
     catch err
         buffer = IOBuffer()
         showerror(buffer, err)
         message = replace(String(take!(buffer)), '\n' => " | ")
         println("BENCH_ERROR case=$(nameof(f)) args=$(args) message=$message")
+        return false
     end
+end
+
+const COVERAGE_SCALES = (
+    (66, 60, 500),
+    (550, 90, 1000),
+    (1584, 90, 1500),
+    (1584, 240, 500),
+)
+const GSL_SCALES = (
+    (66, 20, 60),
+    (550, 40, 90),
+    (1584, 64, 90),
+    (1584, 100, 60),
+)
+const ISL_SCALES = (
+    (66, 132, 60),
+    (550, 1100, 90),
+    (1584, 3168, 90),
+    (1584, 6336, 90),
+)
+const GSL_REDUCTION_SCALES = (
+    (550, 40, 90),
+    (1584, 64, 90),
+    (1584, 100, 90),
+)
+const ISL_REDUCTION_SCALES = (
+    (550, 1100, 90),
+    (1584, 3168, 90),
+    (1584, 6336, 90),
+)
+
+function _run_typed_cases(label, scales, bench_fn)
+    println("BENCH_SUITE_BEGIN op=$label")
+    failed_cases = 0
+    for T in (Float32, Float64)
+        for args in scales
+            run_case(bench_fn, args..., T) || (failed_cases += 1)
+        end
+    end
+    println("BENCH_SUITE_END op=$label")
+    failed_cases == 0 ||
+        error("$failed_cases $label benchmark case(s) failed; see BENCH_ERROR lines")
     return nothing
 end
 
+run_bench_coverage() = _run_typed_cases("coverage", COVERAGE_SCALES, bench_coverage_case)
+run_bench_gsl() = _run_typed_cases("gsl", GSL_SCALES, bench_gsl_case)
+run_bench_isl() = _run_typed_cases("isl", ISL_SCALES, bench_isl_case)
+run_bench_gsl_reduction() =
+    _run_typed_cases("gsl_reduction", GSL_REDUCTION_SCALES, bench_gsl_reduction_case)
+run_bench_isl_reduction() =
+    _run_typed_cases("isl_reduction", ISL_REDUCTION_SCALES, bench_isl_reduction_case)
+
 function run_benchmark_suite()
-    println("BENCH_SUITE_BEGIN")
+    run_bench_coverage()
+    run_bench_gsl()
+    run_bench_isl()
+    run_bench_gsl_reduction()
+    run_bench_isl_reduction()
+    return nothing
+end
 
-    coverage_scales = (
-        (66, 60, 500),
-        (550, 90, 1000),
-        (1584, 90, 1500),
-        (1584, 240, 500),
-    )
-    gsl_scales = (
-        (66, 20, 60),
-        (550, 40, 90),
-        (1584, 64, 90),
-        (1584, 100, 60),
-    )
-    isl_scales = (
-        (66, 132, 60),
-        (550, 1100, 90),
-        (1584, 3168, 90),
-        (1584, 6336, 90),
-    )
+# ── device-aggregate reductions vs full-download host reduce (CUDA) ───────────
 
-    for T in (Float32, Float64)
-        for (n_satellites, n_times, n_ground) in coverage_scales
-            run_case(bench_coverage_case, n_satellites, n_times, n_ground, T)
-        end
-        for (n_satellites, n_stations, n_times) in gsl_scales
-            run_case(bench_gsl_case, n_satellites, n_stations, n_times, T)
-        end
-        for (n_satellites, n_pairs, n_times) in isl_scales
-            run_case(bench_isl_case, n_satellites, n_pairs, n_times, T)
+function validate_reductions(::Type{T}) where T
+    Random.seed!(20260720)
+    positions = random_positions(48, 12, T)
+    ground_ecef, ned_rotation = station_geometry(16, T)
+    full = evaluate_gsl_batch_gpu(
+        CuArray(positions),
+        CuArray(ground_ecef),
+        CuArray(ned_rotation);
+        gsl_min_elevation_deg=T(25),
+        gsl_max_range_km=T(2000),
+    )
+    counts = Array(
+        gsl_visible_counts_gpu(
+            CuArray(positions),
+            CuArray(ground_ecef),
+            CuArray(ned_rotation);
+            gsl_min_elevation_deg=T(25),
+            gsl_max_range_km=T(2000),
+        ),
+    )
+    ratio = Array(
+        gsl_station_visible_ratio_gpu(
+            CuArray(positions),
+            CuArray(ground_ecef),
+            CuArray(ned_rotation);
+            gsl_min_elevation_deg=T(25),
+            gsl_max_range_km=T(2000),
+        ),
+    )
+    available_host = Array(full[1])
+    n_stations = size(ground_ecef, 1)
+    n_times = size(positions, 2)
+    expected_counts = Int32.(dropdims(sum(available_host; dims=1); dims=1))
+    expected_ratio =
+        T.(dropdims(sum(expected_counts .> 0; dims=2); dims=2)) ./ T(n_times)
+    size(counts) == (n_stations, n_times) ||
+        error("GSL visible-count shape mismatch for $T")
+    counts == expected_counts || error("GSL visible-count reduction parity failed for $T")
+    ratio == expected_ratio || error("GSL station-ratio reduction parity failed for $T")
+
+    isl_positions, isl_velocities = isl_scenario(36, 10, T; seed=77)
+    pairs = make_pairs(36, 72)
+    full_isl = evaluate_isl_batch_gpu(
+        CuArray(isl_positions),
+        pairs;
+        velocities=CuArray(isl_velocities),
+    )
+    isl_counts = Array(
+        isl_available_counts_gpu(
+            CuArray(isl_positions),
+            pairs;
+            velocities=CuArray(isl_velocities),
+        ),
+    )
+    isl_ratio = Array(
+        isl_pair_available_ratio_gpu(
+            CuArray(isl_positions),
+            pairs;
+            velocities=CuArray(isl_velocities),
+        ),
+    )
+    isl_degree = Array(
+        isl_satellite_degree_gpu(
+            CuArray(isl_positions),
+            pairs;
+            velocities=CuArray(isl_velocities),
+        ),
+    )
+    isl_available_host = Array(full_isl.available)
+    n_isl_times = size(isl_available_host, 2)
+    expected_isl_counts = Int32.(vec(sum(isl_available_host; dims=1)))
+    expected_isl_ratio = T.(vec(sum(isl_available_host; dims=2))) ./ T(n_isl_times)
+    expected_degree = zeros(Int32, size(isl_positions, 1), n_isl_times)
+    for (pair_index, (i, j)) in enumerate(pairs), time_index in 1:n_isl_times
+        if isl_available_host[pair_index, time_index]
+            expected_degree[i, time_index] += Int32(1)
+            expected_degree[j, time_index] += Int32(1)
         end
     end
+    isl_counts == expected_isl_counts ||
+        error("ISL available-count reduction parity failed for $T")
+    isl_ratio == expected_isl_ratio ||
+        error("ISL pair-ratio reduction parity failed for $T")
+    isl_degree == expected_degree ||
+        error("ISL degree reduction parity failed for $T")
 
-    println("BENCH_SUITE_END")
+    println("REDUCTIONS_PARITY type=$T status=PASS")
+    return nothing
+end
+
+# ── near-Earth SGP4 CUDA parity vs SatelliteToolbox ───────────────────────────
+
+function _random_sgp4_elements(n_sat; seed, a_range, e_range)
+    Random.seed!(seed)
+    mu = 398600.5
+    n0 = Vector{Float64}(undef, n_sat)
+    e0 = Vector{Float64}(undef, n_sat)
+    i0 = Vector{Float64}(undef, n_sat)
+    raan = Vector{Float64}(undef, n_sat)
+    argp = Vector{Float64}(undef, n_sat)
+    M0 = Vector{Float64}(undef, n_sat)
+    bstar = Vector{Float64}(undef, n_sat)
+    for s in 1:n_sat
+        a = a_range[1] + (a_range[2] - a_range[1]) * rand()
+        n0[s] = sqrt(mu / a^3) * 60
+        e0[s] = e_range[1] + (e_range[2] - e_range[1]) * rand()
+        i0[s] = deg2rad(20.0 + 130.0 * rand())
+        raan[s] = deg2rad(360.0 * rand())
+        argp[s] = deg2rad(360.0 * rand())
+        M0[s] = deg2rad(360.0 * rand())
+        bstar[s] = 1e-4 * randn()
+    end
+    return n0, e0, i0, raan, argp, M0, bstar
+end
+
+function _sgp4_reference_series(n0, e0, i0, raan, argp, M0, bstar, tspan)
+    n_sat = length(n0)
+    n_times = length(tspan)
+    positions = Array{Float64}(undef, n_sat, n_times, 3)
+    velocities = Array{Float64}(undef, n_sat, n_times, 3)
+    for s in 1:n_sat
+        sgp4d = sgp4_init(
+            2.451545e6,
+            n0[s], e0[s], i0[s], raan[s], argp[s], M0[s], bstar[s];
+            sgp4c=sgp4c_wgs84,
+        )
+        for (time_index, t) in enumerate(tspan)
+            r, v = sgp4!(sgp4d, t)
+            positions[s, time_index, :] .= r
+            velocities[s, time_index, :] .= v
+        end
+    end
+    return positions, velocities
+end
+
+function validate_sgp4_cuda()
+    for (label, seed, a_range, e_range, want_algo) in (
+        ("sgp4", 41, (6750.0, 7200.0), (0.001, 0.02), Int32(1)),
+        ("sgp4_lowper", 42, (6560.0, 6605.0), (0.0005, 0.0030), Int32(0)),
+    )
+        n0, e0, i0, raan, argp, M0, bstar =
+            _random_sgp4_elements(24; seed=seed, a_range=a_range, e_range=e_range)
+        tspan = collect(0.0:10.0:120.0)
+        gold_pos, gold_vel =
+            _sgp4_reference_series(n0, e0, i0, raan, argp, M0, bstar, tspan)
+        el = sgp4_init_host(n0, e0, i0, raan, argp, M0, bstar)
+        want_algo in el.algo || error("SGP4 branch $label not selected: algos=$(el.algo)")
+
+        el_d = to_device(CUDA.CUDABackend(), el)
+        tspan_d = CuArray(tspan)
+        pos_d, vel_d = sgp4_propagate_gpu(el_d, tspan_d; velocities=true)
+        pos_d isa CuArray || error("SGP4 CUDA positions were not device-resident")
+        vel_d isa CuArray || error("SGP4 CUDA velocities were not device-resident")
+        pos = Array(pos_d)
+        vel = Array(vel_d)
+        pos_err = maximum(abs.(pos .- gold_pos))
+        vel_err = maximum(abs.(vel .- gold_vel))
+        pos_err < 1e-6 || error("SGP4 CUDA position parity failed for $label: $pos_err")
+        vel_err < 1e-9 || error("SGP4 CUDA velocity parity failed for $label: $vel_err")
+        println(
+            "SGP4_PARITY branch=$label status=PASS max_pos_err_km=$pos_err max_vel_err_km_s=$vel_err",
+        )
+    end
+
+    # deep-space rejection + device-resident SGP4→ISL
+    mu = 398600.5
+    try
+        sgp4_init_host(
+            [sqrt(mu / 20000.0^3) * 60], [0.01], [deg2rad(55.0)], [0.0], [0.0], [0.0], [0.0],
+        )
+        error("deep-space SGP4 should have thrown")
+    catch err
+        err isa ArgumentError || rethrow()
+    end
+
+    n0, e0, i0, raan, argp, M0, bstar =
+        _random_sgp4_elements(12; seed=9, a_range=(6750.0, 7200.0), e_range=(0.001, 0.02))
+    tspan = collect(0.0:30.0:180.0)
+    pairs = [(i, i + 1) for i in 1:11]
+    el = sgp4_init_host(n0, e0, i0, raan, argp, M0, bstar)
+    host_pos, host_vel = sgp4_propagate_gpu(el, tspan; velocities=true)
+    host_isl = evaluate_isl_batch_gpu(host_pos, pairs; velocities=host_vel)
+    out = device_pipeline(CUDA.CUDABackend(), el, tspan) do e, ts
+        p, v = sgp4_propagate_gpu(e, ts; velocities=true)
+        evaluate_isl_batch_gpu(p, pairs; velocities=v)
+    end
+    out.available == host_isl.available ||
+        error("SGP4→ISL CUDA residency availability mismatch")
+    isapprox(out.distance_km, host_isl.distance_km; rtol=1e-12, atol=1e-12) ||
+        error("SGP4→ISL CUDA residency distance mismatch")
+    println("SGP4_CUDA status=PASS")
     return nothing
 end
 
@@ -886,25 +1298,66 @@ function print_gpu_info()
     return nothing
 end
 
+const SUITE_HANDLERS = Dict{String,Function}(
+    "smoke_info" => () -> (print_gpu_info(); nothing),
+    "coverage_f64" => () -> validate_coverage(Float64),
+    "coverage_f32" => () -> validate_coverage(Float32),
+    "gsl_canonical_f64" => () -> validate_canonical_gsl(Float64),
+    "gsl_canonical_f32" => () -> validate_canonical_gsl(Float32),
+    "gsl_f64" => () -> validate_gsl(Float64),
+    "gsl_f32" => () -> validate_gsl(Float32),
+    "isl_f64" => () -> validate_isl(Float64),
+    "isl_f32" => () -> validate_isl(Float32),
+    "registered_f64" => () -> validate_registered_compute_backend(Float64),
+    "registered_f32" => () -> validate_registered_compute_backend(Float32),
+    "pipeline_adjoint" => validate_cuda_pipeline_and_adjoint,
+    "reductions_f64" => () -> validate_reductions(Float64),
+    "reductions_f32" => () -> validate_reductions(Float32),
+    "sgp4_cuda" => validate_sgp4_cuda,
+    "bench_coverage" => run_bench_coverage,
+    "bench_gsl" => run_bench_gsl,
+    "bench_isl" => run_bench_isl,
+    "bench_gsl_reduction" => run_bench_gsl_reduction,
+    "bench_isl_reduction" => run_bench_isl_reduction,
+    "bench_all" => run_benchmark_suite,
+    "full" => function ()
+        validate_coverage(Float64)
+        validate_coverage(Float32)
+        validate_canonical_gsl(Float64)
+        validate_canonical_gsl(Float32)
+        validate_gsl(Float64)
+        validate_gsl(Float32)
+        validate_isl(Float64)
+        validate_isl(Float32)
+        validate_registered_compute_backend(Float64)
+        validate_registered_compute_backend(Float32)
+        validate_cuda_pipeline_and_adjoint()
+        validate_reductions(Float64)
+        validate_reductions(Float32)
+        validate_sgp4_cuda()
+        run_benchmark_suite()
+        return nothing
+    end,
+)
+
 function main()
     VERSION >= v"1.12" || error("Julia 1.12 or newer is required, found $VERSION")
     CUDA.functional() || error("CUDA is not functional")
     pkgversion(CUDA) == EXPECTED_CUDA_JL_VERSION ||
         error("expected CUDA.jl $EXPECTED_CUDA_JL_VERSION, found $(pkgversion(CUDA))")
     CUDA.allowscalar(false)
+
+    suite = length(ARGS) >= 1 ? String(ARGS[1]) : "full"
+    handler = get(SUITE_HANDLERS, suite, nothing)
+    handler === nothing && error(
+        "unknown suite=$suite; known=$(join(sort!(collect(keys(SUITE_HANDLERS))), ","))",
+    )
+
+    println("SUITE_BEGIN name=$suite")
     print_gpu_info()
-    validate_coverage(Float64)
-    validate_coverage(Float32)
-    validate_canonical_gsl(Float64)
-    validate_canonical_gsl(Float32)
-    validate_gsl(Float64)
-    validate_gsl(Float32)
-    validate_isl(Float64)
-    validate_isl(Float32)
-    validate_registered_compute_backend(Float64)
-    validate_registered_compute_backend(Float32)
-    run_benchmark_suite()
-    println("MODAL_GPU_VALIDATION status=PASS")
+    handler()
+    println("SUITE_END name=$suite status=PASS")
+    println("MODAL_GPU_VALIDATION status=PASS suite=$suite")
 end
 
 main()
