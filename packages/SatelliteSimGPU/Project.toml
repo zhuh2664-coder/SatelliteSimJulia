@@ -1,0 +1,27 @@
+name = "SatelliteSimGPU"
+uuid = "b5f65f7a-5b5d-4a5c-a7c3-7ce937c0f2d1"
+version = "0.1.0"
+
+[deps]
+Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
+ChainRulesCore = "d360d2e6-b24c-11e9-a2a3-2a2ae2dbcce4"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
+SatelliteSimBackends = "8f4bd5d1-6a1c-4d2e-9d7f-4e1c8b6a2101"
+
+[sources]
+SatelliteSimBackends = {path = "../SatelliteSimBackends"}
+
+[compat]
+julia = "1.12"
+Adapt = "4"
+ChainRulesCore = "1"
+KernelAbstractions = "0.9"
+
+[extras]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
+SatelliteToolbox = "6ac157d9-b43d-51bb-8fab-48bf53814f4a"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["LinearAlgebra", "Random", "SatelliteToolbox", "Test"]

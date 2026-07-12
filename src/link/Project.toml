@@ -4,6 +4,7 @@ version = "0.1.0"
 
 [deps]
 SatelliteAnalysis = "101040f3-2a13-4d8c-b9b0-4a720fa906ce"
+SatelliteSimBackends = "8f4bd5d1-6a1c-4d2e-9d7f-4e1c8b6a2101"
 SatelliteSimOrbit = "b2c3d4e5-f6a7-8901-bcde-f23456789012"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 SatelliteToolbox = "6ac157d9-b43d-51bb-8fab-48bf53814f4a"
@@ -11,6 +12,7 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SatelliteSimFoundation = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 
 [sources]
+SatelliteSimBackends = {path = "../../packages/SatelliteSimBackends"}
 SatelliteSimOrbit = {path = "../orbit"}
 SatelliteSimFoundation = {path = "../foundation"}
 

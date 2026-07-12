@@ -4,7 +4,7 @@
 using LinearAlgebra: norm
 using SatelliteToolbox: SatelliteToolbox
 
-export evaluate_isl_batch, evaluate_gsl_batch
+export evaluate_isl_batch, evaluate_gsl_batch, evaluate_isl_series
 
 # ═══════════════════════════════════════════════
 # ISL 评估
@@ -188,4 +188,206 @@ function evaluate_gsl_batch(
         end
     end
     return avail_mat, dist_mat, elev_mat, delay_mat
+end
+
+compute_backend_fingerprint(backend::CPUComputeBackend) = (
+    name="cpu",
+    type=string(typeof(backend)),
+    implementation_module="SatelliteSimLink",
+    implementation_version=string(Base.pkgversion(@__MODULE__)),
+    capabilities=compute_backend_capabilities(backend),
+    cache_token=compute_backend_cache_token(backend),
+)
+
+compute_backend_cache_token(::CPUComputeBackend) = :cpu
+
+function compute_backend_source_files(::CPUComputeBackend)
+    files = String[]
+    for (root, _, names) in walkdir(@__DIR__)
+        append!(
+            files,
+            joinpath(root, name) for name in names if endswith(name, ".jl"),
+        )
+    end
+    push!(files, joinpath(@__DIR__, "..", "Project.toml"))
+    return sort!(files)
+end
+
+function evaluate_gsl_series(
+    ::CPUComputeBackend,
+    positions::AbstractArray{<:Real,3},
+    stations;
+    gsl_min_elevation_deg,
+    gsl_max_range_km,
+)::GSLSeriesResult
+    size(positions, 3) == 3 ||
+        throw(ArgumentError("positions must have shape (satellite, time, xyz=3)"))
+    n_satellites, n_times, _ = size(positions)
+    n_satellites > 0 && n_times > 0 ||
+        throw(ArgumentError("positions must be non-empty"))
+    all(isfinite, positions) ||
+        throw(ArgumentError("positions must contain only finite values"))
+    isfinite(gsl_min_elevation_deg) ||
+        throw(ArgumentError("gsl_min_elevation_deg must be finite"))
+    isfinite(gsl_max_range_km) && gsl_max_range_km > 0 ||
+        throw(ArgumentError("gsl_max_range_km must be finite and positive"))
+
+    normalized_stations = NTuple{3,Float64}[]
+    sizehint!(normalized_stations, length(stations))
+    for station in stations
+        length(station) == 3 ||
+            throw(ArgumentError(
+                "each GSL station must be (latitude_deg, longitude_deg, altitude_km)",
+            ))
+        normalized = Tuple(Float64(value) for value in station)
+        all(isfinite, normalized) ||
+            throw(ArgumentError("GSL station coordinates must be finite"))
+        -90 <= normalized[1] <= 90 ||
+            throw(ArgumentError("GSL station latitude must be in [-90, 90] degrees"))
+        push!(normalized_stations, normalized)
+    end
+    constraints = PhysicalConstraints(
+        gsl_min_elevation_deg=Float64(gsl_min_elevation_deg),
+        gsl_max_range_km=Float64(gsl_max_range_km),
+    )
+    output_size = (n_satellites, length(normalized_stations), n_times)
+    available = Array{Bool}(undef, output_size)
+    distance_km = Array{Float64}(undef, output_size)
+    elevation_deg = Array{Float64}(undef, output_size)
+    delay_ms = Array{Float64}(undef, output_size)
+
+    for time_index in 1:n_times
+        available_at_time, distance_at_time, elevation_at_time, delay_at_time =
+            evaluate_gsl_batch(
+                position_at_instant(positions, time_index),
+                normalized_stations;
+                constraints=constraints,
+            )
+        available[:, :, time_index] .= available_at_time
+        distance_km[:, :, time_index] .= distance_at_time
+        elevation_deg[:, :, time_index] .= elevation_at_time
+        delay_ms[:, :, time_index] .= delay_at_time
+    end
+    return validate_gsl_series_result(
+        GSLSeriesResult(
+            available,
+            distance_km,
+            elevation_deg,
+            delay_ms,
+            Dict{String,Any}("backend" => "cpu"),
+        );
+        expected_satellites=n_satellites,
+        expected_stations=length(normalized_stations),
+        expected_times=n_times,
+    )
+end
+
+"""
+    evaluate_isl_series(::CPUComputeBackend, positions, isl_pairs; kwargs...)
+        -> ISLSeriesResult
+
+CPU 后端的 ISL 契约实现（对齐 `evaluate_gsl_series` CPU 版）：按时间片循环调用
+`evaluate_isl_batch`，把每个时刻返回的 `Vector{NamedTuple}` 拼成 `(n_pairs, n_times)`
+的 SoA `ISLSeriesResult`。`positions`/`velocities` 形状 `(satellite, time, xyz=3)`，
+ECEF km / (km/s)；`isl_pairs` 是 `(source, target)` 的 1-based 卫星编号序列。不提供
+`velocities` 时只做距离 + LOS + 距离约束（elevation=90, cos_psi=1, duration=0）。
+`terminal_id`（=4）与地球半径沿用 `evaluate_isl_batch` 默认，与 Kernel 后端一致。
+"""
+function evaluate_isl_series(
+    ::CPUComputeBackend,
+    positions::AbstractArray{<:Real,3},
+    isl_pairs;
+    velocities::Union{Nothing,AbstractArray{<:Real,3}}=nothing,
+    isl_max_range_km=5000.0,
+    isl_require_los::Bool=true,
+    isl_max_cone_angle_deg=60.0,
+    isl_min_duration_s=10.0,
+    time_horizon_s=300.0,
+)::ISLSeriesResult
+    size(positions, 3) == 3 ||
+        throw(ArgumentError("positions must have shape (satellite, time, xyz=3)"))
+    n_satellites, n_times, _ = size(positions)
+    n_satellites > 0 && n_times > 0 ||
+        throw(ArgumentError("positions must be non-empty"))
+    all(isfinite, positions) ||
+        throw(ArgumentError("positions must contain only finite values"))
+    isfinite(isl_max_range_km) && isl_max_range_km > 0 ||
+        throw(ArgumentError("isl_max_range_km must be finite and positive"))
+    isfinite(isl_max_cone_angle_deg) ||
+        throw(ArgumentError("isl_max_cone_angle_deg must be finite"))
+    isfinite(isl_min_duration_s) ||
+        throw(ArgumentError("isl_min_duration_s must be finite"))
+    isfinite(time_horizon_s) && time_horizon_s > 0 ||
+        throw(ArgumentError("time_horizon_s must be finite and positive"))
+    if velocities !== nothing
+        size(velocities) == size(positions) ||
+            throw(ArgumentError(
+                "velocities must match positions shape (satellite, time, xyz=3)",
+            ))
+        all(isfinite, velocities) ||
+            throw(ArgumentError("velocities must contain only finite values"))
+    end
+
+    pairs = Tuple{Int,Int}[]
+    sizehint!(pairs, length(isl_pairs))
+    for pair in isl_pairs
+        length(pair) == 2 ||
+            throw(ArgumentError("each ISL pair must be (source, target)"))
+        i, j = Int(first(pair)), Int(last(pair))
+        (1 <= i <= n_satellites && 1 <= j <= n_satellites) ||
+            throw(ArgumentError("isl_pairs indices must be within 1:$(n_satellites)"))
+        push!(pairs, (i, j))
+    end
+
+    constraints = PhysicalConstraints(
+        isl_max_range_km=Float64(isl_max_range_km),
+        isl_require_los=isl_require_los,
+        isl_max_cone_angle_deg=Float64(isl_max_cone_angle_deg),
+        isl_min_duration_s=Float64(isl_min_duration_s),
+    )
+
+    n_pairs = length(pairs)
+    available = Array{Bool}(undef, n_pairs, n_times)
+    distance_km = Array{Float64}(undef, n_pairs, n_times)
+    delay_ms = Array{Float64}(undef, n_pairs, n_times)
+    line_of_sight = Array{Bool}(undef, n_pairs, n_times)
+    elevation_deg = Array{Float64}(undef, n_pairs, n_times)
+    cos_psi = Array{Float64}(undef, n_pairs, n_times)
+    duration_s = Array{Float64}(undef, n_pairs, n_times)
+
+    for time_index in 1:n_times
+        vel_matrix = velocities === nothing ? nothing :
+            position_at_instant(velocities, time_index)
+        results_at_time = evaluate_isl_batch(
+            position_at_instant(positions, time_index),
+            pairs;
+            constraints=constraints,
+            vel_matrix=vel_matrix,
+            time_horizon=Float64(time_horizon_s),
+        )
+        for (pair_index, link) in enumerate(results_at_time)
+            available[pair_index, time_index] = link.available
+            distance_km[pair_index, time_index] = link.distance_km
+            delay_ms[pair_index, time_index] = link.latency_ms
+            line_of_sight[pair_index, time_index] = link.line_of_sight
+            elevation_deg[pair_index, time_index] = link.elevation_deg
+            cos_psi[pair_index, time_index] = link.cos_psi
+            duration_s[pair_index, time_index] = link.duration_s
+        end
+    end
+
+    return validate_isl_series_result(
+        ISLSeriesResult(
+            available,
+            distance_km,
+            delay_ms,
+            line_of_sight,
+            elevation_deg,
+            cos_psi,
+            duration_s,
+            Dict{String,Any}("backend" => "cpu"),
+        );
+        expected_pairs=n_pairs,
+        expected_times=n_times,
+    )
 end
