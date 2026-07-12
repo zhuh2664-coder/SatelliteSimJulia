@@ -868,22 +868,23 @@ function SatelliteSimOrbit.propagate_to_ecef(
     Threads.@threads for i in 1:n_sats
         tle = satellite_toolbox_tle(tle_elements[i]; verify_checksum = verify_checksum)
         sgp4d = SatelliteToolboxSgp4.sgp4_init(tle)
-        tle_epoch = SatelliteToolbox.tle_epoch(DateTime, tle)
+        tle_epoch_jd = SatelliteToolbox.tle_epoch(tle)
 
         for j in 1:n_time
             elapsed_s = offsets[j]
             # SGP4 时间：相对 TLE epoch 的分钟数
             target_time = time_grid.epoch.instant + Dates.Millisecond(1000 * elapsed_s)
-            elapsed_min = Dates.value(target_time - tle_epoch) / 60000
-
-            # SGP4 传播 → TEME 位置 (km)
-            r_teme, _ = SatelliteToolboxSgp4.sgp4!(sgp4d, elapsed_min)
 
             # TEME → ECEF：需要目标时刻的 JD UTC
             # JD 计算：J2000 epoch (2000-01-01 12:00 UTC) = JD 2451545.0
             # 用 Dates 的毫秒差换算
             j2000 = DateTime(2000, 1, 1, 12, 0, 0)
             jd = 2451545.0 + Dates.value(Dates.Millisecond(target_time - j2000)) / 86400000.0
+            elapsed_min = (jd - tle_epoch_jd) * 1440.0
+
+            # SGP4 传播 → TEME 位置 (km)
+            r_teme, _ = SatelliteToolboxSgp4.sgp4!(sgp4d, elapsed_min)
+
             D = SatelliteToolbox.r_eci_to_ecef(
                 SatelliteToolbox.TEME(),
                 SatelliteToolbox.PEF(),

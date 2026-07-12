@@ -12,6 +12,7 @@ include("propagator_sgp4.jl")
 #include("propagator_hpop.jl")
 include("ephemeris.jl")
 include("tle_sources.jl")
+include("omm_source.jl")
 include("constellation_builder.jl")
 include("accessors.jl")
 
