@@ -57,8 +57,9 @@ R1 relaxation: hard elevation cutoff → sigmoid.
 Type-generic: works with Float64 and Enzyme/ForwardDiff dual numbers.
 """
 function soft_coverage(elevation_deg::T, min_el_deg::T; τ::T = T(5.0)) where T <: Number
-    return relax(SoftCoverage(; min_elevation_deg=min_el_deg, temperature=τ),
-                 elevation_deg, min_el_deg; τ=τ)
+    # SoftCoverage 仅作分派 token（relax 只读显式实参）；用默认字段构造，
+    # 避免把 ForwardDiff Dual 塞进 Float64 字段。
+    return relax(SoftCoverage(), elevation_deg, min_el_deg; τ=τ)
 end
 
 # ── R2: Noisy-OR multi-satellite aggregation ──────────────────────────────────
@@ -108,7 +109,8 @@ end
 R4 relaxation: max → LogSumExp soft-maximum.
 """
 function logsumexp_max(values::AbstractVector{T}; τ::T = one(T)) where T <: Number
-    return relax(LogSumExpMax(; temperature=τ), values; τ=τ)
+    # 同上：token 用默认字段构造，保持 ForwardDiff Dual 安全。
+    return relax(LogSumExpMax(), values; τ=τ)
 end
 
 # ── Internal: elevation angle computation ─────────────────────────────────────
