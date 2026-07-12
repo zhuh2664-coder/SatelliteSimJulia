@@ -2,7 +2,7 @@
 
 > 状态：进行中（步进实施，每步经用户评审 + 独立评估子程序把关）。
 > 目标一句话：让梯度能从**真实 TLE 的 SGP4 轨道参数**（而不只是解析 J2 的 Walker 参数）一路反传到**网络 KPI**（覆盖 / 软 ISL / 软路由），并用有限差分逐步验证。
-> 定位依据：调研确认「轨道六根数 → 端到端可微 → 网络 KPI」到 2026 年仍是公开空白（dSGP4 止于轨道、Kacker&Cahoy 止于几何覆盖、dNE 止于地面 TE）。
+> 定位依据：据本文调研所及，未发现「轨道六根数 → 端到端可微 → 网络 KPI」的公开先例（dSGP4 止于轨道、Kacker&Cahoy 止于几何覆盖、dNE 止于地面 TE）。
 
 ## 一、已有基础（盘点，全部有测试）
 
@@ -47,11 +47,74 @@
 
 ### Step 1 — 可行性冒烟 ✅（2026-07-13）
 
-- 脚本：`/tmp/diffsgp4_step1.jl`（只读仓库数据）。配置：真实 Starlink TLE 10 颗（epoch 跨度 500.1 min）、NT=10（0–95 min）、地面网格 G=50、`coverage_loss`。
-- 结果：loss=0.9008（有限）；ForwardDiff 70 参数梯度全有限且非零，`|grad|=50.59`；**vs 中心差分最大相对误差 2.75e-5**（70/70 全为显著分量）；ForwardDiff 2.7s（含编译）、FD <0.05s。
-- 参数类敏感度（未归一，仅示意）：n₀ 主导（50.6），e 0.35，Ω 0.21，ω/M ~0.11，i 0.068，B* 0.045。注意 n₀ 量级大部分来自单位尺度（rad/min），Step 3 归因需做尺度归一。
-- **顺手修复**：`coverage.jl` 的 `soft_coverage`/`logsumexp_max` 把 Dual 数塞进 `SoftCoverage`/`LogSumExpMax` 的 `Float64` 字段导致 ForwardDiff 报错；改为用默认字段构造分派 token（`relax` 只读显式实参，语义不变）。待回归验证。
+**包内化文件**
+
+| 文件 | 职责 |
+|---|---|
+| `src/opt/src/layers/06_optimization/sgp4_e2e.jl` | `sgp4_constellation_series`、`sgp4_series_ecef`、`coverage_loss_vjp`、`sgp4_e2e_gradient` |
+| `src/opt/src/SatelliteSimOpt.jl` | include + export 上述 API |
+| `src/opt/test/test_sgp4_e2e.jl` | 单元测试：VJP vs ForwardDiff；端到端梯度 vs 全量 ForwardDiff + 中心差分抽检 |
+| `src/opt/scripts/sgp4_step1_check.jl` | 独立冒烟脚本（Modal 镜像入口；不 include `test/`） |
+
+**配置**：真实 Starlink TLE 10 颗（`data/tle/celestrak/starlink_gp_latest.tle`，可用 `SATSIM_TLE_PATH` 覆盖）、NT=10（0–95 min）、`ground_grid(5,10)`（G=50）、`coverage_loss`。
+
+**验证命令**
+
+```bash
+# 单元测试
+julia --project=src/opt -e 'using Pkg; Pkg.resolve(); Pkg.instantiate(); Pkg.test(; coverage=false)'
+
+# Step1 冒烟（4 线程 CPU，目标 <5 min）
+julia --project=src/opt --threads=4 src/opt/scripts/sgp4_step1_check.jl
+```
+
+**STEP1_OK 判据**（脚本末行打印 `STEP1_OK` 即全过；任一失败 `exit(1)` 并打印原因）
+
+1. `loss` 与 `grad` 全有限且非零范数。
+2. 对 `|grad|` 最大的 20 个分量做中心差分：`h = 1e-6·max(|x_i|, 1e-2)`，`relerr = |g_ad − g_fd| / (|g_fd| + 1e-12)`，全部 `< 1e-3`。
+3. 输出格式（逐行）：
+   - `STEP1 loss=... grad_norm=... finite=true`
+   - `STEP1 fd_max_relerr=... n_checked=20`
+   - `STEP1_OK`
+
+**早期原型**（已 supersede）：`/tmp/diffsgp4_step1.jl` 只读仓库数据验证过可行性（loss=0.9008，FD 最大相对误差 2.75e-5）；现以包内 API + 脚本为准。
+
+- **顺手修复**：`coverage.jl` 的 `soft_coverage`/`logsumexp_max` 把 Dual 数塞进 `Float64` 字段导致 ForwardDiff 报错 → 改为默认字段构造分派 token；`sgp4_e2e_gradient` 中 `dP` 与 ForwardDiff Jacobian 展平顺序对齐（`(NT,3)` → `(3,NT)` 列主序）。
 - 环境注意：`src/opt/Manifest.toml` 需在 Link 加依赖后 `Pkg.resolve()`（本机已做，Manifest 未提交）。
+
+### Step 2' — 1584 真实规模端到端梯度 ✅（2026-07-13）
+
+**交付**：`src/opt/src/layers/06_optimization/sgp4_e2e.jl`（`SatelliteSimOpt.jl` include + export），测试 `src/opt/test/test_sgp4_e2e.jl`（已接入 `src/opt/test/runtests.jl` 实际运行路径）。
+
+**API**（时间契约显式化：`jd_ref` 为必填 kwarg，数值核不再隐式 `max(epochs)`；UTC≈UT1 近似、GMST z 旋转 TEME→PEF≈ECEF 无极移，GMST 对参数为常数不进 AD）：
+
+- `sgp4_constellation_series(params, epochs, ts_min; jd_ref)` → `(N,NT,3)` TEME，AD 透明；
+- `sgp4_series_ecef(params, epochs, ts_min, gmsts; jd_ref)` → `(N,NT,3)` ECEF；
+- `coverage_loss_vjp(positions, gp, w; ...) -> (loss, dP)`：`coverage_loss` 的手写 CPU 伴随（数学与 GPU 包 `adjoint.jl` 同款），`dt` 必须传真实时间步长（分钟）；
+- `sgp4_e2e_gradient(params, epochs, ts_min, gp, w; jd_ref, engine=:enzyme|:blockdiag, dt=真实步长, ...) -> (loss, grad::Vector{7N})`。
+
+**双引擎**：主引擎 `:enzyme`（Enzyme 整链反向，一次反传拿全部 7N 梯度，单线程）；交叉验证引擎 `:blockdiag`（手写 loss 伴随 → dL/dP，再每星 ForwardDiff Jacobian 3NT×7（chunk=7，`Threads.@threads`）块对角收缩）。域校验：n₀>0、周期 ≥225 min 抛 ArgumentError（SDP4 不支持）、e∈[0,1)、|B*|<1。
+
+**对标（N=10 真实 Starlink，NT=10，G=50）**：两引擎 vs 全量 ForwardDiff 相对 L2 **≈1.1e-15 / 1.3e-15**（验收 <1e-8）；中心差分 10 随机分量步长扫描（h×{0.1,1,10}）best-rel <1e-4 全过；随机方向导数相对误差 <1e-5；伴随 vs ForwardDiff-on-P（N=6,NT=4,G=20）rtol 1e-10 过。`Pkg.test` 全绿（aon_throughput 2 + SGP4 e2e 58）。
+
+**1584 真实实验**（本机 M2 Max 32GB，julia 1.12.6，`-t auto`=8 线程；真实 Starlink TLE 前 1584 颗，epoch 跨度 3558 min；G=800（ground_grid(20,40)），λ=0.1，dt=真实步长，jd_ref=max(epochs)=2461199.83338。数字为实测非估算）：
+
+| 配置 | loss | \|grad\| | Enzyme 热 run | blockdiag 总耗时（series/伴随/Jac/收缩） | 引擎互检 rel_l2 | 峰值 RSS |
+|---|---|---|---|---|---|---|
+| NT=20 (dt=5 min) | −0.331537585 | 8.90e-4 | 4.58 s | **1.88 s**（0.009/1.861/0.007/0.001） | 6.7e-8 | ~4.4 GiB |
+| NT=96 (dt=1 min) | −0.331537753 | 7.00e-4 | 28.4 s | **9.47 s**（0.040/9.404/0.024/0.003） | 6.3e-8 | ~7.6–9.2 GiB |
+
+前向（series+loss）单独计时：NT=20 0.855 s、NT=96 4.22 s。梯度 11088/11088 全有限非零。
+
+**尺度化敏感度**（‖xⱼ·∂L/∂xⱼ‖₂，7 类参数按尺度归一后，NT=96）：n₀ 4.6e-5 ≫ M 5.4e-6 > i 3.5e-6 > argp 2.3e-6 > raan 1.9e-6 ≫ e 3.8e-10 ≈ B* 3.6e-10。注意这是"尺度化敏感度"（量纲无关的相对灵敏度指标），不作因果归因解释。
+
+**解读与瓶颈**：
+- 1584 星时 noisy-OR 覆盖饱和（mean_cov≈1），loss ≈ −1 + λ·τ·log G ≈ −0.33（LSE 下界项），梯度范数随饱和度变小——物理上合理（满覆盖星座的边际覆盖梯度趋零）。
+- 两引擎 6e-8 互检差异来自 1584 项 noisy-OR 连乘的浮点消去（N=10 时互检 ~1e-15），属数值精度非实现错误。
+- 瓶颈拆解：blockdiag 路径 >98% 时间在手写伴随（O(N·G·NT) 仰角+sigmoid 两遍），SGP4 series 与 per-sat Jacobian（8 线程）近乎免费；Enzyme 整链约为手写伴随的 2.4–3.0×（单线程、含 tape 开销），内存也更高。
+- **结论：本机可常态化跑 1584 端到端梯度**——NT=20 一次梯度 <2 s（blockdiag）/ <5 s（Enzyme），NT=96 <10 s / <29 s，远低于 30 min 预算；日常迭代建议 blockdiag 为默认高性能路径、Enzyme 作数学参照，两者已在测试中互锁。
+
+**顺带修正**：`soft_coverage` 文档描述错误（sigmoid 在 cutoff 处恒为 0.5，原文误写 τ=5° 时 ≈0.88）；本文档定位声明由「公开空白」改为「据本文调研所及未发现」。
 
 ## 六、验证与评审机制
 

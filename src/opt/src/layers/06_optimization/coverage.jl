@@ -52,8 +52,9 @@ end
 """
     soft_coverage(elevation_deg, min_el_deg; τ=5.0) -> T
 
-R1 relaxation: hard elevation cutoff → sigmoid.
-τ controls transition width: τ=5° gives ≈0.88 at cutoff, τ=1° gives ≈0.99.
+R1 relaxation: hard elevation cutoff → sigmoid σ((el − min_el)/τ).
+The value is exactly 0.5 at the cutoff for any τ; τ controls the transition
+width (≈0.88 at min_el + 2τ, ≈0.12 at min_el − 2τ).
 Type-generic: works with Float64 and Enzyme/ForwardDiff dual numbers.
 """
 function soft_coverage(elevation_deg::T, min_el_deg::T; τ::T = T(5.0)) where T <: Number

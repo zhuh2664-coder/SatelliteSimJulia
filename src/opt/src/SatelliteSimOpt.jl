@@ -24,6 +24,8 @@ export MU_KM3_S2, R_EARTH_KM, OMEGA_EARTH,
        NoisyORCoverage, LeakyRevisit, relax, soft_coverage,
        noisy_or_coverage, leaky_revisit, logsumexp_max, ground_grid,
        coverage_loss, coverage_depth_loss, end_to_end_loss, deadzone_scan_loss,
+       sgp4_constellation_series, sgp4_series_ecef,
+       coverage_loss_vjp, sgp4_e2e_gradient,
        AdamState, adam_step!, adam_optimize, evaluate_constellation,
        build_visibility, soft_select_capacity, hard_eval_topM, hard_eval_diversity,
        CapacityOptimizationSnapshot, CapacityLossWeights, bottleneck_snapshots,
@@ -42,6 +44,7 @@ include("layers/04_routing/pinn_routing.jl")
 
 # Optimization primitives.
 include("layers/06_optimization/coverage.jl")
+include("layers/06_optimization/sgp4_e2e.jl")
 include("layers/06_optimization/loss.jl")
 include("layers/06_optimization/differentiable_metrics.jl")
 include("layers/06_optimization/soft_selection.jl")
