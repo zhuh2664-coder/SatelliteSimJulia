@@ -49,6 +49,7 @@ function study(name::String;
         ground_stations = something(ground_stations, GroundStation[]),
         users = something(users, GroundUser[]),
         random_seed = random_seed,
+        kwargs...,
     )
 end
 

@@ -3,10 +3,22 @@ module SatelliteSimLab
 using SatelliteSimCore
 using SatelliteSimNet
 using SatelliteSimTraffic: TrafficDemand
+import SatelliteSimOrbit
 using SatelliteSimBackends: OrbitBackendSpec, create_orbit_backend,
-                            available_orbit_backends, orbit_backend_registered
+                            available_orbit_backends, orbit_backend_registered,
+                            ResolvedComputeBackend, ComputeBackendSpec, GSLSeriesResult,
+                            resolve_compute_backend, compute_backend_spec,
+                            evaluate_gsl_series,
+                            validate_gsl_series_result, available_compute_backends,
+                            compute_backend_registered, backend_name,
+                            backend_capabilities, compute_backend_name,
+                            compute_backend_capabilities,
+                            compute_backend_cache_token,
+                            compute_backend_fingerprint,
+                            compute_backend_source_files
 
-export OrbitBackendSpec, available_orbit_backends, orbit_backend_registered
+export OrbitBackendSpec, available_orbit_backends, orbit_backend_registered,
+       ComputeBackendSpec, available_compute_backends, compute_backend_registered
 
 # Layer 11: experiment contracts and the single execution path.
 include("layers/11_experiment/intent.jl")

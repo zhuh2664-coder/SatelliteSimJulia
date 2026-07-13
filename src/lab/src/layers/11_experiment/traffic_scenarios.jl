@@ -40,18 +40,25 @@ function city_to_city_pairs(
     constraints::PhysicalConstraints=LEO_DEFAULTS;
     top_k::Int=3,
     city_pairs::Union{Nothing,Vector{Tuple{Int,Int}}}=nothing,
+    gsl_backend=:cpu,
 )
     n_cities = length(cities)
     T = size(sat_positions, 1)
 
     city_visible_sats = Vector{Vector{Int}}(undef, n_cities)
-    for (ci, city) in enumerate(cities)
-        city_tup = _city_lat_lon_alt(city)
-        avail, dist, _, _ = evaluate_gsl_batch(sat_positions, [city_tup]; constraints=constraints)
+    city_tuples = [_city_lat_lon_alt(city) for city in cities]
+    position_series = reshape(sat_positions, T, 1, 3)
+    gsl = assess_gsl_series(
+        position_series,
+        city_tuples,
+        constraints;
+        backend=gsl_backend,
+    )
+    for ci in eachindex(cities)
         visible = Tuple{Int,Float64}[]
         for i in 1:T
-            avail[i, 1] || continue
-            push!(visible, (i, dist[i, 1]))
+            gsl.available[i, ci, 1] || continue
+            push!(visible, (i, gsl.distance_km[i, ci, 1]))
         end
         sort!(visible, by=x -> x[2])
         k = min(top_k, length(visible))
@@ -90,9 +97,11 @@ function city_to_city_pairs_sampled(
     top_k::Int=3,
     n_pairs::Int=15,
     n_sample::Int=10,
+    gsl_backend=:cpu,
 )
     n_cities = length(cities)
     n_pairs = min(n_pairs, div(n_cities * (n_cities - 1), 2))
+    compute_backend = _resolve_gsl_compute_backend(gsl_backend)
     sampled = Set{Tuple{Int,Int}}()
     attempts = 0
     max_attempts = max(10, 10 * n_sample)
@@ -105,6 +114,7 @@ function city_to_city_pairs_sampled(
             constraints;
             top_k=top_k,
             city_pairs=pool,
+            gsl_backend=compute_backend,
         )
         union!(sampled, gs_pairs)
     end

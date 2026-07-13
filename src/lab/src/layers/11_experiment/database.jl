@@ -26,7 +26,11 @@ function ExperimentRecord(config::ExperimentConfig, result::ExperimentResult; no
              :orbit_backend_options => config.orbit_backend === nothing ?
                  Dict{String,Any}() : Dict(
                      String(key) => value for (key, value) in pairs(config.orbit_backend.options)
-                 )),
+                 ),
+             :gsl_backend => String(config.gsl_backend.name),
+             :gsl_backend_options => Dict(
+                 String(key) => value for (key, value) in pairs(config.gsl_backend.options)
+             )),
         Dict(:coverage     => result.coverage.coverage_ratio,
              :avg_lat_ms   => result.latency.avg_latency_ms,
              :max_lat_ms   => result.latency.max_latency_ms,

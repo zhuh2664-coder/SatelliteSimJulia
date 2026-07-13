@@ -7,6 +7,7 @@ struct ExperimentConfig
     constellation::WalkerConstellationConfig
     propagator::AbstractKeplerianPropagator
     orbit_backend::Union{Nothing,OrbitBackendSpec}
+    gsl_backend::ComputeBackendSpec
     tspan::Vector{Float64}
     constraints::PhysicalConstraints
     topology_strategy::AbstractTopologyStrategy
@@ -33,6 +34,18 @@ _resolve_orbit_backend_param(name::Union{Symbol,AbstractString}) = OrbitBackendS
 function _resolve_orbit_backend_param(value)
     throw(ArgumentError(
         "orbit_backend must be nothing, Symbol, String, or OrbitBackendSpec; got $(typeof(value))",
+    ))
+end
+
+# GSL execution is operation-scoped. It does not imply that orbit propagation,
+# ISL, routing, traffic, or metrics move to the same device.
+_resolve_gsl_backend_param(::Nothing) = ComputeBackendSpec(:cpu)
+_resolve_gsl_backend_param(spec::ComputeBackendSpec) = spec
+_resolve_gsl_backend_param(name::Union{Symbol,AbstractString}) =
+    ComputeBackendSpec(name)
+function _resolve_gsl_backend_param(value)
+    throw(ArgumentError(
+        "gsl_backend must be nothing, Symbol, String, or ComputeBackendSpec; got $(typeof(value))",
     ))
 end
 
@@ -63,6 +76,8 @@ function ExperimentConfig(;
     propagator = DefaultPropagator,
     # 可选后端只接受注册名或 OrbitBackendSpec；nothing 保持原生传播路径。
     orbit_backend = nothing,
+    # GSL 默认走 CPU；可选加速包注册后可传 :cuda 等 ComputeBackendSpec。
+    gsl_backend = nothing,
     # 接受 TimeHorizonIntent（推荐）或裸 Vector{Float64}（高级）
     tspan = DefaultTimeHorizon,
     # 接受 ConstraintIntent（推荐）或 PhysicalConstraints（高级，如直传 LEO_DEFAULTS）
@@ -109,6 +124,7 @@ function ExperimentConfig(;
         resolved_constellation,
         resolve_propagator(propagator, ctx),
         _resolve_orbit_backend_param(orbit_backend),
+        _resolve_gsl_backend_param(gsl_backend),
         resolved_tspan,
         resolve_constraint(constraints, ctx),
         _resolve_topo_param(topology_strategy, ctx),

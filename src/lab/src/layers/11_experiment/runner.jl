@@ -21,26 +21,37 @@ function run_experiment(config::ExperimentConfig)::ExperimentResult
     return full_constellation_assessment(config)
 end
 
+function _run_experiment(
+    config::ExperimentConfig,
+    gsl_resolution::ResolvedComputeBackend,
+)::ExperimentResult
+    return _full_constellation_assessment(config, gsl_resolution)
+end
+
 function run_multiframe_experiment(config::ExperimentConfig)
     t_start = time()
 
     constellation = config.constellation
     T = constellation.T
-    P = constellation.P
+    user_tuples = _user_position_tuples(config.users)
+    isempty(user_tuples) && error("run_multiframe_experiment requires at least one user")
+    gsl_backend = _backend_from_resolution(
+        config,
+        _resolve_experiment_gsl_backend(config),
+    )
 
     _, positions = propagate_constellation_positions(config)
-
     n_sat = T
     n_time = size(positions, 2)
     dt_s = length(config.tspan) > 1 ? config.tspan[2] - config.tspan[1] : 1.0
-    user_tuples = _user_position_tuples(config.users)
-    isempty(user_tuples) && error("run_multiframe_experiment requires at least one user")
 
-    gsl_series = Array{Bool,3}(undef, n_sat, n_time, length(user_tuples))
-    for t in 1:n_time
-        pos_t = position_at_instant(positions, t)
-        gsl_series[:, t, :] = evaluate_gsl_batch(pos_t, user_tuples; constraints=config.constraints)[1]
-    end
+    gsl_result = assess_gsl_series(
+        positions,
+        user_tuples,
+        config.constraints;
+        backend=gsl_backend,
+    )
+    gsl_series = permutedims(gsl_result.available, (1, 3, 2))
 
     result = compute_temporal_coverage(gsl_series, Float64(dt_s))
     println(

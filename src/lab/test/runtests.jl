@@ -6,6 +6,8 @@ using SatelliteSimFoundation
 using SatelliteSimBackends
 using JSON
 using HTTP
+using Printf
+using Serialization
 using Test
 
 struct LabOffsetOrbitBackend <: AbstractOrbitBackend
@@ -23,7 +25,93 @@ function SatelliteSimBackends.propagate_orbit(
     )
 end
 
-function _small_config(; name="lab-smoke", propagator=DefaultPropagator)
+struct LabPassthroughComputeBackend <: AbstractComputeBackend end
+struct LabCPUDeviceBackend <: AbstractComputeBackend end
+struct LabMismatchedMetadataBackend <: AbstractComputeBackend end
+struct StatefulProbeComputeBackend <: AbstractComputeBackend
+    value::Int
+end
+const LAB_COMPUTE_CALLS = Ref(0)
+const LAB_COMPUTE_FACTORY_CALLS = Ref(0)
+
+SatelliteSimBackends.compute_backend_name(::LabPassthroughComputeBackend) =
+    "lab_passthrough"
+SatelliteSimBackends.compute_backend_capabilities(::LabPassthroughComputeBackend) = (
+    operations=(:gsl_series,),
+    device=:test,
+    input_residency=:host,
+    output_residency=:host,
+)
+SatelliteSimBackends.compute_backend_cache_token(::LabPassthroughComputeBackend) =
+    :lab_passthrough
+SatelliteSimBackends.compute_backend_name(::LabCPUDeviceBackend) =
+    "lab_cpu_device"
+SatelliteSimBackends.compute_backend_capabilities(::LabCPUDeviceBackend) = (
+    operations=(:gsl_series,),
+    device=:cpu,
+    input_residency=:host,
+    output_residency=:host,
+)
+SatelliteSimBackends.compute_backend_name(::LabMismatchedMetadataBackend) =
+    "lab_mismatched_metadata"
+SatelliteSimBackends.compute_backend_capabilities(::LabMismatchedMetadataBackend) = (
+    operations=(:gsl_series,),
+    device=:test,
+    input_residency=:host,
+    output_residency=:host,
+)
+SatelliteSimBackends.compute_backend_capabilities(::StatefulProbeComputeBackend) = (
+    operations=(:gsl_series,),
+    device=:test,
+    input_residency=:host,
+    output_residency=:host,
+)
+
+function SatelliteSimBackends.evaluate_gsl_series(
+    ::LabPassthroughComputeBackend,
+    positions,
+    stations;
+    gsl_min_elevation_deg,
+    gsl_max_range_km,
+)
+    LAB_COMPUTE_CALLS[] += 1
+    constraints = PhysicalConstraints(
+        gsl_min_elevation_deg=Float64(gsl_min_elevation_deg),
+        gsl_max_range_km=Float64(gsl_max_range_km),
+    )
+    result = assess_gsl_series(
+        positions,
+        stations,
+        constraints;
+        backend=:cpu,
+    )
+    result.metadata["backend"] = "lab_passthrough"
+    return result
+end
+
+function SatelliteSimBackends.evaluate_gsl_series(
+    ::LabMismatchedMetadataBackend,
+    positions,
+    stations;
+    gsl_min_elevation_deg,
+    gsl_max_range_km,
+)
+    return assess_gsl_series(
+        positions,
+        stations,
+        PhysicalConstraints(
+            gsl_min_elevation_deg=Float64(gsl_min_elevation_deg),
+            gsl_max_range_km=Float64(gsl_max_range_km),
+        );
+        backend=:cpu,
+    )
+end
+
+function _small_config(;
+    name="lab-smoke",
+    propagator=DefaultPropagator,
+    gsl_backend=nothing,
+)
     return ExperimentConfig(
         name = name,
         constellation_params = Dict(
@@ -35,6 +123,7 @@ function _small_config(; name="lab-smoke", propagator=DefaultPropagator)
         ),
         tspan = [0.0, 60.0],
         propagator = propagator,
+        gsl_backend = gsl_backend,
         topology_strategy = GridPlusStrategy(),
         routing_algorithm = DijkstraRouting(),
         users = [
@@ -51,6 +140,21 @@ function _subpoint_deg(positions::Array{Float64,3}, sat_id::Int)
     return (asind(z / radius), atan(y, x) * 180 / pi)
 end
 
+function _varied_tle_text(n::Int=8)
+    line1 = "1 00005U 58002B   00179.78495062  .00000023  00000-0  28098-4 0  4753"
+    lines = String[]
+    for index in 0:n-1
+        angle = 360.0 * index / n
+        line2 = @sprintf(
+            "2 00005  53.0000 %8.4f 0001000   0.0000 %8.4f 15.00000000000001",
+            angle,
+            angle,
+        )
+        append!(lines, ("SAT $(index + 1)", line1, line2))
+    end
+    return join(lines, "\n")
+end
+
 @testset "SatelliteSimLab" begin
     @testset "include order smoke" begin
         @test isdefined(SatelliteSimLab, :ExperimentConfig)
@@ -61,6 +165,7 @@ end
         cfg = ExperimentConfig(name = "include-order-smoke", tspan = [0.0, 60.0])
         @test cfg.name == "include-order-smoke"
         @test cfg.tspan == [0.0, 60.0]
+        @test cfg.gsl_backend == ComputeBackendSpec(:cpu)
     end
 
     @testset "registered orbit backend selection" begin
@@ -104,6 +209,308 @@ end
             @test result.config.orbit_backend.name == :lab_offset
         finally
             unregister_orbit_backend!(:lab_offset)
+        end
+    end
+
+    @testset "registered GSL compute backend selection" begin
+        @test ExperimentConfig().gsl_backend == ComputeBackendSpec(:cpu)
+        @test ExperimentConfig(gsl_backend=:deferred).gsl_backend ==
+              ComputeBackendSpec(:deferred)
+        @test study("backend-dsl"; gsl_backend=:deferred).gsl_backend ==
+              ComputeBackendSpec(:deferred)
+        @test_throws ArgumentError ExperimentConfig(
+            gsl_backend=LabPassthroughComputeBackend(),
+        )
+
+        unregister_compute_backend!(:lab_passthrough)
+        register_compute_backend!(
+            :lab_passthrough,
+            _ -> begin
+                LAB_COMPUTE_FACTORY_CALLS[] += 1
+                LabPassthroughComputeBackend()
+            end,
+        )
+        try
+            cpu_config = _small_config(name="cpu-gsl-control", gsl_backend=:cpu)
+            backend_config = _small_config(
+                name="registered-gsl-backend",
+                gsl_backend=:lab_passthrough,
+            )
+            cpu_result = run_experiment(cpu_config)
+            LAB_COMPUTE_CALLS[] = 0
+            LAB_COMPUTE_FACTORY_CALLS[] = 0
+            backend_result = run_experiment(backend_config)
+
+            @test LAB_COMPUTE_CALLS[] > 0
+            @test LAB_COMPUTE_FACTORY_CALLS[] == 1
+            @test backend_result.coverage.coverage_ratio ==
+                  cpu_result.coverage.coverage_ratio
+            @test backend_result.fitness == cpu_result.fitness
+            @test SatelliteSimLab.config_hash(cpu_config) !=
+                  SatelliteSimLab.config_hash(backend_config)
+            empty_config = ExperimentConfig(
+                name="empty-user-gsl-backend",
+                constellation=backend_config.constellation,
+                propagator=backend_config.propagator,
+                tspan=backend_config.tspan,
+                constraints=backend_config.constraints,
+                topology_strategy=backend_config.topology_strategy,
+                routing_algorithm=backend_config.routing_algorithm,
+                gsl_backend=:lab_passthrough,
+            )
+            @test_throws ArgumentError SatelliteSimLab._resolve_experiment_gsl_backend(
+                empty_config,
+            )
+            _, empty_positions = propagate_constellation_positions(empty_config)
+            LAB_COMPUTE_CALLS[] = 0
+            LAB_COMPUTE_FACTORY_CALLS[] = 0
+            empty_available, empty_coverage = assess_coverage(
+                empty_positions,
+                GroundUser[],
+                empty_config.constraints;
+                gsl_backend=:lab_passthrough,
+            )
+            @test size(empty_available) == (empty_config.constellation.T, 0)
+            @test empty_coverage.total_users == 0
+            @test LAB_COMPUTE_CALLS[] == 1
+            @test LAB_COMPUTE_FACTORY_CALLS[] == 1
+            mismatched_resolution = resolve_compute_backend(:cpu)
+            @test_throws ArgumentError SatelliteSimLab._run_experiment(
+                backend_config,
+                mismatched_resolution,
+            )
+            @test_throws MethodError SatelliteSimLab._run_experiment(
+                backend_config,
+                CPUComputeBackend(),
+            )
+        finally
+            unregister_compute_backend!(:lab_passthrough)
+        end
+
+        register_compute_backend!(
+            :stateful_probe,
+            _ -> StatefulProbeComputeBackend(1),
+        )
+        try
+            @test_throws ArgumentError SatelliteSimLab.config_hash(
+                _small_config(gsl_backend=:stateful_probe),
+            )
+        finally
+            unregister_compute_backend!(:stateful_probe)
+        end
+
+        unregister_compute_backend!(:cpu_alias)
+        unregister_compute_backend!(:cpu_device)
+        register_compute_backend!(:cpu_alias, _ -> CPUComputeBackend())
+        register_compute_backend!(:cpu_device, _ -> LabCPUDeviceBackend())
+        try
+            @test_throws ArgumentError SatelliteSimLab._resolve_experiment_gsl_backend(
+                _small_config(gsl_backend=:cpu_alias),
+            )
+            @test_throws ArgumentError SatelliteSimLab._resolve_experiment_gsl_backend(
+                _small_config(gsl_backend=:cpu_device),
+            )
+        finally
+            unregister_compute_backend!(:cpu_alias)
+            unregister_compute_backend!(:cpu_device)
+        end
+    end
+
+    @testset "resolved GSL cache identity excludes lifecycle ids" begin
+        name = :lab_cache_identity
+        unregister_compute_backend!(name)
+        factory_calls = Ref(0)
+        factory = _ -> begin
+            factory_calls[] += 1
+            LabPassthroughComputeBackend()
+        end
+        register_compute_backend!(name, factory)
+        try
+            config = _small_config(gsl_backend=name)
+            first_resolution = resolve_compute_backend(config.gsl_backend)
+            first_hash = SatelliteSimLab.config_hash(
+                config;
+                gsl_resolution=first_resolution,
+            )
+            first_provenance = compute_backend_provenance(first_resolution)
+
+            register_compute_backend!(name, factory; replace=true)
+            second_resolution = resolve_compute_backend(config.gsl_backend)
+            second_hash = SatelliteSimLab.config_hash(
+                config;
+                gsl_resolution=second_resolution,
+            )
+            second_provenance = compute_backend_provenance(second_resolution)
+
+            @test factory_calls[] == 2
+            @test second_provenance.registration_generation >
+                  first_provenance.registration_generation
+            @test second_provenance.resolution_id != first_provenance.resolution_id
+            @test first_hash == second_hash
+        finally
+            unregister_compute_backend!(name)
+        end
+    end
+
+    @testset "resolved GSL metadata identity is enforced" begin
+        name = :lab_mismatched_metadata
+        unregister_compute_backend!(name)
+        register_compute_backend!(name, _ -> LabMismatchedMetadataBackend())
+        try
+            @test_throws ArgumentError run_experiment(
+                _small_config(gsl_backend=name),
+            )
+        finally
+            unregister_compute_backend!(name)
+        end
+    end
+
+    @testset "GSL series host-array contract" begin
+        config = _small_config()
+        _, positions = propagate_constellation_positions(config)
+        positions_view = @view positions[:, :, :]
+        result = assess_gsl_series(
+            positions_view,
+            Any[(0, 0, 0.0)],
+            config.constraints,
+        )
+        @test size(result.available) == (config.constellation.T, 1, length(config.tspan))
+        @test result.distance_km isa Array{Float64,3}
+
+        empty_result = assess_gsl_series(
+            positions_view,
+            Any[],
+            config.constraints,
+        )
+        @test size(empty_result.available) == (
+            config.constellation.T,
+            0,
+            length(config.tspan),
+        )
+        @test_throws ArgumentError assess_gsl_series(
+            positions_view,
+            [(91.0, 0.0, 0.0)],
+            config.constraints,
+        )
+        nonfinite_positions = copy(positions)
+        nonfinite_positions[1, 1, 1] = NaN
+        @test_throws ArgumentError assess_gsl_series(
+            nonfinite_positions,
+            [(0.0, 0.0, 0.0)],
+            config.constraints,
+        )
+        @test_throws ArgumentError assess_gsl_series(
+            positions_view,
+            [(0.0, 0.0, 0.0)],
+            PhysicalConstraints(gsl_max_range_km=0.0),
+        )
+    end
+
+    @testset "config hash includes result-affecting values" begin
+        baseline = ExperimentConfig(
+            tspan=[0.0, 30.0, 60.0],
+            users=[GroundUser("probe", 35.0, -78.0)],
+        )
+        changed_time = ExperimentConfig(
+            tspan=[0.0, 20.0, 60.0],
+            users=[GroundUser("probe", 35.0, -78.0)],
+        )
+        changed_user = ExperimentConfig(
+            tspan=[0.0, 30.0, 60.0],
+            users=[GroundUser("probe", 36.0, -78.0)],
+        )
+        changed_constraints = ExperimentConfig(
+            tspan=[0.0, 30.0, 60.0],
+            users=[GroundUser("probe", 35.0, -78.0)],
+            constraints=PhysicalConstraints(gsl_min_elevation_deg=45.0),
+        )
+        @test SatelliteSimLab.config_hash(baseline) !=
+              SatelliteSimLab.config_hash(changed_time)
+        @test SatelliteSimLab.config_hash(baseline) !=
+              SatelliteSimLab.config_hash(changed_user)
+        @test SatelliteSimLab.config_hash(baseline) !=
+              SatelliteSimLab.config_hash(changed_constraints)
+        local_sources = SatelliteSimLab._local_simulation_source_files()
+        @test any(path -> occursin(joinpath("src", "core", "src"), path), local_sources)
+        @test any(path -> occursin(joinpath("src", "lab", "src"), path), local_sources)
+        @test any(
+            path -> occursin(joinpath("packages", "SatelliteSimGPU", "src"), path),
+            local_sources,
+        )
+    end
+
+    @testset "binary ExperimentResult cache" begin
+        unregister_compute_backend!(:lab_passthrough)
+        register_compute_backend!(
+            :lab_passthrough,
+            _ -> LabPassthroughComputeBackend(),
+        )
+        try
+            mktempdir() do root
+                cd(root) do
+                    config = _small_config(
+                        name="binary-cache-roundtrip",
+                        gsl_backend=:lab_passthrough,
+                    )
+                    hash = SatelliteSimLab.config_hash(config)
+                    cache_path = SatelliteSimLab._cache_path(hash)
+                    legacy_path = joinpath(
+                        SatelliteSimLab._cache_dir(),
+                        string(hash, ".json"),
+                    )
+                    mkpath(dirname(legacy_path))
+                    write(legacy_path, """{"legacy":"summary"}""")
+
+                    LAB_COMPUTE_CALLS[] = 0
+                    miss = cached_experiment(config)
+                    miss_calls = LAB_COMPUTE_CALLS[]
+                    @test miss isa ExperimentResult
+                    @test miss_calls > 0
+                    @test isfile(cache_path)
+                    @test isfile(legacy_path)
+                    @test Set(readdir(SatelliteSimLab._cache_dir())) ==
+                          Set((basename(cache_path), basename(legacy_path)))
+
+                    hit = cached_experiment(config)
+                    @test hit isa ExperimentResult
+                    @test typeof(hit) === typeof(miss)
+                    @test all(
+                        field -> repr(getfield(hit, field)) ==
+                                 repr(getfield(miss, field)),
+                        fieldnames(ExperimentResult),
+                    )
+                    @test LAB_COMPUTE_CALLS[] == miss_calls
+
+                    envelope = open(cache_path, "r") do io
+                        Serialization.deserialize(io)
+                    end
+                    envelope.payload[1] = envelope.payload[1] ⊻ UInt8(0x01)
+                    open(cache_path, "w") do io
+                        Serialization.serialize(io, envelope)
+                    end
+                    calls_before_corruption = LAB_COMPUTE_CALLS[]
+                    repaired = cached_experiment(config)
+                    @test repaired isa ExperimentResult
+                    @test LAB_COMPUTE_CALLS[] > calls_before_corruption
+                    @test SatelliteSimLab._read_cached_result(cache_path) isa
+                          ExperimentResult
+
+                    atomic_dir = joinpath(root, "atomic")
+                    mkpath(atomic_dir)
+                    atomic_path = joinpath(atomic_dir, "entry.bin")
+                    write(atomic_path, "complete")
+                    @test_throws ErrorException SatelliteSimLab._atomic_write(
+                        atomic_path,
+                    ) do io
+                        write(io, "partial")
+                        error("injected publication failure")
+                    end
+                    @test read(atomic_path, String) == "complete"
+                    @test readdir(atomic_dir) == ["entry.bin"]
+                end
+            end
+        finally
+            unregister_compute_backend!(:lab_passthrough)
         end
     end
 
@@ -169,6 +576,70 @@ end
         @test result["n_satellites"] == 8
         @test result["tle_source"] == 8
         @test isfinite(result["avg_latency_ms"])
+
+        varied_tle = _varied_tle_text()
+        tle_elements = SatelliteSimLab._load_tle_lines(split(varied_tle, '\n'))
+        time_grid = SimulationTimeGrid(
+            default_starlink_simulation_epoch(),
+            600,
+            300,
+        )
+        positions = propagate_to_ecef(tle_elements, time_grid)
+        strategy = parse_ai_topology("minimal", 8)
+        candidates = SatelliteSimLab._topology_isl_candidates(strategy, 8, 2)
+        _, last_frame_available, _ = assess_routing(
+            positions,
+            8,
+            2,
+            strategy,
+            LEO_DEFAULTS,
+        )
+        @test !isempty(candidates)
+        @test isempty(last_frame_available)
+
+        traffic_args = Dict{String,Any}(
+            "constellation" => "sgp4_traffic_probe",
+            "topology" => "minimal",
+            "propagator" => "tle_based",
+            "duration_s" => 600,
+            "steps" => 3,
+            "max_sats" => 8,
+            "tle" => varied_tle,
+            "traffic" => "uniform",
+            "ground_stations" => [
+                Dict{String,Any}(
+                    "id" => 1,
+                    "name" => "source",
+                    "lat" => 0.0,
+                    "lon" => 0.0,
+                ),
+                Dict{String,Any}(
+                    "id" => 2,
+                    "name" => "destination",
+                    "lat" => 10.0,
+                    "lon" => 10.0,
+                ),
+            ],
+            "ground_pairs" => [[1, 2]],
+        )
+        traffic_result = JSON.parse(
+            execute_tool("run_simulation", traffic_args);
+            allownan=true,
+        )
+        @test !haskey(traffic_result, "error")
+        @test traffic_result["traffic_evaluation_ran"] == true
+        @test traffic_result["traffic_fallback"] == false
+        @test traffic_result["traffic_time_steps"] == 3
+        @test traffic_result["traffic_assignments"] == 2
+
+        invalid_traffic_args = deepcopy(traffic_args)
+        invalid_traffic_args["ground_stations"][1]["alt_km"] = NaN
+        invalid_result = JSON.parse(
+            execute_tool("run_simulation", invalid_traffic_args);
+            allownan=true,
+        )
+        @test haskey(invalid_result, "error")
+        @test !haskey(invalid_result, "traffic_fallback")
     end
 
     @testset "AI run_simulation traffic AON bridge" begin

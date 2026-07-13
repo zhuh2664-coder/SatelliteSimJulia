@@ -20,7 +20,7 @@ import Random
 # 从 Foundation 借时间网格（Core re-export 了 Foundation，但 SimulationTimeGrid 需要显式引用）
 import SatelliteSimFoundation: SimulationTimeGrid, default_starlink_simulation_epoch
 
-export propagate_constellation_positions, assess_coverage, assess_routing,
+export propagate_constellation_positions, assess_gsl_series, assess_coverage, assess_routing,
        assess_routing_temporal, assess_routing_temporal_dynamic,
        assess_temporal_flow_routes, assess_ground_traffic_temporal_dynamic,
        full_constellation_assessment
@@ -56,8 +56,119 @@ end
 # 覆盖评估：位置 → GSL → 覆盖率
 # ────────────────────────────────────────────────────────────
 
+function _normalize_gsl_stations(stations)::Vector{NTuple{3,Float64}}
+    normalized = NTuple{3,Float64}[]
+    sizehint!(normalized, length(stations))
+    for station in stations
+        length(station) == 3 ||
+            throw(ArgumentError(
+                "each GSL station must be (latitude_deg, longitude_deg, altitude_km)",
+            ))
+        tuple = Tuple(Float64(value) for value in station)
+        all(isfinite, tuple) ||
+            throw(ArgumentError("GSL station coordinates must be finite"))
+        -90 <= tuple[1] <= 90 ||
+            throw(ArgumentError("GSL station latitude must be in [-90, 90] degrees"))
+        push!(normalized, tuple)
+    end
+    return normalized
+end
+
+function _validate_gsl_compute_backend(resolution::ResolvedComputeBackend)
+    capabilities = compute_backend_capabilities(resolution)
+    :gsl_series in capabilities.operations ||
+        throw(ArgumentError(
+            "compute backend '$(compute_backend_name(resolution))' does not support gsl_series",
+        ))
+    return resolution
+end
+
+function _resolve_gsl_compute_backend(backend)
+    backend isa ResolvedComputeBackend &&
+        return _validate_gsl_compute_backend(backend)
+    spec = _resolve_gsl_backend_param(backend)
+    return _validate_gsl_compute_backend(resolve_compute_backend(spec))
+end
+
+function _resolve_experiment_gsl_backend(config::ExperimentConfig)
+    if config.gsl_backend.name != :cpu &&
+       isempty(config.users) && isempty(config.ground_stations)
+        throw(ArgumentError(
+            "non-CPU gsl_backend requires at least one user or ground station",
+        ))
+    end
+    return _validate_gsl_compute_backend(
+        resolve_compute_backend(config.gsl_backend),
+    )
+end
+
+function _backend_from_resolution(
+    config::ExperimentConfig,
+    resolution::ResolvedComputeBackend,
+)
+    spec = compute_backend_spec(resolution)
+    spec.name == config.gsl_backend.name &&
+        isequal(spec.options, config.gsl_backend.options) ||
+        throw(ArgumentError(
+            "resolved GSL backend does not match ExperimentConfig.gsl_backend",
+        ))
+    return _validate_gsl_compute_backend(resolution)
+end
+
 """
-    assess_coverage(positions, users, constraints) -> (gsl_available, coverage)
+    assess_gsl_series(positions, stations, constraints; backend=:cpu)
+
+Evaluate GSL geometry for all `(satellite, station, time)` combinations.
+`positions` remains the repository contract `(satellite, time, xyz)`, ECEF km.
+The returned `GSLSeriesResult` always owns host `Array`s, even when an optional
+backend executes kernels on a GPU.
+"""
+function assess_gsl_series(
+    positions::AbstractArray{<:Real,3},
+    stations,
+    constraints;
+    backend=:cpu,
+)::GSLSeriesResult
+    size(positions, 3) == 3 ||
+        throw(ArgumentError("positions must have shape (satellite, time, xyz=3)"))
+    size(positions, 1) > 0 && size(positions, 2) > 0 ||
+        throw(ArgumentError("positions must be non-empty"))
+    all(isfinite, positions) ||
+        throw(ArgumentError("positions must contain only finite values"))
+    isfinite(constraints.gsl_min_elevation_deg) ||
+        throw(ArgumentError("gsl_min_elevation_deg must be finite"))
+    isfinite(constraints.gsl_max_range_km) && constraints.gsl_max_range_km > 0 ||
+        throw(ArgumentError("gsl_max_range_km must be finite and positive"))
+    normalized_stations = _normalize_gsl_stations(stations)
+    compute_backend = _resolve_gsl_compute_backend(backend)
+    result = evaluate_gsl_series(
+        compute_backend,
+        positions,
+        normalized_stations;
+        gsl_min_elevation_deg=constraints.gsl_min_elevation_deg,
+        gsl_max_range_km=constraints.gsl_max_range_km,
+    )
+    return validate_gsl_series_result(
+        result;
+        expected_satellites=size(positions, 1),
+        expected_stations=length(normalized_stations),
+        expected_times=size(positions, 2),
+    )
+end
+
+function _gsl_matrices_by_time(result::GSLSeriesResult)
+    time_indices = axes(result.available, 3)
+    return (
+        available=[result.available[:, :, time_index] for time_index in time_indices],
+        distance_km=[result.distance_km[:, :, time_index] for time_index in time_indices],
+        elevation_deg=[result.elevation_deg[:, :, time_index] for time_index in time_indices],
+        delay_ms=[result.delay_ms[:, :, time_index] for time_index in time_indices],
+    )
+end
+
+"""
+    assess_coverage(positions, users, constraints; gsl_backend=:cpu)
+        -> (gsl_available, coverage)
 
 预编排：位置矩阵 → GSL 批评估 → 覆盖率计算。
 
@@ -68,12 +179,21 @@ end
 
 返回 GSL 可用矩阵和覆盖结果。
 """
-function assess_coverage(positions::AbstractArray{<:Real,3}, users, constraints)
-    n_sat = n_satellites(positions)
+function assess_coverage(
+    positions::AbstractArray{<:Real,3},
+    users,
+    constraints;
+    gsl_backend=:cpu,
+)
     user_tuples = [(u.lat, u.lon, 0.0) for u in users]
-    gsl_available = isempty(user_tuples) ?
-        zeros(Bool, n_sat, 0) :
-        evaluate_gsl_batch(positions_at_last(positions), user_tuples; constraints = constraints)[1]
+    last_positions = @view positions[:, size(positions, 2):size(positions, 2), :]
+    gsl = assess_gsl_series(
+        last_positions,
+        user_tuples,
+        constraints;
+        backend=gsl_backend,
+    )
+    gsl_available = gsl.available[:, :, 1]
     coverage = compute_coverage(gsl_available, [u.id for u in users])
     return gsl_available, coverage
 end
@@ -321,6 +441,7 @@ function assess_ground_traffic_temporal_dynamic(
     gsl_capacity_mbps = hasproperty(constraints, :gsl_base_capacity_mbps) ?
         getproperty(constraints, :gsl_base_capacity_mbps) : 500.0,
     constellation_name::String = "lab-ground-traffic",
+    gsl_backend=:cpu,
 )::TrafficEvaluation
     n_time = n_timesteps(positions)
     length(elapsed_by_time) == n_time ||
@@ -348,35 +469,27 @@ function assess_ground_traffic_temporal_dynamic(
     ]
 
     gs_tuples = _ground_station_tuples(ground_stations)
-    gsl_avail = Matrix{Bool}[]
-    gsl_dist = Matrix{Float64}[]
-    gsl_elev = Matrix{Float64}[]
-    gsl_delay = Matrix{Float64}[]
-    for t in 1:n_time
-        a, d, e, delay = evaluate_gsl_batch(
-            position_at_instant(positions, t),
-            gs_tuples;
-            constraints = constraints,
-        )
-        push!(gsl_avail, a)
-        push!(gsl_dist, d)
-        push!(gsl_elev, e)
-        push!(gsl_delay, delay)
-    end
+    gsl_series = assess_gsl_series(
+        positions,
+        gs_tuples,
+        constraints;
+        backend=gsl_backend,
+    )
+    gsl_by_time = _gsl_matrices_by_time(gsl_series)
 
     return evaluate_traffic_from_bare_arrays(
         positions,
         isl_pairs,
         isl_results_by_time,
-        gsl_avail,
-        gsl_dist,
-        gsl_elev,
+        gsl_by_time.available,
+        gsl_by_time.distance_km,
+        gsl_by_time.elevation_deg,
         _ground_station_ids(ground_stations),
         grid,
         demands;
         isl_capacity_mbps = Float64(isl_capacity_mbps),
         gsl_capacity_mbps = Float64(gsl_capacity_mbps),
-        gsl_delay_ms_by_time = gsl_delay,
+        gsl_delay_ms_by_time = gsl_by_time.delay_ms,
         constellation_name = constellation_name,
         routing_algorithm = routing_algorithm,
     )
@@ -515,22 +628,34 @@ end
 
 为每个地面站 ID（1-based 枚举顺序）选取仰角最高的接入卫星及 GSL 时延（ms）。
 """
-function _build_ground_access_map(positions, ground_stations, constraints)
+function _build_ground_access_map(
+    positions,
+    ground_stations,
+    constraints;
+    gsl_backend=:cpu,
+)
     access_map = Dict{Int, NamedTuple{(:sat_id, :delay_ms), Tuple{Int, Float64}}}()
     isempty(ground_stations) && return access_map
 
-    last_pos = positions_at_last(positions)
-    for (gid, gs) in enumerate(ground_stations)
-        tup = [_ground_station_tuple(gs)]
-        avail, _, elev, delay = evaluate_gsl_batch(last_pos, tup; constraints=constraints)
+    time_index = size(positions, 2)
+    last_positions = @view positions[:, time_index:time_index, :]
+    station_tuples = [_ground_station_tuple(station) for station in ground_stations]
+    gsl = assess_gsl_series(
+        last_positions,
+        station_tuples,
+        constraints;
+        backend=gsl_backend,
+    )
+    for gid in eachindex(ground_stations)
         best_sat = 0
         best_elev = -Inf
         best_delay = Inf
-        for sat_id in 1:size(last_pos, 1)
-            if avail[sat_id, 1] && elev[sat_id, 1] > best_elev
-                best_elev = elev[sat_id, 1]
+        for sat_id in axes(positions, 1)
+            if gsl.available[sat_id, gid, 1] &&
+               gsl.elevation_deg[sat_id, gid, 1] > best_elev
+                best_elev = gsl.elevation_deg[sat_id, gid, 1]
                 best_sat = sat_id
-                best_delay = delay[sat_id, 1]
+                best_delay = gsl.delay_ms[sat_id, gid, 1]
             end
         end
         best_sat > 0 && (access_map[gid] = (sat_id=best_sat, delay_ms=best_delay))
@@ -622,22 +747,43 @@ end
 这是 run_experiment 的核心逻辑提取——覆盖最常见的"全套评估"场景。
 内部调用 propagate_constellation_positions + assess_coverage + assess_routing。
 """
-function full_constellation_assessment(config)
+function full_constellation_assessment(config::ExperimentConfig)
+    return _full_constellation_assessment(
+        config,
+        _resolve_experiment_gsl_backend(config),
+    )
+end
+
+function _full_constellation_assessment(
+    config::ExperimentConfig,
+    gsl_resolution::ResolvedComputeBackend,
+)
     t_start = time()
     # 用 random_seed 播种 RNG，保证实验可复现（接通 random_seed 字段）
     Random.seed!(config.random_seed)
     constellation = config.constellation
     T = constellation.T
     P = constellation.P
+    gsl_backend = _backend_from_resolution(config, gsl_resolution)
 
     _, positions = propagate_constellation_positions(config)
-    gsl_available, coverage = assess_coverage(positions, config.users, config.constraints)
+    gsl_available, coverage = assess_coverage(
+        positions,
+        config.users,
+        config.constraints;
+        gsl_backend=gsl_backend,
+    )
     D, available_isl, isl_results = assess_routing(
         positions, T, P, config.topology_strategy, config.constraints,
     )
     traffic_isl_candidates = _topology_isl_candidates(config.topology_strategy, T, P)
 
-    access_map = _build_ground_access_map(positions, config.ground_stations, config.constraints)
+    access_map = _build_ground_access_map(
+        positions,
+        config.ground_stations,
+        config.constraints;
+        gsl_backend=gsl_backend,
+    )
 
     latency = compute_latency(D)
     network = compute_network_metrics(D)
@@ -673,8 +819,16 @@ function full_constellation_assessment(config)
     traffic_evaluation = nothing
     link_loads = if !isempty(traffic_isl_candidates) && !isempty(config.traffic_demands)
         traffic_evaluation = try
-            _evaluate_traffic_full(config, positions, traffic_isl_candidates)
+            _evaluate_traffic_full(
+                config,
+                positions,
+                traffic_isl_candidates;
+                gsl_backend=gsl_backend,
+            )
         catch err
+            # Accelerator failures must remain visible; otherwise a requested
+            # GPU run could be recorded after silently executing a CPU fallback.
+            config.gsl_backend.name == :cpu || rethrow()
             @warn "Traffic AON evaluation failed; using compatibility fallback" exception = (err, catch_backtrace())
             nothing
         end
@@ -907,7 +1061,12 @@ end
 构造多时间步的 ISL/GSL 评估数据，调 evaluate_traffic_from_bare_arrays 跑完整 AON。
 需要 ground_stations 作为地面端点；无 ground_stations、无时间步或无 ISL 则返回 nothing（降级）。
 """
-function _evaluate_traffic_full(config, positions, isl_pairs)
+function _evaluate_traffic_full(
+    config,
+    positions,
+    isl_pairs;
+    gsl_backend,
+)
     n_time = size(positions, 2)
     n_time >= 1 || return nothing
     isempty(config.ground_stations) && return nothing
@@ -926,23 +1085,21 @@ function _evaluate_traffic_full(config, positions, isl_pairs)
         evaluate_isl_batch(position_at_instant(positions, t), isl_pairs; constraints=config.constraints)
         for t in 1:n_time
     ]
-    gsl_avail = Matrix{Bool}[]
-    gsl_dist = Matrix{Float64}[]
-    gsl_elev = Matrix{Float64}[]
-    gsl_delay = Matrix{Float64}[]
-    for t in 1:n_time
-        pos_t = position_at_instant(positions, t)
-        a, d, e, delay = evaluate_gsl_batch(pos_t, gs_tuples; constraints=config.constraints)
-        push!(gsl_avail, a); push!(gsl_dist, d); push!(gsl_elev, e); push!(gsl_delay, delay)
-    end
+    gsl_series = assess_gsl_series(
+        positions,
+        gs_tuples,
+        config.constraints;
+        backend=gsl_backend,
+    )
+    gsl_by_time = _gsl_matrices_by_time(gsl_series)
 
     # 调完整 AON
     return evaluate_traffic_from_bare_arrays(
         positions, isl_pairs, isl_results_by_time,
-        gsl_avail, gsl_dist, gsl_elev,
+        gsl_by_time.available, gsl_by_time.distance_km, gsl_by_time.elevation_deg,
         ground_ids, grid, config.traffic_demands;
         isl_capacity_mbps = config.constraints.isl_max_capacity_mbps,
-        gsl_delay_ms_by_time = gsl_delay,
+        gsl_delay_ms_by_time = gsl_by_time.delay_ms,
         routing_algorithm = config.routing_algorithm,
     )
 end

@@ -456,6 +456,7 @@ function _run_sgp4_simulation(args::AbstractDict, constellation::AbstractString,
     strategy = parse_ai_topology(topo, n)
     constraints = LEO_DEFAULTS   # 默认 LEO 物理约束（与 Keplerian 路径一致）
     D, available_isl, isl_results = assess_routing(positions, n, P_est, strategy, constraints)
+    traffic_isl_candidates = _topology_isl_candidates(strategy, n, P_est)
     latency = compute_latency(D)
     network = compute_network_metrics(D)
 
@@ -472,15 +473,18 @@ function _run_sgp4_simulation(args::AbstractDict, constellation::AbstractString,
         ground_pairs = ground_pairs,
     )
     traffic_evaluation = if !isempty(traffic_config.traffic_demands)
-        try
-            _evaluate_traffic_full(traffic_config, positions, available_isl)
-        catch
-            nothing
-        end
+        gsl_resolution = _resolve_experiment_gsl_backend(traffic_config)
+        _evaluate_traffic_full(
+            traffic_config,
+            positions,
+            traffic_isl_candidates;
+            gsl_backend=_backend_from_resolution(traffic_config, gsl_resolution),
+        )
     else
         nothing
     end
     traffic_totals = _traffic_assignment_totals(traffic_evaluation)
+    traffic_enabled = traffic != "none" || !isempty(traffic_config.traffic_demands)
     if traffic_evaluation !== nothing
         latency = _latency_from_traffic(traffic_evaluation)
         network = _network_from_traffic(traffic_evaluation)
@@ -498,12 +502,12 @@ function _run_sgp4_simulation(args::AbstractDict, constellation::AbstractString,
         "max_latency_ms" => round(latency.max_latency_ms, digits=2),
         "connectivity_ratio" => round(network.connectivity_ratio, digits=4),
         "duration_s" => round(Float64(duration), digits=3),
-        "traffic_enabled" => traffic != "none" || !isempty(traffic_config.traffic_demands),
+        "traffic_enabled" => traffic_enabled,
         "traffic_demands" => length(traffic_config.traffic_demands),
         "ground_stations" => length(traffic_config.ground_stations),
         "ground_pairs" => length(traffic_config.ground_pairs),
         "traffic_evaluation_ran" => traffic_evaluation !== nothing,
-        "traffic_fallback" => traffic != "none" && traffic_evaluation === nothing,
+        "traffic_fallback" => traffic_enabled && traffic_evaluation === nothing,
         "traffic_time_steps" => traffic_evaluation === nothing ? 0 : length(traffic_evaluation.assignments_by_time),
         "traffic_assignments" => traffic_evaluation === nothing ? 0 : sum(length, traffic_evaluation.assignments_by_time),
         "offered_mbps" => round(traffic_totals.offered_mbps, digits=3),
