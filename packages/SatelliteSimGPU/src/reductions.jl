@@ -62,20 +62,25 @@ end
     avail = (d <= max_range) & los_ok
 
     if has_vel && avail
-        r, t, n = _isl_rtn_gpu(ax, ay, az, vax, vay, vaz, bx, by, bz)
-        elevation = _isl_elev_from_rtn_gpu(r, t, n)
-        avail = avail & (elevation <= cone_angle_deg)
-        if avail
-            cos_psi = _isl_azim_from_rtn_gpu(t, n)
-            avail = avail & _isl_azimuth_ok_gpu(cos_psi, terminal_id, cone_angle_deg)
+        rtn_valid, r, t, n =
+            _isl_rtn_gpu(ax, ay, az, vax, vay, vaz, bx, by, bz)
+        if rtn_valid
+            elevation = _isl_elev_from_rtn_gpu(r, t, n)
+            avail = avail & (elevation <= cone_angle_deg)
             if avail
-                duration = _isl_duration_gpu(
-                    ax, ay, az, vax, vay, vaz,
-                    bx, by, bz, vbx, vby, vbz,
-                    max_range, time_horizon,
-                )
-                avail = avail & (duration >= min_duration)
+                cos_psi = _isl_azim_from_rtn_gpu(t, n)
+                avail = avail & _isl_azimuth_ok_gpu(cos_psi, terminal_id, cone_angle_deg)
+                if avail
+                    duration = _isl_duration_gpu(
+                        ax, ay, az, vax, vay, vaz,
+                        bx, by, bz, vbx, vby, vbz,
+                        max_range, time_horizon,
+                    )
+                    avail = avail & (duration >= min_duration)
+                end
             end
+        else
+            avail = false
         end
     end
     return avail
@@ -161,17 +166,33 @@ end
     ratio[station_index] = T(visible_times) / T(n_times)
 end
 
-# ── ISL 归约核 ───────────────────────────────────────────────────────────────
+# ── ISL 归约核（两阶段，高并行度）──────────────────────────────────────────────
+#
+# 旧实现：ndrange = n_times，每个 work-item 串行扫全部 pairs，GPU 严重欠饱和。
+# 新实现：第一阶段把 (pair, time) 网格展开，每个 work-item 评估一个 pair-time；
+# 第二阶段沿 pair 维求和得到每个时刻的可用链路数。所有加法都是 Int32，满足
+# 整数结合律，因此结果与"完整矩阵 host 求和"逐位相等。
 
-# 每时刻可用链路数：work-item 独占 time，内层遍历 pairs 累加。
-@kernel function _isl_available_counts_kernel!(
-    counts, positions, velocities, pair_src, pair_dst,
+# 可调块大小：默认值 128，可通过环境变量 SATSIM_ISL_COUNT_WG 覆盖。
+const _ISL_AVAILABLE_COUNTS_WG_DEFAULT = 128
+
+function _isl_available_counts_workgroup()
+    v = get(ENV, "SATSIM_ISL_COUNT_WG", nothing)
+    return v === nothing ? _ISL_AVAILABLE_COUNTS_WG_DEFAULT : parse(Int, v)
+end
+
+# 第一阶段：输出 (padded_pairs, n_times) 的 Int32 局部计数，超出 n_pairs 的槽置零。
+@kernel function _isl_available_counts_partial_kernel!(
+    partial, positions, velocities, pair_src, pair_dst,
     has_vel, max_range, require_los, earth_radius,
-    cone_angle_deg, min_duration, time_horizon, terminal_id, n_pairs,
+    cone_angle_deg, min_duration, time_horizon, terminal_id, n_pairs, padded_pairs, n_times,
 )
-    time_index = @index(Global)
-    c = zero(eltype(counts))
-    for pair_index in 1:n_pairs
+    linear_index = @index(Global)
+    linear_index -= 1
+    time_index = linear_index ÷ padded_pairs + 1
+    pair_index = linear_index % padded_pairs + 1
+
+    if pair_index <= n_pairs
         i = pair_src[pair_index]
         j = pair_dst[pair_index]
         ax = positions[i, time_index, 1]
@@ -192,7 +213,20 @@ end
             max_range, require_los, earth_radius,
             cone_angle_deg, min_duration, time_horizon, terminal_id,
         )
-        c += ifelse(avail, one(eltype(counts)), zero(eltype(counts)))
+        partial[pair_index, time_index] = ifelse(avail, one(eltype(partial)), zero(eltype(partial)))
+    else
+        partial[pair_index, time_index] = zero(eltype(partial))
+    end
+end
+
+# 第二阶段：沿 pair 维求和，得到 (n_times,)。
+@kernel function _isl_available_counts_reduce_kernel!(
+    counts, partial, padded_pairs,
+)
+    time_index = @index(Global)
+    c = zero(eltype(counts))
+    for pair_index in 1:padded_pairs
+        c += partial[pair_index, time_index]
     end
     counts[time_index] = c
 end
@@ -308,6 +342,7 @@ function _isl_reduction_setup(positions, isl_pairs, velocities)
     for (i, j) in isl_pairs
         (1 <= i <= n_satellites && 1 <= j <= n_satellites) ||
             throw(ArgumentError("isl_pairs indices must be within 1:$(n_satellites)"))
+        i != j || throw(ArgumentError("ISL pair endpoints must be distinct"))
     end
     backend = get_backend(positions)
     pair_src = adapt(backend, Int[first(p) for p in isl_pairs])
@@ -339,15 +374,31 @@ function isl_available_counts_gpu(
 ) where {T<:AbstractFloat}
     n_satellites, n_times, n_pairs, pair_src, pair_dst, has_vel, vel_arg =
         _isl_reduction_setup(positions, isl_pairs, velocities)
+    options = _normalize_isl_options(
+        T;
+        isl_max_range_km=isl_max_range_km,
+        isl_max_cone_angle_deg=isl_max_cone_angle_deg,
+        isl_min_duration_s=isl_min_duration_s,
+        time_horizon_s=time_horizon_s,
+        earth_radius_km=earth_radius_km,
+    )
     backend = get_backend(positions)
     counts = similar(positions, Int32, n_times)
     fill!(counts, zero(Int32))
     if n_pairs > 0
-        _wait_event(_isl_available_counts_kernel!(backend)(
-            counts, positions, vel_arg, pair_src, pair_dst,
-            has_vel, T(isl_max_range_km), isl_require_los, T(earth_radius_km),
-            T(isl_max_cone_angle_deg), T(isl_min_duration_s), T(time_horizon_s),
-            Int(terminal_id), n_pairs;
+        workgroup = _isl_available_counts_workgroup()
+        padded_pairs = cld(n_pairs, workgroup) * workgroup
+        partial = fill!(similar(positions, Int32, (padded_pairs, n_times)), zero(Int32))
+        _wait_event(_isl_available_counts_partial_kernel!(backend)(
+            partial, positions, vel_arg, pair_src, pair_dst,
+            has_vel, options.max_range, isl_require_los, options.earth_radius,
+            options.cone_angle, options.min_duration, options.time_horizon,
+            Int(terminal_id), n_pairs, padded_pairs, n_times;
+            ndrange=padded_pairs * n_times,
+            workgroupsize=workgroup,
+        ))
+        _wait_event(_isl_available_counts_reduce_kernel!(backend)(
+            counts, partial, padded_pairs;
             ndrange=n_times,
         ))
     end
@@ -376,13 +427,21 @@ function isl_pair_available_ratio_gpu(
 ) where {T<:AbstractFloat}
     n_satellites, n_times, n_pairs, pair_src, pair_dst, has_vel, vel_arg =
         _isl_reduction_setup(positions, isl_pairs, velocities)
+    options = _normalize_isl_options(
+        T;
+        isl_max_range_km=isl_max_range_km,
+        isl_max_cone_angle_deg=isl_max_cone_angle_deg,
+        isl_min_duration_s=isl_min_duration_s,
+        time_horizon_s=time_horizon_s,
+        earth_radius_km=earth_radius_km,
+    )
     backend = get_backend(positions)
     ratio = similar(positions, T, n_pairs)
     if n_pairs > 0
         _wait_event(_isl_pair_ratio_kernel!(backend)(
             ratio, positions, vel_arg, pair_src, pair_dst,
-            has_vel, T(isl_max_range_km), isl_require_los, T(earth_radius_km),
-            T(isl_max_cone_angle_deg), T(isl_min_duration_s), T(time_horizon_s),
+            has_vel, options.max_range, isl_require_los, options.earth_radius,
+            options.cone_angle, options.min_duration, options.time_horizon,
             Int(terminal_id), n_times;
             ndrange=n_pairs,
         ))
@@ -482,6 +541,14 @@ function isl_satellite_degree_gpu(
 ) where {T<:AbstractFloat}
     n_satellites, n_times, n_pairs, pair_src, pair_dst, has_vel, vel_arg =
         _isl_reduction_setup(positions, isl_pairs, velocities)
+    options = _normalize_isl_options(
+        T;
+        isl_max_range_km=isl_max_range_km,
+        isl_max_cone_angle_deg=isl_max_cone_angle_deg,
+        isl_min_duration_s=isl_min_duration_s,
+        time_horizon_s=time_horizon_s,
+        earth_radius_km=earth_radius_km,
+    )
     backend = get_backend(positions)
     degree = similar(positions, Int32, (n_satellites, n_times))
     fill!(degree, zero(Int32))
@@ -492,8 +559,8 @@ function isl_satellite_degree_gpu(
         _wait_event(_isl_degree_kernel!(backend)(
             degree, positions, vel_arg, pair_src, pair_dst,
             incident_offsets, incident_pairs,
-            has_vel, T(isl_max_range_km), isl_require_los, T(earth_radius_km),
-            T(isl_max_cone_angle_deg), T(isl_min_duration_s), T(time_horizon_s),
+            has_vel, options.max_range, isl_require_los, options.earth_radius,
+            options.cone_angle, options.min_duration, options.time_horizon,
             Int(terminal_id), n_times;
             ndrange=n_satellites * n_times,
         ))

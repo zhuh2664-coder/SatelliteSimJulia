@@ -1,5 +1,6 @@
 using Test
 using Random
+using LinearAlgebra
 using KernelAbstractions
 using ChainRulesCore
 using SatelliteToolbox
@@ -333,6 +334,289 @@ end
     end
 end
 
+@testset "ISL analytic geometry and duration" begin
+    positions = zeros(Float64, 2, 1, 3)
+    velocities = zeros(Float64, 2, 1, 3)
+    positions[1, 1, :] .= (7000.0, 0.0, 0.0)
+    positions[2, 1, :] .= (7003.0, 4.0, 12.0)
+    velocities[1, 1, :] .= (1.0, 2.0, 0.0)
+    velocities[2, 1, :] .= (1.0, 2.0, 0.0)
+    analytic = evaluate_isl_batch_gpu(
+        positions,
+        [(1, 2)];
+        velocities=velocities,
+        isl_max_range_km=100.0,
+        isl_require_los=false,
+        isl_min_duration_s=0.0,
+    )
+    @test analytic.available[1, 1]
+    @test analytic.distance_km[1, 1] ≈ 13.0 atol=1e-12
+    @test analytic.elevation_deg[1, 1] ≈ 13.342363797088238 atol=1e-12
+    @test analytic.cos_psi[1, 1] ≈ 3 / sqrt(10) atol=1e-12
+    @test analytic.duration_s[1, 1] == 300.0
+
+    series = evaluate_isl_series(
+        KernelComputeBackend(CPU(); precision=Float64),
+        positions,
+        [(1, 2)];
+        velocities=velocities,
+        isl_max_range_km=100.0,
+        isl_require_los=false,
+        isl_min_duration_s=0.0,
+    )
+    @test series.available == analytic.available
+    @test series.elevation_deg[1, 1] ≈ 13.342363797088238 atol=1e-12
+    @test series.cos_psi[1, 1] ≈ 3 / sqrt(10) atol=1e-12
+
+    positions[1, 1, :] .= (7000.0, 1000.0, 2000.0)
+    positions[2, 1, :] .= (7003.0, 1004.0, 2012.0)
+    velocities[1, 1, :] .= (14000.0, 2000.0, 4000.0)
+    velocities[2, 1, :] .= (0.0, 1.0, 0.0)
+    degenerate = evaluate_isl_batch_gpu(
+        positions,
+        [(1, 2)];
+        velocities=velocities,
+        isl_max_range_km=100.0,
+        isl_require_los=false,
+        isl_max_cone_angle_deg=180.0,
+        isl_min_duration_s=0.0,
+    )
+    @test !degenerate.available[1, 1]
+    @test degenerate.elevation_deg[1, 1] == 90.0
+    @test degenerate.cos_psi[1, 1] == 1.0
+    @test degenerate.duration_s[1, 1] == 0.0
+
+    positions32 = zeros(Float32, 2, 1, 3)
+    velocities32 = zeros(Float32, 2, 1, 3)
+    positions32[1, 1, :] .= (7000.0f0, 0.0f0, 0.0f0)
+    positions32[2, 1, :] .= (7000.0f0, 0.0f0, 1.0f0)
+    velocities32[1, 1, :] .= (0.0f0, 1.0f0, 0.0f0)
+    velocities32[2, 1, :] .= (0.0f0, 1.0f0, 2.0f0^-12)
+    long_duration = evaluate_isl_batch_gpu(
+        positions32,
+        [(1, 2)];
+        velocities=velocities32,
+        isl_max_range_km=4097.00048828125f0,
+        isl_require_los=false,
+        isl_min_duration_s=16_777_218.0f0,
+        time_horizon_s=16_777_220.0f0,
+    )
+    @test long_duration.duration_s[1, 1] == 16_777_218.0f0
+    @test long_duration.available[1, 1]
+    too_short = evaluate_isl_batch_gpu(
+        positions32,
+        [(1, 2)];
+        velocities=velocities32,
+        isl_max_range_km=4097.00048828125f0,
+        isl_require_los=false,
+        isl_min_duration_s=16_777_220.0f0,
+        time_horizon_s=16_777_220.0f0,
+    )
+    @test !too_short.available[1, 1]
+    @test too_short.duration_s[1, 1] == 16_777_218.0f0
+    huge_range = evaluate_isl_batch_gpu(
+        positions32,
+        [(1, 2)];
+        velocities=velocities32,
+        isl_max_range_km=1.0f20,
+        isl_require_los=false,
+        isl_min_duration_s=0.0,
+    )
+    @test huge_range.available[1, 1]
+    @test huge_range.duration_s[1, 1] == 300.0f0
+end
+
+@testset "ISL orthogonal RTN and duration regression" begin
+    # 1. Orthogonal RTN: geometry where the old non-orthogonal T=v/|v| would flip
+    #    availability on the cos60° azimuth threshold. Satellite A has a velocity with
+    #    both radial and tangential components; the correct orthogonal RTN gives
+    #    cos_psi=0.8 (available) while T=v/|v| would give cos_psi≈-0.28 (unavailable).
+    positions = zeros(Float64, 2, 1, 3)
+    velocities = zeros(Float64, 2, 1, 3)
+    positions[1, 1, :] .= (7000.0, 0.0, 0.0)
+    positions[2, 1, :] .= (7001.0, 0.6, 0.8)
+    velocities[1, 1, :] .= (-7.6, 7.6, 0.0)
+    velocities[2, 1, :] .= (-7.6, 7.6, 0.0)
+
+    gpu_rtn = evaluate_isl_batch_gpu(
+        positions,
+        [(1, 2)];
+        velocities=velocities,
+        isl_max_range_km=100.0,
+        isl_require_los=false,
+        isl_max_cone_angle_deg=60.0,
+        isl_min_duration_s=0.0,
+    )
+    golden_rtn = GoldenISLReference.evaluate_isl_series(
+        positions, [(1, 2)];
+        velocities=velocities,
+        max_range=100.0,
+        require_los=false,
+        cone_deg=60.0,
+        min_duration=0.0,
+    )
+
+    @test gpu_rtn.available == golden_rtn.available
+    @test gpu_rtn.available[1, 1]
+    @test gpu_rtn.elevation_deg[1, 1] ≈ 45.0 atol=1e-12
+    @test gpu_rtn.cos_psi[1, 1] ≈ 0.8 atol=1e-12
+    @test isapprox(gpu_rtn.distance_km, golden_rtn.distance_km; rtol=1e-12, atol=1e-12)
+    @test isapprox(gpu_rtn.delay_ms, golden_rtn.delay_ms; rtol=1e-12, atol=1e-12)
+
+    rel = positions[2, 1, :] .- positions[1, 1, :]
+    R = positions[1, 1, :] ./ norm(positions[1, 1, :])
+    old_T = velocities[1, 1, :] ./ norm(velocities[1, 1, :])
+    horizontal = rel .- dot(rel, R) .* R
+    old_cos_psi = dot(rel, old_T) / norm(horizontal)
+    @test old_cos_psi < 0.0  # old non-orthogonal T would reject this link
+
+    # 2. Duration boundary around min_duration=10 s. Two satellites separated by 1 km
+    #    along the cross-track direction, with a controlled relative velocity pushing
+    #    them apart. Duration = (max_range - d) / |v_rel|.
+    positions_d = zeros(Float64, 2, 1, 3)
+    velocities_d = zeros(Float64, 2, 1, 3)
+    positions_d[1, 1, :] .= (7000.0, 0.0, 0.0)
+    positions_d[2, 1, :] .= (7000.0, 0.0, 1.0)
+    velocities_d[1, 1, :] .= (0.0, 7.6, 0.0)
+
+    # Crossing ≈ 9.5 s → unavailable when min_duration=10.
+    v_rel_9_5 = 99.0 / 9.5
+    velocities_d[2, 1, :] .= (0.0, 7.6, v_rel_9_5)
+    gpu_short = evaluate_isl_batch_gpu(
+        positions_d,
+        [(1, 2)];
+        velocities=velocities_d,
+        isl_max_range_km=100.0,
+        isl_require_los=false,
+        isl_max_cone_angle_deg=180.0,
+        isl_min_duration_s=10.0,
+        time_horizon_s=300.0,
+    )
+    golden_short = GoldenISLReference.evaluate_isl_series(
+        positions_d, [(1, 2)];
+        velocities=velocities_d,
+        max_range=100.0,
+        require_los=false,
+        cone_deg=180.0,
+        min_duration=10.0,
+        time_horizon=300.0,
+    )
+    @test gpu_short.available == golden_short.available
+    @test !gpu_short.available[1, 1]
+    @test gpu_short.duration_s[1, 1] ≈ 9.5 atol=1e-12
+
+    # Crossing ≈ 10.5 s → available when min_duration=10.
+    v_rel_10_5 = 99.0 / 10.5
+    velocities_d[2, 1, :] .= (0.0, 7.6, v_rel_10_5)
+    gpu_long = evaluate_isl_batch_gpu(
+        positions_d,
+        [(1, 2)];
+        velocities=velocities_d,
+        isl_max_range_km=100.0,
+        isl_require_los=false,
+        isl_max_cone_angle_deg=180.0,
+        isl_min_duration_s=10.0,
+        time_horizon_s=300.0,
+    )
+    golden_long = GoldenISLReference.evaluate_isl_series(
+        positions_d, [(1, 2)];
+        velocities=velocities_d,
+        max_range=100.0,
+        require_los=false,
+        cone_deg=180.0,
+        min_duration=10.0,
+        time_horizon=300.0,
+    )
+    @test gpu_long.available == golden_long.available
+    @test gpu_long.available[1, 1]
+    @test gpu_long.duration_s[1, 1] ≈ 10.5 atol=1e-12
+
+    # 3. Float32 variants of the same boundaries (Modal ran both f64/f32).
+    positions32 = zeros(Float32, 2, 1, 3)
+    velocities32 = zeros(Float32, 2, 1, 3)
+    positions32[1, 1, :] .= (7000.0f0, 0.0f0, 0.0f0)
+    positions32[2, 1, :] .= (7001.0f0, 0.6f0, 0.8f0)
+    velocities32[1, 1, :] .= (-7.6f0, 7.6f0, 0.0f0)
+    velocities32[2, 1, :] .= (-7.6f0, 7.6f0, 0.0f0)
+    gpu_rtn32 = evaluate_isl_batch_gpu(
+        positions32,
+        [(1, 2)];
+        velocities=velocities32,
+        isl_max_range_km=100.0f0,
+        isl_require_los=false,
+        isl_max_cone_angle_deg=60.0f0,
+        isl_min_duration_s=0.0f0,
+    )
+    golden_rtn32 = GoldenISLReference.evaluate_isl_series(
+        positions32, [(1, 2)];
+        velocities=velocities32,
+        max_range=100.0f0,
+        require_los=false,
+        cone_deg=60.0f0,
+        min_duration=0.0f0,
+    )
+    @test gpu_rtn32.available == golden_rtn32.available
+    @test gpu_rtn32.available[1, 1]
+    @test gpu_rtn32.elevation_deg[1, 1] ≈ 45.0f0 atol=1f-4
+    @test gpu_rtn32.cos_psi[1, 1] ≈ 0.8f0 atol=1f-4
+
+    positions32_d = zeros(Float32, 2, 1, 3)
+    velocities32_d = zeros(Float32, 2, 1, 3)
+    positions32_d[1, 1, :] .= (7000.0f0, 0.0f0, 0.0f0)
+    positions32_d[2, 1, :] .= (7000.0f0, 0.0f0, 1.0f0)
+    velocities32_d[1, 1, :] .= (0.0f0, 7.6f0, 0.0f0)
+
+    v_rel_9_5_32 = Float32(99.0 / 9.5)
+    velocities32_d[2, 1, :] .= (0.0f0, 7.6f0, v_rel_9_5_32)
+    gpu_short32 = evaluate_isl_batch_gpu(
+        positions32_d,
+        [(1, 2)];
+        velocities=velocities32_d,
+        isl_max_range_km=100.0f0,
+        isl_require_los=false,
+        isl_max_cone_angle_deg=180.0f0,
+        isl_min_duration_s=10.0f0,
+        time_horizon_s=300.0f0,
+    )
+    golden_short32 = GoldenISLReference.evaluate_isl_series(
+        positions32_d, [(1, 2)];
+        velocities=velocities32_d,
+        max_range=100.0f0,
+        require_los=false,
+        cone_deg=180.0f0,
+        min_duration=10.0f0,
+        time_horizon=300.0f0,
+    )
+    @test gpu_short32.available == golden_short32.available
+    @test !gpu_short32.available[1, 1]
+    @test gpu_short32.duration_s[1, 1] ≈ 9.5f0 atol=1f-3
+
+    v_rel_10_5_32 = Float32(99.0 / 10.5)
+    velocities32_d[2, 1, :] .= (0.0f0, 7.6f0, v_rel_10_5_32)
+    gpu_long32 = evaluate_isl_batch_gpu(
+        positions32_d,
+        [(1, 2)];
+        velocities=velocities32_d,
+        isl_max_range_km=100.0f0,
+        isl_require_los=false,
+        isl_max_cone_angle_deg=180.0f0,
+        isl_min_duration_s=10.0f0,
+        time_horizon_s=300.0f0,
+    )
+    golden_long32 = GoldenISLReference.evaluate_isl_series(
+        positions32_d, [(1, 2)];
+        velocities=velocities32_d,
+        max_range=100.0f0,
+        require_los=false,
+        cone_deg=180.0f0,
+        min_duration=10.0f0,
+        time_horizon=300.0f0,
+    )
+    @test gpu_long32.available == golden_long32.available
+    @test gpu_long32.available[1, 1]
+    @test gpu_long32.duration_s[1, 1] ≈ 10.5f0 atol=1f-3
+end
+
 @testset "evaluate_isl_batch_gpu validation" begin
     positions = zeros(Float64, 3, 4, 3)
     @test_throws ArgumentError evaluate_isl_batch_gpu(
@@ -341,8 +625,38 @@ end
     @test_throws ArgumentError evaluate_isl_batch_gpu(
         positions, [(1, 9)],
     )
+    @test_throws ArgumentError evaluate_isl_batch_gpu(
+        positions, [(1, 1)],
+    )
     empty = evaluate_isl_batch_gpu(positions, Tuple{Int,Int}[])
     @test size(empty.available) == (0, 4)
+
+    positions32 = zeros(Float32, 3, 4, 3)
+    @test_throws ArgumentError evaluate_isl_batch_gpu(
+        positions32,
+        Tuple{Int,Int}[];
+        isl_max_range_km=floatmax(Float64),
+    )
+    @test_throws ArgumentError evaluate_isl_batch_gpu(
+        positions32,
+        Tuple{Int,Int}[];
+        isl_max_cone_angle_deg=-1.0,
+    )
+    @test_throws ArgumentError evaluate_isl_batch_gpu(
+        positions32,
+        Tuple{Int,Int}[];
+        isl_min_duration_s=-1.0,
+    )
+    @test_throws ArgumentError evaluate_isl_batch_gpu(
+        positions32,
+        Tuple{Int,Int}[];
+        time_horizon_s=1.0e39,
+    )
+    @test_throws ArgumentError evaluate_isl_batch_gpu(
+        positions32,
+        Tuple{Int,Int}[];
+        earth_radius_km=0.0,
+    )
 end
 
 @testset "Kernel compute backend ISL contract" begin
@@ -386,6 +700,25 @@ end
     empty_result = evaluate_isl_series(backend, positions, Tuple{Int,Int}[])
     @test empty_result isa ISLSeriesResult
     @test size(empty_result.available) == (0, 4)
+    @test_throws ArgumentError evaluate_isl_series(
+        backend,
+        positions,
+        [(1, 1)],
+    )
+
+    backend32 = KernelComputeBackend(CPU(); precision=Float32)
+    @test_throws ArgumentError evaluate_isl_series(
+        backend32,
+        positions,
+        Tuple{Int,Int}[];
+        isl_max_range_km=floatmax(Float64),
+    )
+    @test_throws ArgumentError evaluate_isl_series(
+        backend32,
+        positions,
+        Tuple{Int,Int}[];
+        isl_min_duration_s=-1.0,
+    )
 
     # 契约回退：generic evaluate_isl_series 对未实现该算子的后端抛 MethodError
     @test_throws MethodError evaluate_isl_series(
@@ -521,11 +854,40 @@ end
         @test agg.counts isa Array{Int32,1}
     end
 
+    # 跨 workgroup 边界用例：n_pairs 小于、等于、大于块大小（128）以及不整除的情况
+    for (n_sat, n_pairs, n_times) in ((8, 5, 3), (24, 130, 4), (40, 300, 6))
+        positions, velocities =
+            random_isl_scenario(n_sat, n_times, Float64; seed=900 + n_sat + n_pairs + n_times)
+        all_pairs = [(i, j) for i in 1:n_sat for j in (i + 1):n_sat]
+        pairs = all_pairs[1:min(n_pairs, length(all_pairs))]
+
+        full = evaluate_isl_batch_gpu(positions, pairs; velocities=velocities)
+        counts = isl_available_counts_gpu(positions, pairs; velocities=velocities)
+        @test counts isa Vector{Int32}
+        @test counts == vec(sum(full.available; dims=1))
+
+        full0 = evaluate_isl_batch_gpu(positions, pairs)
+        counts0 = isl_available_counts_gpu(positions, pairs)
+        @test counts0 == vec(sum(full0.available; dims=1))
+    end
+
     # 空 pairs → (NT,) 全零 / (0,) / (N,NT) 全零
     positions, _ = random_isl_scenario(8, 4, Float64; seed=1)
     @test isl_available_counts_gpu(positions, Tuple{Int,Int}[]) == zeros(Int32, 4)
     @test length(isl_pair_available_ratio_gpu(positions, Tuple{Int,Int}[])) == 0
     @test isl_satellite_degree_gpu(positions, Tuple{Int,Int}[]) == zeros(Int32, 8, 4)
+    for reduction in (
+        isl_available_counts_gpu,
+        isl_pair_available_ratio_gpu,
+        isl_satellite_degree_gpu,
+    )
+        @test_throws ArgumentError reduction(positions, [(1, 1)])
+        @test_throws ArgumentError reduction(
+            Float32.(positions),
+            Tuple{Int,Int}[];
+            time_horizon_s=1.0e39,
+        )
+    end
 end
 
 @testset "device residency pipeline" begin
@@ -666,17 +1028,19 @@ function satellitetoolbox_series(sma, ecc, inc, raan, argp, nu, tspan, model)
     return out
 end
 
-# SatelliteToolbox 参考 ECEF：与 src/orbit 的 propagate_to_ecef 同一路径
-# （ST 传播器出 ECI + r_eci_to_ecef(TEME(), PEF(), jd)，jd = tspan/86400）。
-function satellitetoolbox_series_ecef(sma, ecc, inc, raan, argp, nu, tspan, model)
-    eci = satellitetoolbox_series(sma, ecc, inc, raan, argp, nu, tspan, model)
-    out = similar(eci)
-    for (time_index, t) in enumerate(tspan)
+# Modern UT1 epoch used to ensure frame tests cannot accidentally preserve a JD0 convention.
+const FRAME_TEST_EPOCH_JD_UT1 = 2461234.5  # 2026-07-13 00:00 UT1 (UTC approximation)
+
+function satellitetoolbox_teme_to_pef(teme, elapsed_s, epoch_jd_ut1)
+    out = Array{Float64}(undef, size(teme))
+    for (time_index, elapsed) in enumerate(elapsed_s)
         D = SatelliteToolbox.r_eci_to_ecef(
-            SatelliteToolbox.TEME(), SatelliteToolbox.PEF(), Float64(t) / 86400.0,
+            SatelliteToolbox.TEME(),
+            SatelliteToolbox.PEF(),
+            Float64(epoch_jd_ut1) + Float64(elapsed) / 86400.0,
         )
-        for s in 1:size(eci, 1)
-            v = @view eci[s, time_index, :]
+        for s in 1:size(teme, 1)
+            v = Float64.(@view teme[s, time_index, :])
             r = D * v
             out[s, time_index, 1] = r[1]
             out[s, time_index, 2] = r[2]
@@ -684,6 +1048,15 @@ function satellitetoolbox_series_ecef(sma, ecc, inc, raan, argp, nu, tspan, mode
         end
     end
     return out
+end
+
+# Independent modern-epoch reference: SatelliteToolbox propagation followed by its TEME→PEF map.
+function satellitetoolbox_series_pef(
+    sma, ecc, inc, raan, argp, nu, elapsed_s, model;
+    epoch_jd_ut1,
+)
+    teme = satellitetoolbox_series(sma, ecc, inc, raan, argp, nu, elapsed_s, model)
+    return satellitetoolbox_teme_to_pef(teme, elapsed_s, epoch_jd_ut1)
 end
 
 @testset "propagate_kepler_gpu analytic parity" begin
@@ -745,56 +1118,151 @@ end
     )
 end
 
-@testset "propagate_to_ecef_gpu TEME->PEF parity" begin
+@testset "teme_to_pef_gpu explicit modern epoch" begin
+    base_vectors = (
+        (7000.0, 0.0, 0.0),
+        (-1000.0, 6800.0, 1200.0),
+        (1234.5, -5678.0, 3456.0),
+    )
+    elapsed64 = [0.0, 60.0, 3600.0, 43200.0, 86400.0]
+
+    for T in (Float64, Float32)
+        elapsed = T.(elapsed64)
+        teme = Array{T}(undef, length(base_vectors), length(elapsed), 3)
+        for sat in eachindex(base_vectors), time_index in eachindex(elapsed)
+            teme[sat, time_index, 1] = T(base_vectors[sat][1])
+            teme[sat, time_index, 2] = T(base_vectors[sat][2])
+            teme[sat, time_index, 3] = T(base_vectors[sat][3])
+        end
+
+        got = teme_to_pef_gpu(
+            teme,
+            elapsed;
+            epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+        )
+        reference = satellitetoolbox_teme_to_pef(
+            teme,
+            elapsed,
+            FRAME_TEST_EPOCH_JD_UT1,
+        )
+        rtol = T === Float64 ? 5e-11 : 5e-6
+        atol = T === Float64 ? 2e-5 : 2e-2
+        @test got isa Array{T,3}
+        @test isapprox(Float64.(got), reference; rtol=rtol, atol=atol)
+
+        # Host-precomputed kernel coefficients and elapsed-time array stay in position precision.
+        coefficients =
+            SatelliteSimGPU._gmst_epoch_coefficients(FRAME_TEST_EPOCH_JD_UT1, T)
+        @test coefficients isa NTuple{5,T}
+
+        # Same target JD expressed by shifting one day between epoch and elapsed time.
+        fixed_teme = teme[:, 1:1, :]
+        from_elapsed_day = teme_to_pef_gpu(
+            fixed_teme,
+            T[86400];
+            epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+        )
+        from_epoch_day = teme_to_pef_gpu(
+            fixed_teme,
+            T[0];
+            epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1 + 1,
+        )
+        @test isapprox(
+            Float64.(from_elapsed_day),
+            Float64.(from_epoch_day);
+            rtol=rtol,
+            atol=atol,
+        )
+    end
+
+    teme = zeros(Float64, 2, 3, 3)
+    elapsed = [0.0, 60.0, 120.0]
+    @test_throws UndefKeywordError teme_to_pef_gpu(teme, elapsed)
+    @test_throws ArgumentError teme_to_pef_gpu(
+        teme, elapsed; epoch_jd_ut1=NaN,
+    )
+    @test_throws ArgumentError teme_to_pef_gpu(
+        teme, [0.0, Inf, 120.0]; epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+    )
+    invalid_teme = copy(teme)
+    invalid_teme[1, 1, 1] = NaN
+    @test_throws ArgumentError teme_to_pef_gpu(
+        invalid_teme, elapsed; epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+    )
+    @test_throws ArgumentError teme_to_pef_gpu(
+        teme, elapsed[1:2]; epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+    )
+    @test_throws ArgumentError teme_to_pef_gpu(
+        teme[:, :, 1:2], elapsed; epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+    )
+end
+
+@testset "propagate_to_pef_gpu modern-epoch parity" begin
     for model in (:two_body, :j2)
         sma, ecc, inc, raan, argp, nu =
             random_kepler_elements(18, Float64; seed=(model === :j2 ? 4 : 3))
         tspan = collect(0.0:150.0:5400.0)   # 0..1.5h
 
-        # 1) 设备 ECEF vs 冻结 golden 标量 ECEF：机器精度对齐（主对标）
-        golden_ecef = GoldenPropagatorReference.propagate_series_ecef(
-            sma, ecc, inc, raan, argp, nu, tspan; model=model,
+        golden_pef = GoldenPropagatorReference.propagate_series_pef(
+            sma, ecc, inc, raan, argp, nu, tspan;
+            epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+            model=model,
         )
-        got_ecef = propagate_to_ecef_gpu(sma, ecc, inc, raan, argp, nu, tspan; model=model)
-        @test got_ecef isa Array{Float64,3}
-        @test size(got_ecef) == (18, length(tspan), 3)
-        @test isapprox(got_ecef, golden_ecef; rtol=1e-9, atol=1e-7)
+        got_pef = propagate_to_pef_gpu(
+            sma, ecc, inc, raan, argp, nu, tspan;
+            epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+            model=model,
+        )
+        @test got_pef isa Array{Float64,3}
+        @test size(got_pef) == (18, length(tspan), 3)
+        @test isapprox(got_pef, golden_pef; rtol=1e-9, atol=2e-5)
 
-        # 2) 交叉验证 vs CPU 主链变换：SatelliteToolbox ECI + r_eci_to_ecef(TEME,PEF,jd)
-        ref_ecef = satellitetoolbox_series_ecef(sma, ecc, inc, raan, argp, nu, tspan, model)
-        @test isapprox(got_ecef, ref_ecef; rtol=1e-7, atol=1e-6)
-        @info "ECEF parity vs CPU main-chain transform" model max_abs_err_km=maximum(
-            abs.(got_ecef .- ref_ecef)
+        # Independent oracle: SatelliteToolbox propagation and frame conversion at a real epoch.
+        reference_pef = satellitetoolbox_series_pef(
+            sma, ecc, inc, raan, argp, nu, tspan, model;
+            epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+        )
+        @test isapprox(got_pef, reference_pef; rtol=1e-7, atol=2e-5)
+        @info "PEF parity vs SatelliteToolbox" model max_abs_err_km=maximum(
+            abs.(got_pef .- reference_pef)
         )
     end
 
-    # 3) 独立 teme_to_pef_gpu 与链式 propagate_to_ecef_gpu 一致；且确有恒星时旋转 + 保范
+    # Standalone frame conversion and chained propagation agree without changing relative time.
     sma, ecc, inc, raan, argp, nu = random_kepler_elements(10, Float64; seed=8)
     tspan = collect(0.0:300.0:3600.0)
-    eci = propagate_kepler_gpu(sma, ecc, inc, raan, argp, nu, tspan; model=:j2)
-    ecef_standalone = teme_to_pef_gpu(eci, tspan)
-    ecef_chained = propagate_to_ecef_gpu(sma, ecc, inc, raan, argp, nu, tspan; model=:j2)
-    @test ecef_standalone == ecef_chained
-    @test !isapprox(ecef_standalone, eci)   # GMST(t)≠0 → ECEF 应不同于 ECI
+    teme = propagate_kepler_gpu(sma, ecc, inc, raan, argp, nu, tspan; model=:j2)
+    pef_standalone = teme_to_pef_gpu(
+        teme, tspan; epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+    )
+    pef_chained = propagate_to_pef_gpu(
+        sma, ecc, inc, raan, argp, nu, tspan;
+        epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+        model=:j2,
+    )
+    @test pef_standalone == pef_chained
+    @test !isapprox(pef_standalone, teme)
     for s in 1:10, tj in 1:length(tspan)
-        r_eci = sqrt(sum(abs2, @view eci[s, tj, :]))
-        r_ecef = sqrt(sum(abs2, @view ecef_standalone[s, tj, :]))
-        @test isapprox(r_eci, r_ecef; rtol=1e-11, atol=1e-7)   # Z 旋转保范
+        r_teme = sqrt(sum(abs2, @view teme[s, tj, :]))
+        r_pef = sqrt(sum(abs2, @view pef_standalone[s, tj, :]))
+        @test isapprox(r_teme, r_pef; rtol=1e-11, atol=1e-7)
     end
 
-    # 4) Float32 后端可运行、有限（恒星时角内部仍走 Float64）
+    # Float32 propagation remains relative-time based; only the frame boundary sees the epoch.
     sma32, ecc32, inc32, raan32, argp32, nu32 =
         random_kepler_elements(12, Float32; seed=6)
     tspan32 = collect(Float32, 0.0:120.0:1200.0)
-    got32 = propagate_to_ecef_gpu(
-        sma32, ecc32, inc32, raan32, argp32, nu32, tspan32; model=:two_body,
+    got32 = propagate_to_pef_gpu(
+        sma32, ecc32, inc32, raan32, argp32, nu32, tspan32;
+        epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+        model=:two_body,
     )
     @test got32 isa Array{Float32,3}
     @test all(isfinite, got32)
 
-    # 5) 校验：tspan 长度不一致 / 形状错误
-    @test_throws ArgumentError teme_to_pef_gpu(eci, tspan[1:2])
-    @test_throws ArgumentError teme_to_pef_gpu(eci[:, :, 1:2], tspan)
+    @test_throws UndefKeywordError propagate_to_pef_gpu(
+        sma, ecc, inc, raan, argp, nu, tspan,
+    )
 end
 
 @testset "device residency: 元素→传播→TEME→PEF→GSL/覆盖 全程设备" begin
@@ -805,13 +1273,17 @@ end
     ground_pts, weights = random_ground_grid(6, 8, Float64)
 
     # host 基线（相同 GPU 函数，host 驻留）
-    host_ecef = propagate_to_ecef_gpu(sma, ecc, inc, raan, argp, nu, tspan; model=:j2)
+    host_pef = propagate_to_pef_gpu(
+        sma, ecc, inc, raan, argp, nu, tspan;
+        epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+        model=:j2,
+    )
     host_gsl = evaluate_gsl_batch_gpu(
-        host_ecef, ground_ecef, ned_rotation;
+        host_pef, ground_ecef, ned_rotation;
         gsl_min_elevation_deg=25.0, gsl_max_range_km=2000.0,
     )
     host_cov = coverage_loss_gpu(
-        host_ecef, ground_pts, weights;
+        host_pef, ground_pts, weights;
         min_el=10.0, τ_cov=5.0, dt=1.0, τ_revisit=1.0, λ=0.1,
     )
 
@@ -819,36 +1291,44 @@ end
     gsl_out = device_pipeline(
         CPU(), sma, ecc, inc, raan, argp, nu, tspan, ground_ecef, ned_rotation,
     ) do a, e, i, om, w, v, ts, ge, nr
-        pos_ecef = propagate_to_ecef_gpu(a, e, i, om, w, v, ts; model=:j2)
+        pos_pef = propagate_to_pef_gpu(
+            a, e, i, om, w, v, ts;
+            epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+            model=:j2,
+        )
         evaluate_gsl_batch_gpu(
-            pos_ecef, ge, nr; gsl_min_elevation_deg=25.0, gsl_max_range_km=2000.0,
+            pos_pef, ge, nr; gsl_min_elevation_deg=25.0, gsl_max_range_km=2000.0,
         )
     end
     @test gsl_out[1] == host_gsl[1]
     @test isapprox(gsl_out[2], host_gsl[2]; rtol=1e-12, atol=1e-12)
     @test isapprox(gsl_out[3], host_gsl[3]; rtol=1e-12, atol=1e-12)
     @test isapprox(gsl_out[4], host_gsl[4]; rtol=1e-12, atol=1e-12)
-    @test any(gsl_out[1])   # 物理 sanity：ECEF 对齐地面站后确有可见 GSL
+    @test any(gsl_out[1])   # 物理 sanity：PEF 对齐地面站后确有可见 GSL
 
     # 全程设备驻留：→ 覆盖损失（标量）
     cov_out = device_pipeline(
         CPU(), sma, ecc, inc, raan, argp, nu, tspan, ground_pts, weights,
     ) do a, e, i, om, w, v, ts, gp, wt
-        pos_ecef = propagate_to_ecef_gpu(a, e, i, om, w, v, ts; model=:j2)
+        pos_pef = propagate_to_pef_gpu(
+            a, e, i, om, w, v, ts;
+            epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+            model=:j2,
+        )
         coverage_loss_gpu(
-            pos_ecef, gp, wt; min_el=10.0, τ_cov=5.0, dt=1.0, τ_revisit=1.0, λ=0.1,
+            pos_pef, gp, wt; min_el=10.0, τ_cov=5.0, dt=1.0, τ_revisit=1.0, λ=0.1,
         )
     end
     @test isapprox(cov_out, host_cov; rtol=1e-12, atol=1e-12)
 
-    # 说明 ECEF 变换的必要性：ECI 直接喂 GSL（未对齐地固站）可见性与 ECEF 不同
-    eci = propagate_kepler_gpu(sma, ecc, inc, raan, argp, nu, tspan; model=:j2)
-    gsl_from_eci = evaluate_gsl_batch_gpu(
-        eci, ground_ecef, ned_rotation;
+    # TEME 直接喂 GSL（未对齐地固站）与 PEF 的可见性不同。
+    teme = propagate_kepler_gpu(sma, ecc, inc, raan, argp, nu, tspan; model=:j2)
+    gsl_from_teme = evaluate_gsl_batch_gpu(
+        teme, ground_ecef, ned_rotation;
         gsl_min_elevation_deg=25.0, gsl_max_range_km=2000.0,
     )
-    @info "ECEF vs ECI GSL visibility" ecef_visible=sum(host_gsl[1]) eci_visible=sum(
-        gsl_from_eci[1]
+    @info "PEF vs TEME GSL visibility" pef_visible=sum(host_gsl[1]) teme_visible=sum(
+        gsl_from_teme[1]
     )
 end
 
@@ -904,6 +1384,27 @@ end
         @info "SGP4 parity" branch=label algos=Tuple(sort(unique(el.algo))) max_pos_err_km=pos_err max_vel_err_km_s=vel_err
     end
 
+    # SGP4 TEME positions composed with the explicit modern-epoch PEF conversion.
+    n0, e0, i0, raan, argp, M0, bstar = random_sgp4_elements(8; seed=43)
+    tspan_min = [0.0, 10.0, 30.0, 60.0]
+    elapsed_s = 60.0 .* tspan_min
+    reference_teme, _ = GoldenSGP4Reference.propagate_series(
+        n0, e0, i0, raan, argp, M0, bstar, tspan_min,
+    )
+    reference_pef = satellitetoolbox_teme_to_pef(
+        reference_teme,
+        elapsed_s,
+        FRAME_TEST_EPOCH_JD_UT1,
+    )
+    elements = sgp4_init_host(n0, e0, i0, raan, argp, M0, bstar)
+    candidate_teme = sgp4_propagate_gpu(elements, tspan_min)
+    candidate_pef = teme_to_pef_gpu(
+        candidate_teme,
+        elapsed_s;
+        epoch_jd_ut1=FRAME_TEST_EPOCH_JD_UT1,
+    )
+    @test isapprox(candidate_pef, reference_pef; rtol=1e-9, atol=2e-5)
+
     # 深空（周期 ≥ 225 min）→ 明确抛错（本档不支持 SDP4）
     mu = 398600.5
     a_deep = 20000.0
@@ -948,3 +1449,6 @@ end
     @test all(isfinite, pos32)
     @test isapprox(Float64.(pos32), gold32; rtol=1e-2, atol=5.0)
 end
+
+include("adjoint_contract_regression.jl")
+include("orbit_validation_regression.jl")

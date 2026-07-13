@@ -105,7 +105,14 @@ end
         step_cov[ground_index, time_index] * weights[ground_index]
 end
 
-function _validate_coverage_inputs(positions, ground_pts, weights)
+function _validate_coverage_inputs(
+    positions,
+    ground_pts,
+    weights;
+    τ_cov,
+    dt,
+    τ_revisit,
+)
     size(positions, 3) == 3 ||
         throw(ArgumentError("positions must have shape (N, NT, 3)"))
     size(ground_pts, 2) == 3 ||
@@ -118,7 +125,22 @@ function _validate_coverage_inputs(positions, ground_pts, weights)
         throw(ArgumentError("positions and ground_pts must be non-empty"))
     eltype(positions) <: AbstractFloat ||
         throw(ArgumentError("positions eltype must be Float32 or Float64"))
-    return nothing
+    all(weight -> isfinite(weight) && weight > zero(weight), weights) ||
+        throw(ArgumentError("weights must contain only finite, positive values"))
+
+    total_weight = sum(weights)
+    isfinite(total_weight) && total_weight > zero(total_weight) ||
+        throw(ArgumentError("weights must have a finite, positive total"))
+
+    for (name, value) in (
+        ("τ_cov", τ_cov),
+        ("dt", dt),
+        ("τ_revisit", τ_revisit),
+    )
+        isfinite(value) && value > zero(value) ||
+            throw(ArgumentError("$name must be finite and positive"))
+    end
+    return total_weight
 end
 
 """
@@ -146,7 +168,14 @@ function coverage_loss_gpu(
     τ_revisit::T = one(T),
     λ::T = T(0.1),
 ) where T <: Number
-    _validate_coverage_inputs(positions, ground_pts, weights)
+    total_weight = _validate_coverage_inputs(
+        positions,
+        ground_pts,
+        weights;
+        τ_cov=τ_cov,
+        dt=dt,
+        τ_revisit=τ_revisit,
+    )
 
     n_satellites, n_times, _ = size(positions)
     n_ground = size(ground_pts, 1)
@@ -184,7 +213,6 @@ function coverage_loss_gpu(
     ))
 
     total_cov = sum(weighted_cov)
-    total_weight = sum(weights)
     mean_cov = total_cov / (total_weight * T(n_times))
 
     maximum_gap = maximum(revisit_gaps)
@@ -596,14 +624,13 @@ function evaluate_isl_series(
         throw(ArgumentError("positions must be non-empty"))
     all(isfinite, positions) ||
         throw(ArgumentError("positions must contain only finite values"))
-    isfinite(isl_max_range_km) && isl_max_range_km > 0 ||
-        throw(ArgumentError("isl_max_range_km must be finite and positive"))
-    isfinite(isl_max_cone_angle_deg) ||
-        throw(ArgumentError("isl_max_cone_angle_deg must be finite"))
-    isfinite(isl_min_duration_s) ||
-        throw(ArgumentError("isl_min_duration_s must be finite"))
-    isfinite(time_horizon_s) && time_horizon_s > 0 ||
-        throw(ArgumentError("time_horizon_s must be finite and positive"))
+    options = _normalize_isl_options(
+        T;
+        isl_max_range_km=isl_max_range_km,
+        isl_max_cone_angle_deg=isl_max_cone_angle_deg,
+        isl_min_duration_s=isl_min_duration_s,
+        time_horizon_s=time_horizon_s,
+    )
     if velocities !== nothing
         size(velocities) == size(positions) ||
             throw(ArgumentError("velocities must match positions shape (N, NT, 3)"))
@@ -619,6 +646,7 @@ function evaluate_isl_series(
         i, j = Int(first(pair)), Int(last(pair))
         (1 <= i <= n_satellites && 1 <= j <= n_satellites) ||
             throw(ArgumentError("isl_pairs indices must be within 1:$(n_satellites)"))
+        i != j || throw(ArgumentError("ISL pair endpoints must be distinct"))
         push!(pairs, (i, j))
     end
 
@@ -655,11 +683,11 @@ function evaluate_isl_series(
         device_positions,
         pairs;
         velocities=device_velocities,
-        isl_max_range_km=T(isl_max_range_km),
+        isl_max_range_km=options.max_range,
         isl_require_los=isl_require_los,
-        isl_max_cone_angle_deg=T(isl_max_cone_angle_deg),
-        isl_min_duration_s=T(isl_min_duration_s),
-        time_horizon_s=T(time_horizon_s),
+        isl_max_cone_angle_deg=options.cone_angle,
+        isl_min_duration_s=options.min_duration,
+        time_horizon_s=options.time_horizon,
     )
 
     result = ISLSeriesResult(

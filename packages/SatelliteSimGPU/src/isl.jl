@@ -14,6 +14,40 @@ export evaluate_isl_batch_gpu
 
 const _WGS84_EQUATORIAL_RADIUS_KM = 6378.137
 
+function _normalize_isl_options(
+    ::Type{T};
+    isl_max_range_km,
+    isl_max_cone_angle_deg,
+    isl_min_duration_s,
+    time_horizon_s,
+    earth_radius_km=_WGS84_EQUATORIAL_RADIUS_KM,
+) where {T<:AbstractFloat}
+    max_range = T(isl_max_range_km)
+    cone_angle = T(isl_max_cone_angle_deg)
+    min_duration = T(isl_min_duration_s)
+    time_horizon = T(time_horizon_s)
+    earth_radius = T(earth_radius_km)
+
+    isfinite(max_range) && max_range > zero(T) ||
+        throw(ArgumentError("isl_max_range_km must be finite and positive in $T"))
+    isfinite(cone_angle) && zero(T) <= cone_angle <= T(180) ||
+        throw(ArgumentError("isl_max_cone_angle_deg must be in [0, 180] degrees in $T"))
+    isfinite(min_duration) && min_duration >= zero(T) ||
+        throw(ArgumentError("isl_min_duration_s must be finite and non-negative in $T"))
+    isfinite(time_horizon) && time_horizon > zero(T) ||
+        throw(ArgumentError("time_horizon_s must be finite and positive in $T"))
+    isfinite(earth_radius) && earth_radius > zero(T) ||
+        throw(ArgumentError("earth_radius_km must be finite and positive in $T"))
+
+    return (
+        max_range=max_range,
+        cone_angle=cone_angle,
+        min_duration=min_duration,
+        time_horizon=time_horizon,
+        earth_radius=earth_radius,
+    )
+end
+
 # ── 设备内联几何 ─────────────────────────────────────────────────────────────
 
 @inline function _isl_has_los_gpu(
@@ -30,36 +64,56 @@ const _WGS84_EQUATORIAL_RADIUS_KM = 6378.137
     return sqrt(cx * cx + cy * cy + cz * cz) >= earth_radius
 end
 
-# RTN 相对坐标：R=指向地心(a/|a|), T=速度方向(v/|v|), N=R×T。返回 target(b) 在 RTN 下的 (r,t,n)。
+# RTN 相对坐标：R=a/|a|（径向向外），N=normalize(R×v)，T=N×R。
+# 返回有效标志及 target(b) 在正交单位基下的 (r,t,n)。
 @inline function _isl_rtn_gpu(
     ax::T, ay::T, az::T, vx::T, vy::T, vz::T, bx::T, by::T, bz::T,
 ) where {T<:AbstractFloat}
-    ra = sqrt(ax * ax + ay * ay + az * az)
+    radius_squared = ax * ax + ay * ay + az * az
+    if !(radius_squared > zero(T)) || !isfinite(radius_squared)
+        return false, zero(T), zero(T), zero(T)
+    end
+    ra = sqrt(radius_squared)
     rx, ry, rz = ax / ra, ay / ra, az / ra
-    rv = sqrt(vx * vx + vy * vy + vz * vz)
-    tx, ty, tz = vx / rv, vy / rv, vz / rv
-    nx = ry * tz - rz * ty
-    ny = rz * tx - rx * tz
-    nz = rx * ty - ry * tx
-    rn = sqrt(nx * nx + ny * ny + nz * nz)
+    velocity_scale = max(abs(vx), max(abs(vy), abs(vz)))
+    if !(velocity_scale > zero(T)) || !isfinite(velocity_scale)
+        return false, zero(T), zero(T), zero(T)
+    end
+    svx, svy, svz =
+        vx / velocity_scale, vy / velocity_scale, vz / velocity_scale
+    nx = ry * svz - rz * svy
+    ny = rz * svx - rx * svz
+    nz = rx * svy - ry * svx
+    normal_squared = nx * nx + ny * ny + nz * nz
+    velocity_squared = svx * svx + svy * svy + svz * svz
+    angular_tolerance = T(16) * eps(T)
+    if !(normal_squared > angular_tolerance^2 * velocity_squared) ||
+       !isfinite(normal_squared)
+        return false, zero(T), zero(T), zero(T)
+    end
+    rn = sqrt(normal_squared)
     nx, ny, nz = nx / rn, ny / rn, nz / rn
+    tx = ny * rz - nz * ry
+    ty = nz * rx - nx * rz
+    tz = nx * ry - ny * rx
     relx, rely, relz = bx - ax, by - ay, bz - az
     r = relx * rx + rely * ry + relz * rz
     t = relx * tx + rely * ty + relz * tz
     n = relx * nx + rely * ny + relz * nz
-    return r, t, n
+    return true, r, t, n
 end
 
 @inline function _isl_elev_from_rtn_gpu(r::T, t::T, n::T) where {T<:AbstractFloat}
-    dist = sqrt(r * r + t * t + n * n)
+    horizontal = sqrt(t * t + n * n)
+    dist = sqrt(r * r + horizontal * horizontal)
     dist < T(1e-10) && return T(90.0)
-    return asin(abs(r) / dist) * T(180.0 / π)
+    return atan(abs(r), horizontal) * T(180.0 / π)
 end
 
 @inline function _isl_azim_from_rtn_gpu(t::T, n::T) where {T<:AbstractFloat}
     denom = sqrt(n * n + t * t)
     denom < T(1e-10) && return one(T)
-    return n / denom
+    return clamp(n / denom, -one(T), one(T))
 end
 
 @inline function _isl_azimuth_ok_gpu(
@@ -79,7 +133,7 @@ end
     end
 end
 
-# 直线外推持续时长：每 1s 检查 |rel_pos + t·rel_vel|，超出 max_range 即断链。
+# 恒定相对速度直线外推：稳定求解首次满足 |rel_pos + t·rel_vel| = max_range 的正根。
 @inline function _isl_duration_gpu(
     ax::T, ay::T, az::T, vax::T, vay::T, vaz::T,
     bx::T, by::T, bz::T, vbx::T, vby::T, vbz::T,
@@ -87,17 +141,46 @@ end
 ) where {T<:AbstractFloat}
     rpx, rpy, rpz = bx - ax, by - ay, bz - az
     rvx, rvy, rvz = vbx - vax, vby - vay, vbz - vaz
-    tt = one(T)
-    while tt <= time_horizon
-        px = rpx + tt * rvx
-        py = rpy + tt * rvy
-        pz = rpz + tt * rvz
-        if sqrt(px * px + py * py + pz * pz) > max_range
-            return tt
-        end
-        tt += one(T)
+
+    position_scale = max(
+        max_range,
+        max(abs(rpx), max(abs(rpy), abs(rpz))),
+    )
+    !isfinite(position_scale) && return zero(T)
+    srpx, srpy, srpz =
+        rpx / position_scale, rpy / position_scale, rpz / position_scale
+    scaled_range = max_range / position_scale
+    scaled_distance = sqrt(srpx * srpx + srpy * srpy + srpz * srpz)
+    range_residual =
+        (scaled_distance - scaled_range) * (scaled_distance + scaled_range)
+    range_residual > zero(T) && return zero(T)
+
+    velocity_scale = max(abs(rvx), max(abs(rvy), abs(rvz)))
+    velocity_scale == zero(T) && return time_horizon
+    !isfinite(velocity_scale) && return zero(T)
+    srvx, srvy, srvz =
+        rvx / velocity_scale, rvy / velocity_scale, rvz / velocity_scale
+    speed_squared = srvx * srvx + srvy * srvy + srvz * srvz
+    radial_rate = srpx * srvx + srpy * srvy + srpz * srvz
+    range_residual == zero(T) && radial_rate >= zero(T) && return zero(T)
+
+    discriminant = max(
+        radial_rate * radial_rate - speed_squared * range_residual,
+        zero(T),
+    )
+    root = sqrt(discriminant)
+    crossing = if radial_rate >= zero(T)
+        -range_residual / (radial_rate + root)
+    else
+        (-radial_rate + root) / speed_squared
     end
-    return time_horizon
+    time_scale = position_scale / velocity_scale
+    crossing = if isfinite(time_scale)
+        crossing * time_scale
+    else
+        (crossing * position_scale) / velocity_scale
+    end
+    return clamp(crossing, zero(T), time_horizon)
 end
 
 # ── 核 ───────────────────────────────────────────────────────────────────────
@@ -143,20 +226,25 @@ end
         vby = velocities[j, time_index, 2]
         vbz = velocities[j, time_index, 3]
 
-        r, t, n = _isl_rtn_gpu(ax, ay, az, vax, vay, vaz, bx, by, bz)
-        elevation = _isl_elev_from_rtn_gpu(r, t, n)
-        avail = avail & (elevation <= cone_angle_deg)
-        if avail
-            cos_psi = _isl_azim_from_rtn_gpu(t, n)
-            avail = avail & _isl_azimuth_ok_gpu(cos_psi, terminal_id, cone_angle_deg)
+        rtn_valid, r, t, n =
+            _isl_rtn_gpu(ax, ay, az, vax, vay, vaz, bx, by, bz)
+        if rtn_valid
+            elevation = _isl_elev_from_rtn_gpu(r, t, n)
+            avail = avail & (elevation <= cone_angle_deg)
             if avail
-                duration = _isl_duration_gpu(
-                    ax, ay, az, vax, vay, vaz,
-                    bx, by, bz, vbx, vby, vbz,
-                    max_range, time_horizon,
-                )
-                avail = avail & (duration >= min_duration)
+                cos_psi = _isl_azim_from_rtn_gpu(t, n)
+                avail = avail & _isl_azimuth_ok_gpu(cos_psi, terminal_id, cone_angle_deg)
+                if avail
+                    duration = _isl_duration_gpu(
+                        ax, ay, az, vax, vay, vaz,
+                        bx, by, bz, vbx, vby, vbz,
+                        max_range, time_horizon,
+                    )
+                    avail = avail & (duration >= min_duration)
+                end
             end
+        else
+            avail = false
         end
     end
 
@@ -204,10 +292,19 @@ function evaluate_isl_batch_gpu(
         size(velocities) == size(positions) ||
             throw(ArgumentError("velocities must match positions shape (N, NT, 3)"))
     end
+    options = _normalize_isl_options(
+        T;
+        isl_max_range_km=isl_max_range_km,
+        isl_max_cone_angle_deg=isl_max_cone_angle_deg,
+        isl_min_duration_s=isl_min_duration_s,
+        time_horizon_s=time_horizon_s,
+        earth_radius_km=earth_radius_km,
+    )
     n_pairs = length(isl_pairs)
     for (i, j) in isl_pairs
         (1 <= i <= n_satellites && 1 <= j <= n_satellites) ||
             throw(ArgumentError("isl_pairs indices must be within 1:$(n_satellites)"))
+        i != j || throw(ArgumentError("ISL pair endpoints must be distinct"))
     end
 
     backend = get_backend(positions)
@@ -232,8 +329,8 @@ function evaluate_isl_batch_gpu(
             available, distances, delays, line_of_sight,
             elevations, cos_psis, durations,
             positions, vel_arg, pair_src, pair_dst,
-            has_vel, T(isl_max_range_km), isl_require_los, T(earth_radius_km),
-            T(isl_max_cone_angle_deg), T(isl_min_duration_s), T(time_horizon_s),
+            has_vel, options.max_range, isl_require_los, options.earth_radius,
+            options.cone_angle, options.min_duration, options.time_horizon,
             Int(terminal_id), T(_SPEED_OF_LIGHT_KM_S), T(1000.0), n_times;
             ndrange=n_pairs * n_times,
         ))

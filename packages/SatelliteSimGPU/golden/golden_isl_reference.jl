@@ -25,24 +25,35 @@ function _rtn(pos, vel, target)
     p = collect(Float64, pos)
     v = collect(Float64, vel)
     tgt = collect(Float64, target)
-    R = p ./ norm(p)
-    T = v ./ norm(v)
-    N = cross(R, T)
-    N = N ./ norm(N)
+    all(isfinite, p) && all(isfinite, v) && all(isfinite, tgt) ||
+        return false, 0.0, 0.0, 0.0
+    radius = norm(p)
+    radius > 0.0 || return false, 0.0, 0.0, 0.0
+    R = p ./ radius
+    velocity_scale = maximum(abs, v)
+    velocity_scale > 0.0 || return false, 0.0, 0.0, 0.0
+    scaled_velocity = v ./ velocity_scale
+    normal = cross(R, scaled_velocity)
+    normal_norm = norm(normal)
+    normal_norm > 16 * eps(Float64) * norm(scaled_velocity) ||
+        return false, 0.0, 0.0, 0.0
+    N = normal ./ normal_norm
+    T = cross(N, R)
     rel = tgt .- p
-    return dot(rel, R), dot(rel, T), dot(rel, N)
+    return true, dot(rel, R), dot(rel, T), dot(rel, N)
 end
 
 function _elev_from_rtn(r, t, n)
-    dist = sqrt(r^2 + t^2 + n^2)
+    horizontal = hypot(t, n)
+    dist = hypot(r, horizontal)
     dist < 1e-10 && return 90.0
-    return rad2deg(asin(abs(r) / dist))
+    return rad2deg(atan(abs(r), horizontal))
 end
 
 function _azim_from_rtn(t, n)
-    denom = sqrt(n^2 + t^2)
+    denom = hypot(n, t)
     denom < 1e-10 && return 1.0
-    return n / denom
+    return clamp(n / denom, -1.0, 1.0)
 end
 
 function _azimuth_ok(cos_psi, terminal_id, cone_deg)
@@ -57,11 +68,37 @@ end
 function _duration(a, va, b, vb; max_range=5000.0, time_horizon=300.0)
     rel_pos = collect(Float64, b) .- collect(Float64, a)
     rel_vel = collect(Float64, vb) .- collect(Float64, va)
-    for t in 1.0:1.0:time_horizon
-        p = rel_pos .+ t .* rel_vel
-        norm(p) > max_range && return t
+    range = Float64(max_range)
+    horizon = Float64(time_horizon)
+    position_scale = max(range, maximum(abs, rel_pos))
+    scaled_position = rel_pos ./ position_scale
+    scaled_range = range / position_scale
+    scaled_distance = norm(scaled_position)
+    range_residual =
+        (scaled_distance - scaled_range) * (scaled_distance + scaled_range)
+    range_residual > 0.0 && return 0.0
+
+    velocity_scale = maximum(abs, rel_vel)
+    velocity_scale == 0.0 && return horizon
+    scaled_velocity = rel_vel ./ velocity_scale
+    speed_squared = dot(scaled_velocity, scaled_velocity)
+    radial_rate = dot(scaled_position, scaled_velocity)
+    range_residual == 0.0 && radial_rate >= 0.0 && return 0.0
+
+    discriminant = max(radial_rate^2 - speed_squared * range_residual, 0.0)
+    root = sqrt(discriminant)
+    crossing = if radial_rate >= 0.0
+        -range_residual / (radial_rate + root)
+    else
+        (-radial_rate + root) / speed_squared
     end
-    return time_horizon
+    time_scale = position_scale / velocity_scale
+    crossing = if isfinite(time_scale)
+        crossing * time_scale
+    else
+        (crossing * position_scale) / velocity_scale
+    end
+    return clamp(crossing, 0.0, horizon)
 end
 
 """评估单条 ISL，返回 (available, distance, delay_ms, los, elevation_deg, cos_psi, duration_s)。"""
@@ -80,16 +117,27 @@ function evaluate_isl_one(
     duration = 0.0
 
     if avail && va !== nothing
-        r, t, n = _rtn(a, va, b)
-        elevation = _elev_from_rtn(r, t, n)
-        avail = avail && (elevation <= cone_deg)
-        if avail
-            cos_psi = _azim_from_rtn(t, n)
-            avail = avail && _azimuth_ok(cos_psi, terminal_id, cone_deg)
-            if avail && vb !== nothing
-                duration = _duration(a, va, b, vb; max_range=max_range, time_horizon=time_horizon)
-                avail = avail && (duration >= min_duration)
+        rtn_valid, r, t, n = _rtn(a, va, b)
+        if rtn_valid
+            elevation = _elev_from_rtn(r, t, n)
+            avail = avail && (elevation <= cone_deg)
+            if avail
+                cos_psi = _azim_from_rtn(t, n)
+                avail = avail && _azimuth_ok(cos_psi, terminal_id, cone_deg)
+                if avail && vb !== nothing
+                    duration = _duration(
+                        a,
+                        va,
+                        b,
+                        vb;
+                        max_range=max_range,
+                        time_horizon=time_horizon,
+                    )
+                    avail = avail && (duration >= min_duration)
+                end
             end
+        else
+            avail = false
         end
     end
 
@@ -113,6 +161,7 @@ function evaluate_isl_series(
     duration_s = Array{Float64}(undef, n_pairs, n_times)
 
     for (pair_index, (i, j)) in enumerate(isl_pairs)
+        i != j || throw(ArgumentError("ISL pair endpoints must be distinct"))
         for time_index in 1:n_times
             a = (
                 positions[i, time_index, 1],

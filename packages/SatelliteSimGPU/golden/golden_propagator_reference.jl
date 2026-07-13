@@ -2,12 +2,11 @@
 #
 # 冻结自 SatelliteToolbox `:TwoBody` / `:J2` 的等价解析公式（`src/orbit` 的
 # `propagate_positions` / J2 所封装），常量取 SatelliteToolbox 同值：
-#   μ = 3.986004415e14 m³/s³ = 3.986004415e5 km³/s²、J2 = 0.0010826261738522227、
+#   μ = 3.986004415e14 m³/s² = 3.986004415e5 km³/s²、J2 = 0.0010826261738522227、
 #   R⊕ = 6378.137 km。用作 `propagate_kepler_gpu` 的对标基准。
 #
-# 覆盖范围：ECI/惯性系解析位置（two-body 与 J2 长期项）。
-# 推迟（诚实注明）：ECI→ECEF 变换（SatelliteToolbox `r_eci_to_ecef` 含岁差/章动/极移，
-#   设备复刻过重）与「SGP4 上设备」，见 runtests.jl 与任务报告。
+# 覆盖范围：惯性系解析位置（two-body 与 J2 长期项）及显式 UT1 历元的 TEME→PEF
+# GMST 位置旋转。近地 SGP4 的独立参考见 `golden_sgp4_reference.jl`。
 #
 # 元素约定与 `generate_walker_delta` 一致：`KeplerianElements(t0, a, e, i, Ω, ω, ν)`，
 # 最后一个角为**真近点角** ν（近圆轨道 ≈ 平近点角）。
@@ -99,9 +98,8 @@ function propagate_series(sma_km, ecc, inc, raan, argp, nu, tspan; kwargs...)
     return positions
 end
 
-# ── ECI(TEME) → ECEF(PEF)：恒星时 Z 旋转 ──────────────────────────────────────
-# 复刻 SatelliteToolboxBase.jd_to_gmst（Vallado GMST1982），用作 CPU 主链
-# propagate_to_ecef（= r_eci_to_ecef(TEME(),PEF(),jd)）的等价对标基准。
+# ── TEME → PEF 位置：恒星时 Z 旋转 ───────────────────────────────────────────
+# 复刻 SatelliteToolboxBase.jd_to_gmst（Vallado GMST1982）；不含极移，不是 ITRF。
 
 const JD_J2000 = 2451545.0
 
@@ -117,23 +115,33 @@ function gmst_rad(jd_ut1)
     return sec * (π / 43200.0)
 end
 
-"""单星、单时刻的解析 ECEF 位置（km）：解析 ECI + TEME→PEF（`jd = t/86400`）。"""
-function propagate_one_ecef(a, e, i, raan0, argp0, nu0, t; kwargs...)
+"""单星、单时刻的解析 PEF 位置（km）；`jd = epoch_jd_ut1 + t/86400`。"""
+function propagate_one_pef(
+    a, e, i, raan0, argp0, nu0, t;
+    epoch_jd_ut1,
+    kwargs...,
+)
     x, y, z = propagate_one(a, e, i, raan0, argp0, nu0, t; kwargs...)
-    theta = gmst_rad(t / 86400.0)
+    theta = gmst_rad(epoch_jd_ut1 + t / 86400.0)
     c, s = cos(theta), sin(theta)
     return (c * x + s * y, -s * x + c * y, z)
 end
 
-"""批量 `(N, T, 3)` 解析 ECEF 位置（km）。与 `propagate_to_ecef_gpu` 输出布局对齐。"""
-function propagate_series_ecef(sma_km, ecc, inc, raan, argp, nu, tspan; kwargs...)
+"""批量 `(N, T, 3)` 解析 PEF 位置（km）。与 `propagate_to_pef_gpu` 输出布局对齐。"""
+function propagate_series_pef(
+    sma_km, ecc, inc, raan, argp, nu, tspan;
+    epoch_jd_ut1,
+    kwargs...,
+)
     n_sat = length(sma_km)
     n_times = length(tspan)
     positions = Array{Float64}(undef, n_sat, n_times, 3)
     for s in 1:n_sat
         for (time_index, t) in enumerate(tspan)
-            x, y, z = propagate_one_ecef(
-                sma_km[s], ecc[s], inc[s], raan[s], argp[s], nu[s], t; kwargs...,
+            x, y, z = propagate_one_pef(
+                sma_km[s], ecc[s], inc[s], raan[s], argp[s], nu[s], t;
+                epoch_jd_ut1=epoch_jd_ut1,
+                kwargs...,
             )
             positions[s, time_index, 1] = x
             positions[s, time_index, 2] = y

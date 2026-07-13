@@ -1,7 +1,7 @@
 # 设备端解析 Kepler 位置传播（KernelAbstractions，后端无关）
 #
 # 对 `(n_sat × n_times)` 网格做**解析 two-body / J2 长期项**位置传播，输出
-# `(N, T, 3)` 设备数组（ECI，km）。让位置可以直接在设备上产生，并经 residency.jl
+# `(N, T, 3)` 设备数组（惯性系，km）。让位置可以直接在设备上产生，并经 residency.jl
 # 的 `device_pipeline` 喂给 ISL/GSL/覆盖核，省去 host↔device 往返。
 #
 # 对齐 SatelliteToolbox 的 `:TwoBody` / `:J2` 传播器（`src/orbit` 的
@@ -10,11 +10,9 @@
 #
 # 元素约定与 `generate_walker_delta` 一致：最后一个角是**真近点角** ν。
 #
-# ── 已做 vs 推迟（诚实注明）───────────────────────────────────────────────────
-# 已做：ECI/惯性系解析位置（two-body + J2 长期项 Ω̇/ω̇ 与修正平均运动 n̄）。
-# ECI→ECEF（TEME→PEF 恒星时旋转，= CPU 主链所用变换）见 frames_gpu.jl 的
-#   `teme_to_pef_gpu` / `propagate_to_ecef_gpu`，与本文件串成全程设备驻留链。
-# 推迟：「SGP4 上设备」——作为后续工作，本包不做。
+# 本文件实现解析 two-body/J2 传播。近地 SGP4 在 `sgp4_gpu.jl`；显式历元的 TEME→PEF
+# 位置旋转在 `frames_gpu.jl` 的 `teme_to_pef_gpu` / `propagate_to_pef_gpu`。本传播器的
+# `tspan_s` 始终是相对元素历元的秒数，不接收也不推断墙钟历元。
 
 export propagate_kepler_gpu
 
@@ -99,22 +97,40 @@ end
         x_pf * (sin_argp * sin_incl) + y_pf * (cos_argp * sin_incl)
 end
 
+function _kepler_element_backend(values)
+    return try
+        get_backend(values)
+    catch error
+        error isa ArgumentError || rethrow()
+        generic_method = which(get_backend, (AbstractArray,))
+        current = values
+        while which(get_backend, (typeof(current),)) === generic_method
+            parent_values = parent(current)
+            parent_values isa typeof(current) && return CPU()
+            current = parent_values
+        end
+        rethrow()
+    end
+end
+
 """
     propagate_kepler_gpu(
         sma_km, ecc, inc_rad, raan_rad, argp_rad, nu_rad, tspan_s;
         model=:j2, mu_km3_s2, j2, earth_radius_km,
-    ) -> positions::AbstractArray{T,3}  # (N, T, 3) ECI km
+    ) -> positions::AbstractArray{T,3}  # (N, T, 3) inertial km
 
 在 KernelAbstractions 后端上对 N 颗卫星、T 个时刻做**解析** Kepler 位置传播，返回
-`(satellite, time, xyz)` 的 ECI 位置（km）。`model` 取 `:two_body`（纯二体）或 `:j2`
+`(satellite, time, xyz)` 的惯性系位置（km）；若输入根数按 TEME 解释，输出就是 TEME。
+`model` 取 `:two_body`（纯二体）或 `:j2`
 （叠加 J2 长期项：升交点赤经/近地点幅角漂移 + 修正平均运动 n̄）。
 
 六个根数向量长度均为 N（`sma_km` 单位 km，角度单位 rad，`nu_rad` 为**真近点角**），
-`tspan_s` 长度 T（秒，自历元起）。输出与输入同后端驻留：传入设备向量即得设备数组，
+`tspan_s` 长度 T（秒，自元素历元起），其语义不受任何帧转换历元影响。输出与输入同后端
+驻留：传入设备向量即得设备数组，
 可直接经 `device_pipeline` 喂给 `evaluate_isl_batch_gpu` / `evaluate_gsl_batch_gpu` /
 `coverage_loss_gpu` 而不回 host。默认常量与 SatelliteToolbox `:TwoBody`/`:J2` 一致。
 
-仅产出 ECI 位置；ECEF 变换与 SGP4 见文件头「已做 vs 推迟」。
+仅产出惯性系位置；TEME→PEF 只转换位置，见 `frames_gpu.jl`。
 """
 function propagate_kepler_gpu(
     sma_km::AbstractVector{T},
@@ -141,18 +157,52 @@ function propagate_kepler_gpu(
     n_times = length(tspan_s)
     n_sat > 0 && n_times > 0 ||
         throw(ArgumentError("must have at least one satellite and one time sample"))
+    backend = _kepler_element_backend(sma_km)
+    for elements in (ecc, inc_rad, raan_rad, argp_rad, nu_rad)
+        _kepler_element_backend(elements) == backend ||
+            throw(ArgumentError("all Keplerian element vectors must reside on the same backend"))
+    end
+    tspan_backend = _kepler_element_backend(tspan_s)
+    if !(tspan_backend isa CPU) && tspan_backend != backend
+        throw(ArgumentError(
+            "device tspan_s must reside on the Keplerian element backend",
+        ))
+    end
+    for (name, values) in (
+        ("sma_km", sma_km),
+        ("ecc", ecc),
+        ("inc_rad", inc_rad),
+        ("raan_rad", raan_rad),
+        ("argp_rad", argp_rad),
+        ("nu_rad", nu_rad),
+        ("tspan_s", tspan_s),
+    )
+        all(isfinite, values) ||
+            throw(ArgumentError("$name must contain only finite values"))
+    end
     all(>(zero(T)), sma_km) ||
         throw(ArgumentError("semi-major axes must be positive"))
-    isfinite(mu_km3_s2) && mu_km3_s2 > 0 ||
-        throw(ArgumentError("mu_km3_s2 must be finite and positive"))
+    all(e -> zero(T) <= e < one(T), ecc) ||
+        throw(ArgumentError("eccentricities must satisfy 0 <= e < 1"))
 
-    backend = get_backend(sma_km)
-    device_tspan = adapt(backend, tspan_s)
+    mu = T(mu_km3_s2)
+    j2_value = T(j2)
+    earth_radius = T(earth_radius_km)
+    for (name, value) in (
+        ("mu_km3_s2", mu),
+        ("j2", j2_value),
+        ("earth_radius_km", earth_radius),
+    )
+        isfinite(value) && value > zero(T) ||
+            throw(ArgumentError("$name must be finite and positive after conversion to $T"))
+    end
+
+    device_tspan = tspan_backend isa CPU ? adapt(backend, tspan_s) : tspan_s
     positions = similar(sma_km, T, (n_sat, n_times, 3))
 
     _wait_event(_kepler_kernel!(backend)(
         positions, sma_km, ecc, inc_rad, raan_rad, argp_rad, nu_rad, device_tspan,
-        T(mu_km3_s2), T(j2), T(earth_radius_km), model === :j2, n_times;
+        mu, j2_value, earth_radius, model === :j2, n_times;
         ndrange=n_sat * n_times,
     ))
     return positions

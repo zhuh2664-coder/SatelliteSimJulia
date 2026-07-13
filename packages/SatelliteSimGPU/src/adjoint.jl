@@ -1,7 +1,7 @@
 # 自定义伴随（custom adjoint）
 #
-# 给 coverage_loss_gpu 写 ChainRules rrule，使其对 positions 可微（Zygote/Enzyme
-# 通过 ChainRules 规则即可反传），无需把自定义 @kernel 交给 AD 直接穿透。
+# 给 coverage_loss_gpu 写 ChainRules rrule，使其对 positions 可微，供支持
+# ChainRules rrule 的 AD 使用，无需把自定义 @kernel 交给 AD 直接穿透。
 #
 # 反向拆两段：
 #   1. 便宜的 (G×NT) 段（mean + leaky-revisit + LogSumExp）在 host 上算出 d_step_cov —— 标量、易验证；
@@ -191,6 +191,16 @@ function ChainRulesCore.rrule(
     step_cov = coverage_step_gpu(positions, ground_pts; min_el=min_el, τ_cov=τ_cov)
 
     function coverage_loss_gpu_pullback(ȳ)
+        ȳ = unthunk(ȳ)
+        if ȳ isa AbstractZero || (ȳ isa Number && iszero(ȳ))
+            return (
+                NoTangent(),
+                ZeroTangent(),
+                ZeroTangent(),
+                ZeroTangent(),
+            )
+        end
+
         sc_host = Float64.(Array(step_cov))
         w_host = Float64.(Array(weights))
         dsc = _coverage_dstepcov(
@@ -201,7 +211,16 @@ function ChainRulesCore.rrule(
         grad_pos = _coverage_grad_positions(
             positions, ground_pts, step_cov, dsc; min_el=min_el, τ_cov=τ_cov,
         )
-        return (NoTangent(), grad_pos, NoTangent(), NoTangent())
+        return (
+            NoTangent(),
+            grad_pos,
+            ChainRulesCore.@not_implemented(
+                "coverage_loss_gpu does not implement the ground_pts cotangent",
+            ),
+            ChainRulesCore.@not_implemented(
+                "coverage_loss_gpu does not implement the weights cotangent",
+            ),
+        )
     end
 
     return y, coverage_loss_gpu_pullback

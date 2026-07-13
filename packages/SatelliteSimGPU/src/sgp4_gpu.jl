@@ -18,8 +18,10 @@
 #   - **深空 SDP4**（轨道周期 ≥ 225 min，需日月引力/共振数值积分 `_dsinit!/_dssec!/_dsper!`）
 #     在设备上完整复刻代价过高，**不实现**；`sgp4_init_host` 遇到深空卫星**抛错**而非静默降级。
 #   - init 留在 host（分支密集，O(N) 非热路径）；本档只把 O(N·T) 的 propagate 上设备。
-#   - TEME→ECEF 未在此串联：真实 TLE 需按真历元算 GMST（与 frames_gpu.jl 的合成 jd=t/86400
-#     约定不同），留作后续；本档产出 TEME。
+#   - 本文件只产出 TEME。位置可用
+#     `teme_to_pef_gpu(positions, 60 .* tspan_min; epoch_jd_ut1=...)` 转到 PEF；真实 UT1
+#     历元必须由调用者显式提供。该位置变换不转换速度，不能把 TEME 速度与 PEF 位置
+#     混合成一个地固状态。
 #
 # 公式逐行对照 `SatelliteToolboxSgp4` 的 `sgp4_init!` / `sgp4!`（近地分支），常数取 WGS84 同值。
 # 设备上把 `rem2pi(·, RoundToZero)` 换成 GPU 安全的 `_rem2pi_zero`（数值上等价，
@@ -99,6 +101,22 @@ function Adapt.adapt_structure(to, elements::Sgp4DeviceElements)
     )
 end
 
+function _is_host_sgp4_input(values)
+    return try
+        get_backend(values) isa CPU
+    catch error
+        error isa ArgumentError || rethrow()
+        generic_method = which(get_backend, (AbstractArray,))
+        current = values
+        while which(get_backend, (typeof(current),)) === generic_method
+            parent_values = parent(current)
+            parent_values isa typeof(current) && return true
+            current = parent_values
+        end
+        rethrow()
+    end
+end
+
 """
     sgp4_init_host(n₀, e₀, i₀, raan₀, argp₀, M₀, bstar; sgp4c=WGS84) -> Sgp4DeviceElements
 
@@ -124,13 +142,37 @@ function sgp4_init_host(
         length(argp₀) == n_sat && length(M₀) == n_sat && length(bstar) == n_sat ||
         throw(ArgumentError("all SGP4 element vectors must have length n_sat"))
     n_sat > 0 || throw(ArgumentError("must have at least one satellite"))
+    for (name, values) in (
+        ("n₀", n₀),
+        ("e₀", e₀),
+        ("i₀", i₀),
+        ("raan₀", raan₀),
+        ("argp₀", argp₀),
+        ("M₀", M₀),
+        ("bstar", bstar),
+    )
+        _is_host_sgp4_input(values) ||
+            throw(ArgumentError("sgp4_init_host requires host-resident element vectors"))
+        all(isfinite, values) ||
+            throw(ArgumentError("$name must contain only finite values"))
+    end
     all(>(zero(T)), n₀) || throw(ArgumentError("mean motion n₀ must be positive"))
+    all(e -> zero(T) <= e < one(T), e₀) ||
+        throw(ArgumentError("eccentricities must satisfy 0 <= e < 1"))
 
     R0 = T(sgp4c.R0)
     XKE = T(sgp4c.XKE)
     J2 = T(sgp4c.J2)
     J3 = T(sgp4c.J3)
     J4 = T(sgp4c.J4)
+    for (name, value) in (("R0", R0), ("XKE", XKE), ("J2", J2))
+        isfinite(value) && value > zero(T) ||
+            throw(ArgumentError("sgp4c.$name must be finite and positive after conversion to $T"))
+    end
+    for (name, value) in (("J3", J3), ("J4", J4))
+        isfinite(value) ||
+            throw(ArgumentError("sgp4c.$name must be finite after conversion to $T"))
+    end
     AE = one(T)
     k₂ = (one(T) / 2) * J2 * AE * AE
     k₂² = k₂ * k₂
@@ -272,6 +314,49 @@ function sgp4_init_host(
     end
 
     return Sgp4DeviceElements(consts, algo, R0, XKE, k₂, A₃₀)
+end
+
+function _validate_sgp4_device_elements(
+    elements::Sgp4DeviceElements{T},
+) where {T<:AbstractFloat}
+    n_sat = size(elements.consts, 1)
+    size(elements.consts, 2) == _SGP4_NCONST ||
+        throw(ArgumentError("SGP4 consts must have shape (N, $_SGP4_NCONST)"))
+    n_sat > 0 || throw(ArgumentError("SGP4 elements must contain at least one satellite"))
+    length(elements.algo) == n_sat ||
+        throw(ArgumentError("SGP4 algo must have length N"))
+
+    backend = get_backend(elements.consts)
+    get_backend(elements.algo) == backend ||
+        throw(ArgumentError("SGP4 consts and algo must reside on the same backend"))
+    all(isfinite, elements.consts) ||
+        throw(ArgumentError("SGP4 consts must contain only finite values"))
+    all(
+        code -> code == _SGP4_ALGO_SGP4 || code == _SGP4_ALGO_LOWPER,
+        elements.algo,
+    ) || throw(ArgumentError("SGP4 algo codes must be 0 (:sgp4_lowper) or 1 (:sgp4)"))
+
+    all(e -> zero(T) <= e < one(T), view(elements.consts, :, _SGP4_C_E0)) ||
+        throw(ArgumentError("SGP4 eccentricities must satisfy 0 <= e < 1"))
+    all(>(zero(T)), view(elements.consts, :, _SGP4_C_A)) ||
+        throw(ArgumentError("SGP4 semi-major-axis constants must be positive"))
+    all(>(zero(T)), view(elements.consts, :, _SGP4_C_N)) ||
+        throw(ArgumentError("SGP4 mean-motion constants must be positive"))
+    all(>(zero(T)), view(elements.consts, :, _SGP4_C_BETA0)) ||
+        throw(ArgumentError("SGP4 beta constants must be positive"))
+
+    for (name, value) in (
+        ("R0", elements.R0),
+        ("XKE", elements.XKE),
+        ("k2", elements.k2),
+    )
+        isfinite(value) && value > zero(T) ||
+            throw(ArgumentError("SGP4 $name must be finite and positive"))
+    end
+    isfinite(elements.A30) ||
+        throw(ArgumentError("SGP4 A30 must be finite"))
+
+    return backend, n_sat
 end
 
 # GPU 安全的 rem2pi(x, RoundToZero)：同号、|·|<2π，数值上等价（大角度约减差异极小）。
@@ -438,9 +523,11 @@ end
         -> positions | (positions, velocities)
 
 在 KernelAbstractions 后端上对 `elements`（`sgp4_init_host` 产出，可先 `to_device`）批量做
-**近地 SGP4** 传播，返回 TEME `(N, T, 3)` 位置（km）。`tspan_min` 长度 T（分钟，自历元起）。
-`velocities=true` 时额外返回 `(N, T, 3)` 速度（km/s）。输入设备常数即得设备数组（不回 host），
-可经 `device_pipeline` 直接把 TEME 位置/速度喂给 `evaluate_isl_batch_gpu`。
+**近地 SGP4** 传播，返回 TEME `(N, T, 3)` 位置（km）。`tspan_min` 长度 T（分钟，自元素
+历元起）。`velocities=true` 时额外返回同一 TEME 惯性系下的 `(N, T, 3)` 速度（km/s）。
+输入设备常数即得设备数组（不回 host），可经 `device_pipeline` 直接把同帧的 TEME
+位置/速度喂给 `evaluate_isl_batch_gpu`。转 PEF 时须另外显式提供 `epoch_jd_ut1`，且当前
+`teme_to_pef_gpu` 仅转换位置。
 
     sgp4_propagate_gpu(n₀, e₀, i₀, raan₀, argp₀, M₀, bstar, tspan_min; sgp4c, velocities)
 
@@ -451,11 +538,13 @@ function sgp4_propagate_gpu(
     tspan_min::AbstractVector;
     velocities::Bool=false,
 ) where {T<:AbstractFloat}
-    n_sat = size(elements.consts, 1)
+    backend, n_sat = _validate_sgp4_device_elements(elements)
     n_times = length(tspan_min)
     n_times > 0 || throw(ArgumentError("tspan_min must be non-empty"))
-    backend = get_backend(elements.consts)
-    device_tspan = adapt(backend, T.(tspan_min))
+    converted_tspan = T.(tspan_min)
+    all(isfinite, converted_tspan) ||
+        throw(ArgumentError("tspan_min must contain only finite values"))
+    device_tspan = adapt(backend, converted_tspan)
     positions = similar(elements.consts, T, (n_sat, n_times, 3))
     vel = similar(elements.consts, T, (n_sat, n_times, 3))
     _wait_event(_sgp4_kernel!(backend)(
