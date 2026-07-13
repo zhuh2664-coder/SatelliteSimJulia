@@ -34,6 +34,8 @@ platform/
 `PlatformRunner` 只接受 `satellitesim.experiment/v1` JSON，拒绝未知字段和原始 Julia 代码；它将合法配置映射为
 `SatelliteSimLab.ExperimentConfig`，不让后端对象越过公共配置边界。每次成功运行写入：
 
+`users` 提供 GSL 覆盖评估端点；`gsl_backend` 默认 `cpu`。选择非 CPU 后端时至少要有一个 user，且可选设备包必须已在当前 Julia session 注册。Runner 会在写工件前校验注册与能力，并把实际解析出的设备、精度和 residency 写入 `run_metadata.json`，避免把未执行的 GPU 选择记录成成功运行。
+
 ```text
 config.snapshot.json  # runner 实际消费的归一化配置
 result.json           # ExperimentResult 摘要

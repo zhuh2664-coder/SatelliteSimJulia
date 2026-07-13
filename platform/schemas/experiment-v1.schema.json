@@ -4,9 +4,13 @@
   "title": "SatelliteSimJulia reproducible experiment",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "name", "constellation"],
+  "required": ["name", "constellation"],
   "properties": {
-    "schema_version": {"const": "satellitesim.experiment/v1"},
+    "schema_version": {
+      "description": "Optional for legacy v1 documents; omission is normalized to this v1 identifier.",
+      "const": "satellitesim.experiment/v1",
+      "default": "satellitesim.experiment/v1"
+    },
     "name": {"type": "string", "minLength": 1, "maxLength": 128},
     "constellation": {
       "oneOf": [
@@ -36,7 +40,31 @@
           "required": ["name"],
           "properties": {
             "name": {"type": "string", "minLength": 1},
-            "options": {"type": "object", "additionalProperties": {"type": ["string", "number", "boolean"]}}
+            "options": {
+              "type": "object",
+              "propertyNames": {"pattern": "^[A-Za-z][A-Za-z0-9_]*$"},
+              "additionalProperties": {"type": ["string", "number", "boolean"]}
+            }
+          }
+        }
+      ]
+    },
+    "gsl_backend": {
+      "description": "Execution backend for batched GSL evaluation only; defaults to cpu.",
+      "oneOf": [
+        {"type": "null"},
+        {"type": "string", "minLength": 1},
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name"],
+          "properties": {
+            "name": {"type": "string", "minLength": 1},
+            "options": {
+              "type": "object",
+              "propertyNames": {"pattern": "^[A-Za-z][A-Za-z0-9_]*$"},
+              "additionalProperties": {"type": ["string", "number", "boolean"]}
+            }
           }
         }
       ]
@@ -53,6 +81,8 @@
     "traffic": {"type": "string", "enum": ["uniform", "hotspot"]},
     "ground_pairs": {
       "type": "array",
+      "description": "Reserved for a future ground_stations contract; v1 requires this array to be empty.",
+      "maxItems": 0,
       "items": {
         "type": "array",
         "minItems": 2,
@@ -60,7 +90,46 @@
         "items": {"type": "integer", "minimum": 1}
       }
     },
+    "users": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "lat", "lon"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "lat": {"type": "number", "minimum": -90, "maximum": 90},
+          "lon": {"type": "number", "minimum": -180, "maximum": 180},
+          "uplink_demand_mbps": {"type": "number", "minimum": 0},
+          "downlink_demand_mbps": {"type": "number", "minimum": 0},
+          "service_type": {"type": ["string", "null"]}
+        }
+      }
+    },
     "random_seed": {"type": "integer", "minimum": 0},
     "alpha": {"type": "number", "minimum": 0, "maximum": 1}
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["gsl_backend"],
+        "properties": {
+          "gsl_backend": {
+            "oneOf": [
+              {"type": "string", "not": {"const": "cpu"}},
+              {
+                "type": "object",
+                "required": ["name"],
+                "properties": {"name": {"not": {"const": "cpu"}}}
+              }
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": ["users"],
+        "properties": {"users": {"minItems": 1}}
+      }
+    }
+  ]
 }

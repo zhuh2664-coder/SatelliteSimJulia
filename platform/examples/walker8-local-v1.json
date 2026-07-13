@@ -9,12 +9,16 @@
     "inc_deg": 53.0
   },
   "propagator": "two_body",
+  "gsl_backend": "cpu",
   "tspan": [0.0, 300.0],
   "steps": 3,
   "topology_strategy": "balanced",
   "routing_algorithm": "dijkstra",
   "traffic": "uniform",
   "ground_pairs": [],
+  "users": [
+    {"id": "durham", "lat": 35.9940, "lon": -78.8986}
+  ],
   "random_seed": 42,
   "alpha": 0.5
 }

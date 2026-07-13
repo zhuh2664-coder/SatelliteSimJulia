@@ -12,9 +12,9 @@ export EXPERIMENT_SCHEMA_VERSION, PlatformConfigError,
 
 const EXPERIMENT_SCHEMA_VERSION = "satellitesim.experiment/v1"
 const _ALLOWED_FIELDS = Set([
-    "schema_version", "name", "constellation", "propagator", "orbit_backend",
+    "schema_version", "name", "constellation", "propagator", "orbit_backend", "gsl_backend",
     "tspan", "steps", "topology_strategy", "routing_algorithm", "traffic",
-    "ground_pairs", "random_seed", "alpha",
+    "ground_pairs", "users", "random_seed", "alpha",
 ])
 const _ALLOWED_PROPAGATORS = Set(["two_body", "j2", "j4"])
 const _ALLOWED_TOPOLOGIES = Set(["balanced", "mesh", "gridplus", "grid_plus"])
@@ -86,51 +86,105 @@ function _normalise_constellation(value)
     )
 end
 
-function _normalise_backend(value)
+function _normalise_backend(value, field::String)
     value === nothing && return nothing
     if value isa AbstractString
-        isempty(strip(value)) && throw(PlatformConfigError("orbit_backend must not be empty"))
+        isempty(strip(value)) && throw(PlatformConfigError("$field must not be empty"))
         return Dict{String,Any}("name" => String(value), "options" => Dict{String,Any}())
     end
-    input = _string_key_dict(_asdict(value, "orbit_backend"))
+    input = _string_key_dict(_asdict(value, field))
     unknown = setdiff(Set(keys(input)), Set(["name", "options"]))
-    isempty(unknown) || throw(PlatformConfigError("orbit_backend has unsupported fields: $(join(sort!(collect(unknown)), ", "))"))
-    haskey(input, "name") || throw(PlatformConfigError("orbit_backend.name is required"))
+    isempty(unknown) || throw(PlatformConfigError("$field has unsupported fields: $(join(sort!(collect(unknown)), ", "))"))
+    haskey(input, "name") || throw(PlatformConfigError("$field.name is required"))
     name = input["name"]
-    name isa AbstractString && !isempty(strip(name)) || throw(PlatformConfigError("orbit_backend.name must be a non-empty string"))
+    name isa AbstractString && !isempty(strip(name)) || throw(PlatformConfigError("$field.name must be a non-empty string"))
     raw_options = get(input, "options", Dict{String,Any}())
-    options = _string_key_dict(_asdict(raw_options, "orbit_backend.options"))
+    options = _string_key_dict(_asdict(raw_options, "$field.options"))
     for (key, option) in options
-        occursin(r"^[A-Za-z][A-Za-z0-9_]*$", key) || throw(PlatformConfigError("orbit_backend option '$key' is not a valid identifier"))
+        occursin(r"^[A-Za-z][A-Za-z0-9_]*$", key) || throw(PlatformConfigError("$field option '$key' is not a valid identifier"))
         option isa Union{AbstractString,Real,Bool} || throw(PlatformConfigError(
-            "orbit_backend option '$key' must be a string, number, or boolean",
+            "$field option '$key' must be a string, number, or boolean",
         ))
         option isa Real && !isfinite(Float64(option)) && throw(PlatformConfigError(
-            "orbit_backend option '$key' must be finite",
+            "$field option '$key' must be finite",
         ))
     end
     return Dict{String,Any}("name" => String(name), "options" => options)
 end
 
 function _normalise_pairs(value)
-    pairs = Tuple{Int,Int}[]
-    for (index, pair_value) in enumerate(_asvector(value, "ground_pairs"))
-        pair = _asvector(pair_value, "ground_pairs[$index]")
-        length(pair) == 2 || throw(PlatformConfigError("ground_pairs[$index] must contain exactly two station ids"))
-        source = _integer(pair[1], "ground_pairs[$index][1]"; minimum=1)
-        target = _integer(pair[2], "ground_pairs[$index][2]"; minimum=1)
-        source != target || throw(PlatformConfigError("ground_pairs[$index] must use distinct station ids"))
-        push!(pairs, (source, target))
+    pairs = _asvector(value, "ground_pairs")
+    isempty(pairs) || throw(PlatformConfigError(
+        "ground_pairs is not supported in $EXPERIMENT_SCHEMA_VERSION because ground_stations are not defined; provide an empty array",
+    ))
+    return Tuple{Int,Int}[]
+end
+
+function _normalise_users(value)
+    users = Dict{String,Any}[]
+    seen_ids = Set{String}()
+    allowed = Set([
+        "id", "lat", "lon", "uplink_demand_mbps", "downlink_demand_mbps",
+        "service_type",
+    ])
+    for (index, user_value) in enumerate(_asvector(value, "users"))
+        input = _string_key_dict(_asdict(user_value, "users[$index]"))
+        unknown = setdiff(Set(keys(input)), allowed)
+        isempty(unknown) || throw(PlatformConfigError(
+            "users[$index] has unsupported fields: $(join(sort!(collect(unknown)), ", "))",
+        ))
+        for required in ("id", "lat", "lon")
+            haskey(input, required) ||
+                throw(PlatformConfigError("users[$index].$required is required"))
+        end
+        id = input["id"]
+        id isa AbstractString && !isempty(strip(id)) ||
+            throw(PlatformConfigError("users[$index].id must be a non-empty string"))
+        id = String(id)
+        id in seen_ids &&
+            throw(PlatformConfigError("users[$index].id '$id' is duplicated"))
+        push!(seen_ids, id)
+        latitude = _finite_number(input["lat"], "users[$index].lat")
+        longitude = _finite_number(input["lon"], "users[$index].lon")
+        -90 <= latitude <= 90 ||
+            throw(PlatformConfigError("users[$index].lat must be between -90 and 90"))
+        -180 <= longitude <= 180 ||
+            throw(PlatformConfigError("users[$index].lon must be between -180 and 180"))
+        uplink = _finite_number(
+            get(input, "uplink_demand_mbps", 0.0),
+            "users[$index].uplink_demand_mbps",
+        )
+        downlink = _finite_number(
+            get(input, "downlink_demand_mbps", 0.0),
+            "users[$index].downlink_demand_mbps",
+        )
+        uplink >= 0 ||
+            throw(PlatformConfigError("users[$index].uplink_demand_mbps must be non-negative"))
+        downlink >= 0 ||
+            throw(PlatformConfigError("users[$index].downlink_demand_mbps must be non-negative"))
+        service_type = get(input, "service_type", nothing)
+        service_type isa Union{Nothing,AbstractString} ||
+            throw(PlatformConfigError("users[$index].service_type must be a string or null"))
+        push!(users, Dict{String,Any}(
+            "id" => id,
+            "lat" => latitude,
+            "lon" => longitude,
+            "uplink_demand_mbps" => uplink,
+            "downlink_demand_mbps" => downlink,
+            "service_type" => service_type === nothing ? nothing : String(service_type),
+        ))
     end
-    return pairs
+    return users
 end
 
 """
     validate_experiment_config(raw) -> Dict{String,Any}
 
 Validate and fill defaults for the public `satellitesim.experiment/v1` JSON
-configuration. This validation is deliberately strict: unknown fields and raw
-Julia objects are rejected before an experiment reaches a runner.
+configuration. Legacy v1 documents may omit `schema_version`; omission is
+normalised to the current v1 identifier. This validation is deliberately strict:
+unknown fields and raw Julia objects are rejected before an experiment reaches
+a runner.
 """
 function validate_experiment_config(raw)::Dict{String,Any}
     input = _string_key_dict(_asdict(raw, "experiment"))
@@ -165,30 +219,51 @@ function validate_experiment_config(raw)::Dict{String,Any}
     alpha = _finite_number(get(input, "alpha", 0.5), "alpha")
     0 <= alpha <= 1 || throw(PlatformConfigError("alpha must be between 0 and 1"))
     pairs = _normalise_pairs(get(input, "ground_pairs", Any[]))
+    gsl_backend = _normalise_backend(
+        something(get(input, "gsl_backend", "cpu"), "cpu"),
+        "gsl_backend",
+    )
+    users = _normalise_users(get(input, "users", Any[]))
+    gsl_backend["name"] != "cpu" && isempty(users) &&
+        throw(PlatformConfigError(
+            "non-CPU gsl_backend requires at least one user",
+        ))
 
     return Dict{String,Any}(
         "schema_version" => EXPERIMENT_SCHEMA_VERSION,
         "name" => String(name),
         "constellation" => _normalise_constellation(input["constellation"]),
         "propagator" => String(propagator),
-        "orbit_backend" => _normalise_backend(get(input, "orbit_backend", nothing)),
+        "orbit_backend" => _normalise_backend(
+            get(input, "orbit_backend", nothing),
+            "orbit_backend",
+        ),
+        "gsl_backend" => gsl_backend,
         "tspan" => [start_s, stop_s],
         "steps" => steps,
         "topology_strategy" => String(topology),
         "routing_algorithm" => String(routing),
         "traffic" => String(traffic),
         "ground_pairs" => [[source, target] for (source, target) in pairs],
+        "users" => users,
         "random_seed" => random_seed,
         "alpha" => alpha,
     )
 end
 
-function _backend_spec(normalised::Dict{String,Any})
+function _orbit_backend_spec(normalised::Dict{String,Any})
     backend = normalised["orbit_backend"]
     backend === nothing && return nothing
     options = backend["options"]::Dict{String,Any}
     named_options = (; (Symbol(key) => value for (key, value) in options)...)
     return OrbitBackendSpec(backend["name"], named_options)
+end
+
+function _gsl_backend_spec(normalised::Dict{String,Any})
+    backend = normalised["gsl_backend"]
+    options = backend["options"]::Dict{String,Any}
+    named_options = (; (Symbol(key) => value for (key, value) in options)...)
+    return ComputeBackendSpec(backend["name"], named_options)
 end
 
 """Translate a validated public JSON document into the Lab configuration API."""
@@ -198,10 +273,22 @@ function experiment_config_from_json(raw)::ExperimentConfig
     start_s, stop_s = normalised["tspan"]
     time_grid = collect(range(start_s, stop_s; length=normalised["steps"]))
     ground_pairs = Tuple{Int,Int}[(pair[1], pair[2]) for pair in normalised["ground_pairs"]]
+    users = GroundUser[
+        GroundUser(
+            user["id"],
+            user["lat"],
+            user["lon"],
+            user["uplink_demand_mbps"],
+            user["downlink_demand_mbps"],
+            user["service_type"],
+        )
+        for user in normalised["users"]
+    ]
     common = (;
         name=normalised["name"],
         propagator=Symbol(normalised["propagator"]),
-        orbit_backend=_backend_spec(normalised),
+        orbit_backend=_orbit_backend_spec(normalised),
+        gsl_backend=_gsl_backend_spec(normalised),
         tspan=time_grid,
         topology_strategy=Symbol(normalised["topology_strategy"]),
         routing_algorithm=Symbol(normalised["routing_algorithm"]),
@@ -209,6 +296,7 @@ function experiment_config_from_json(raw)::ExperimentConfig
         random_seed=normalised["random_seed"],
         alpha=normalised["alpha"],
         ground_pairs=ground_pairs,
+        users=users,
     )
 
     if constellation isa String
@@ -241,6 +329,58 @@ function _environment_hash()
     return bytes2hex(sha256(payload))
 end
 
+function _preflight_gsl_backend(config::ExperimentConfig)
+    if config.gsl_backend.name != :cpu && isempty(config.users)
+        throw(PlatformConfigError(
+            "non-CPU gsl_backend requires at least one user so the selected backend is exercised",
+        ))
+    end
+    resolution = try
+        SatelliteSimLab._resolve_experiment_gsl_backend(config)
+    catch err
+        err isa ArgumentError || rethrow()
+        throw(PlatformConfigError(
+            "invalid gsl_backend: $(sprint(showerror, err))",
+        ))
+    end
+    capabilities = compute_backend_capabilities(resolution)
+    :gsl_series in capabilities.operations || throw(PlatformConfigError(
+        "gsl_backend '$(config.gsl_backend.name)' does not support gsl_series",
+    ))
+    return resolution
+end
+
+_backend_metadata_value(value::Symbol) = String(value)
+_backend_metadata_value(value::Type) = string(value)
+_backend_metadata_value(value::Tuple) =
+    [_backend_metadata_value(item) for item in value]
+_backend_metadata_value(value::NamedTuple) = Dict{String,Any}(
+    String(name) => _backend_metadata_value(getproperty(value, name))
+    for name in propertynames(value)
+)
+_backend_metadata_value(value) = value
+
+function _resolved_gsl_backend_metadata(resolution::ResolvedComputeBackend)
+    provenance = compute_backend_provenance(resolution)
+    capabilities = _backend_metadata_value(provenance.capabilities)
+    implementation = _backend_metadata_value(provenance.implementation)
+    requested_spec = _backend_metadata_value(provenance.requested_spec)
+    return Dict{String,Any}(
+        "name" => implementation["name"],
+        "device" => get(capabilities, "device", "unknown"),
+        "operations" => get(capabilities, "operations", String[]),
+        "input_residency" => get(capabilities, "input_residency", "unknown"),
+        "output_residency" => get(capabilities, "output_residency", "unknown"),
+        "precision" => get(capabilities, "precision", "unknown"),
+        "requested_spec" => requested_spec,
+        "implementation" => implementation,
+        "capabilities" => capabilities,
+        "registration_generation" => provenance.registration_generation,
+        "resolution_id" => provenance.resolution_id,
+        "call_count" => provenance.call_count,
+    )
+end
+
 function _artifact_index(directory::AbstractString, names::Vector{String})
     return Dict(
         "artifacts" => [Dict(
@@ -260,21 +400,24 @@ intentionally outside this runner; those services transport these same files.
 """
 function run_platform_experiment(raw; output_dir::AbstractString, overwrite::Bool=false)
     normalised = validate_experiment_config(raw)
+    config = experiment_config_from_json(normalised)
+    gsl_resolution = _preflight_gsl_backend(config)
     if isdir(output_dir) && !isempty(readdir(output_dir)) && !overwrite
         throw(ArgumentError("output_dir '$output_dir' is not empty; use a new directory or overwrite=true"))
     end
-    mkpath(output_dir)
 
+    started_at = now(UTC)
+    result = SatelliteSimLab._run_experiment(config, gsl_resolution)
+    finished_at = now(UTC)
+    result_summary = Dict(String(key) => value for (key, value) in to_dict(result))
+
+    resolved_gsl_backend = _resolved_gsl_backend_metadata(gsl_resolution)
+    mkpath(output_dir)
     config_path = joinpath(output_dir, "config.snapshot.json")
     result_path = joinpath(output_dir, "result.json")
     metadata_path = joinpath(output_dir, "run_metadata.json")
     index_path = joinpath(output_dir, "artifacts.index.json")
     _write_json(config_path, normalised)
-
-    started_at = now(UTC)
-    result = run_experiment(experiment_config_from_json(normalised))
-    finished_at = now(UTC)
-    result_summary = Dict(String(key) => value for (key, value) in to_dict(result))
     _write_json(result_path, result_summary)
 
     metadata = Dict{String,Any}(
@@ -287,6 +430,8 @@ function run_platform_experiment(raw; output_dir::AbstractString, overwrite::Boo
         "environment_sha256" => _environment_hash(),
         "input_config_sha256" => _sha256_file(config_path),
         "orbit_backend" => normalised["orbit_backend"],
+        "gsl_backend" => normalised["gsl_backend"],
+        "resolved_gsl_backend" => resolved_gsl_backend,
         "random_seed" => normalised["random_seed"],
     )
     _write_json(metadata_path, metadata)
