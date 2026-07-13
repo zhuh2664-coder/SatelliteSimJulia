@@ -124,10 +124,14 @@ end
     @test sgp4_series_ecef(pview, epochs, ts_min, gmsts; jd_ref=jd_ref) ≈
           sgp4_series_ecef(params, epochs, ts_min, gmsts; jd_ref=jd_ref) rtol=0 atol=0
 
-    # Known blocker: Enzyme Duplicated currently requires primal/tangent to share
-    # the same SubArray type, so this reverse-mode API does not accept views yet.
+    # Reverse-mode API copies non-Array inputs into a plain Array so Enzyme
+    # Duplicated gets matching concrete types; views are accepted.
     cfg = network_kpi_config(size(Pview, 1), size(Pview, 2); kind=:latency, od_pairs=od, kw...)
-    @test_throws MethodError network_kpi_loss_grad_positions(Pview, cfg)
+    loss_v, dP_v = network_kpi_loss_grad_positions(Pview, cfg)
+    loss_a, dP_a = network_kpi_loss_grad_positions(Array(Pview), cfg)
+    @test loss_v ≈ loss_a rtol=1e-12
+    @test dP_v ≈ dP_a rtol=1e-10
+    @test dP_v isa SubArray
 end
 
 # ── (1) KPI differentiable in positions: ForwardDiff-on-P vs central FD < 1e-6 ─
@@ -459,6 +463,7 @@ end
     @test_throws ArgumentError sgp4_network_kpi_gradient(params, epochs, ts_min;
         jd_ref=jd_ref, engine=:nope, kind=:latency, od_pairs=od)
     @test_throws ArgumentError network_kpi_config(N, NT; kind=:bogus)
+    @test_throws ArgumentError network_kpi_config(N, NT; kind=:bogus, w_lat=1.0, od_pairs=od)
 
     # shape mismatches in chain inputs
     @test_throws ArgumentError sgp4_network_kpi_gradient(params[1:end-1], epochs, ts_min;
@@ -477,6 +482,13 @@ end
     @test_throws ArgumentError network_kpi_config(0, NT; kind=:connectivity)
     @test_throws ArgumentError network_kpi_config(N, NT; kind=:latency, od_pairs=od, τ_reach=0.0)
     @test_throws ArgumentError network_kpi_config(N, NT; kind=:latency, od_pairs=od, penalty_km=-1.0)
+    @test_throws ArgumentError network_kpi_config(N, NT; kind=:latency, od_pairs=od, bellman_K=-1)
+    @test_throws ArgumentError network_kpi_config(N, NT; kind=:connectivity, fiedler_K=0)
+
+    # malformed topology inputs fail before entering @inbounds kernels
+    @test_throws ArgumentError soft_isl_adjacency(zeros(3, 2))
+    @test_throws ArgumentError soft_isl_edge_weights(zeros(3, 3); τ=0.0)
+    @test_throws ArgumentError hard_isl_adjacency(zeros(3, 4))
 
     # LOS connectivity VJP is unsupported (must use Enzyme)
     P = nk_synth_positions(N, NT)

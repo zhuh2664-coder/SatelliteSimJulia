@@ -105,8 +105,13 @@ function soft_isl_adjacency!(
     los::Bool = false, r_occ::Real = ISL_R_OCCLUSION_KM, τ_los::Real = 50.0,
 ) where {T<:Number}
     N = size(Pt, 1)
+    size(Pt, 2) == 3 || throw(ArgumentError("Pt must have size N×3"))
     size(A) == (N, N) ||
         throw(ArgumentError("soft_isl_adjacency!: A has size $(size(A)), expected ($N, $N) to match Pt's $N satellites"))
+    d_thresh > 0 || throw(ArgumentError("d_thresh must be positive"))
+    τ > 0 || throw(ArgumentError("τ must be positive"))
+    r_occ > 0 || throw(ArgumentError("r_occ must be positive"))
+    τ_los > 0 || throw(ArgumentError("τ_los must be positive"))
     dth = T(d_thresh); iτ = one(T) / T(τ); ro = T(r_occ); τl = T(τ_los)
     @inbounds for i in 1:N
         A[i, i] = zero(T)
@@ -147,6 +152,12 @@ function soft_isl_edge_weights(
     los::Bool = false, r_occ::Real = ISL_R_OCCLUSION_KM, τ_los::Real = 50.0,
 ) where {T<:Number}
     N = size(Pt, 1)
+    size(Pt, 2) == 3 || throw(ArgumentError("Pt must have size N×3"))
+    d_thresh > 0 || throw(ArgumentError("d_thresh must be positive"))
+    τ > 0 || throw(ArgumentError("τ must be positive"))
+    penalty_km >= 0 || throw(ArgumentError("penalty_km must be non-negative"))
+    r_occ > 0 || throw(ArgumentError("r_occ must be positive"))
+    τ_los > 0 || throw(ArgumentError("τ_los must be positive"))
     W = zeros(T, N, N)
     dth = T(d_thresh); iτ = one(T) / T(τ); pen = T(penalty_km)
     ro = T(r_occ); τl = T(τ_los)
@@ -182,6 +193,9 @@ function hard_isl_adjacency(
     r_occ::Real = ISL_R_OCCLUSION_KM,
 ) where {T<:Real}
     N = size(Pt, 1)
+    size(Pt, 2) == 3 || throw(ArgumentError("Pt must have size N×3"))
+    d_thresh > 0 || throw(ArgumentError("d_thresh must be positive"))
+    r_occ > 0 || throw(ArgumentError("r_occ must be positive"))
     A = fill(T(Inf), N, N)
     dth = T(d_thresh); ro = T(r_occ)
     @inbounds for i in 1:N

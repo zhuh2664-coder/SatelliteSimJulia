@@ -29,8 +29,8 @@
   **验收**：损失有限、梯度有限且非零；vs 中心差分最大相对误差 < 1e-3（含浮动地板）；记录耗时。
 - **Step 2（正式 API）✅（2026-07-13）**：在 Opt 落 `sgp4_constellation_series(params, epochs, ts_min)`（AD 透明，(N,NT,3) TEME）与 `sgp4_series_ecef(...)`（含 GMST 旋转、epoch 对齐），export + 测试。
   **验收**：与 `src/orbit` 的 SGP4 非可微路径在 Float64 下位置一致（同 epoch 约定）；ForwardDiff 梯度 FD 对标。
-- **Step 3（接真网络 KPI）✅（2026-07-13）**：TLE 参数 → 序列 → 通用软 ISL 邻接（N 星推广，非 3 星玩具）→ 软网络 KPI（软时延 / 软可达 / 软代数连通度 λ₂）→ 标量梯度；输出按参数类别（n₀/e/i/Ω/ω/M/B*）的尺度化敏感度。
-  **验收**：KPI 对 positions ForwardDiff vs 中心差分 <1e-6；端到端 θ→KPI（blockdiag/enzyme）vs 全量 ForwardDiff <1e-6；每个软 KPI 给 hard 对照。
+- **Step 3（接真网络 KPI）✅（2026-07-13）**：TLE 参数 → 序列 → 覆盖损失 + 通用软 ISL 邻接（N 星推广，非 3 星玩具）→ 软网络 KPI（软时延 / 软可达 / 软代数连通度 λ₂）→ 复合标量梯度；输出按参数类别（n₀/e/i/Ω/ω/M/B*）的尺度化敏感度。
+  **验收**：KPI 对 positions ForwardDiff vs 中心差分 <1e-6；端到端 θ→KPI（blockdiag/enzyme）vs 全量 ForwardDiff <1e-6；七类参数逐类 FD + 方向导数对标；每个软 KPI 给 hard 对照；最小归因演示打印 `STEP3_ATTRIBUTION_OK`。
 - **Step 4（反向模式与规模）**：Enzyme（或免 mutation 覆盖损失变体）打通反向；在更大 N（≥66）测时间/内存，与 ForwardDiff 对比，给出选型建议。
   **验收**：反向 vs 前向梯度一致（<1e-6 相对）；规模基准表。
 - **Step 5（收口）**：测试并入 `src/opt` 测试套；`docs/`/`CURRENT.md` 如实更新；（可选）与 GPU 包的可微覆盖伴随衔接。
@@ -130,6 +130,7 @@ julia --project=src/opt --threads=4 src/opt/scripts/sgp4_step1_check.jl
 | `src/opt/src/layers/04_routing/soft_network_kpi.jl` | 三个可微 KPI + 组合损失 `network_kpi_loss` + dL/dP 伴随 + SGP4 接链 `sgp4_network_kpi_gradient` |
 | `src/opt/test/test_sgp4_network_kpi.jl` | 单测（已并入 `src/opt/test/runtests.jl` 实际运行）|
 | `src/opt/scripts/sgp4_step3_network_kpi.jl` | 真实规模实验脚本（独立入口，不 include test/）|
+| `src/opt/scripts/sgp4_step3_attribution.jl` | 最小“梯度即归因”演示：覆盖 + 加权软网络 KPI 复合标量、七类尺度化敏感度、逐类中心差分与方向导数 |
 
 **软 KPI 定义与 hard 对照**（均从 `(N,NT,3)` ECEF 序列按 NT 时间片聚合；AD 透明，纯 Julia 显式循环）
 
@@ -151,7 +152,21 @@ julia --project=src/opt --threads=4 src/opt/scripts/sgp4_step1_check.jl
 - 端到端 θ→时延：`:blockdiag` 与 `:enzyme` vs 全量 ForwardDiff 相对 L2 **≈ 1e-16**（验收 <1e-6）；随机方向导数中心差分 <1e-5。
 - 连通度 λ₂ 扰动 VJP：端到端 `:blockdiag` vs 全量 ForwardDiff 相对 L2 **1.4e-9**；位置级（带谱隙的路径图）vs `eigvals` 精确 λ₂ 中心差分 < 1e-3；前向 `soft_algebraic_connectivity` vs `eigvals` < 1e-3。
 - LOS：Enzyme==ForwardDiff（**1e-16 一致**）；但近掠射几何刚性，中心差分在不连续处会失配 → **LOS 只断言 AD 一致，不断言中心差分**（诚实，见下）。
-- `Pkg.test` 全绿：aon_throughput 2 + SGP4 e2e 84 + **网络 KPI 139**。
+- `Pkg.test` 全绿：aon_throughput 2 + SGP4 e2e 84 + **网络 KPI 188**。
+
+**最小“梯度即归因”演示**（真实 Starlink TLE，默认 N=8、NT=4、真实 `dt=20 min`）：
+
+```bash
+julia --project=src/opt src/opt/scripts/sgp4_step3_attribution.jl
+```
+
+复合目标为 `L = L_coverage + 1e-3·latency − 0.25·reachability − λ₂`。本机实测
+`L=5.811667`、`‖grad‖=2.815e2`，七类尺度化敏感度排序为
+`n₀ > M > Ω > ω > i > e > B*`，故该配置下最敏感类别为 **n₀**。七类代表分量中心差分
+最大 best-rel `2.20e-8`，随机方向导数相对误差 `9.23e-11`，末行
+`STEP3_ATTRIBUTION_OK`。该排序是当前 TLE、时窗与损失权重附近的**局部尺度化灵敏度**，
+不是因果效应或跨配置恒定结论；可用 `SATSIM_ATTR_N`、`SATSIM_ATTR_NT`、
+`SATSIM_TLE_PATH` 覆盖默认配置。
 
 **真实规模实验**（本机 M2 Max 32GB、julia 1.12.6、`-t auto`=8 线程；真实 Starlink TLE；`jd_ref=max(epochs)`。数字实测非估算；脚本 `sgp4_step3_network_kpi.jl`）
 
@@ -174,9 +189,13 @@ julia --project=src/opt --threads=4 src/opt/scripts/sgp4_step1_check.jl
 
 **诚实边界**
 
-- 三个 KPI 都是 hard 指标的**软代理**：软时延↔Dijkstra 最短路时延、软可达↔可达 OD 占比、软 λ₂↔精确代数连通度；报告均给了 hard 对照与差距。
-- 不连续处（链路通断 / 选路 argmin / 可达阈值 / 地球遮挡）一律软松弛（sigmoid / softmin / LogSumExp），引用 **Suh et al., ICML'22**：一阶梯度在不连续/刚性处可能失效——LOS 掠射与 λ₂ 近简并谱即此类，故 LOS 只断言两套 AD 一致、λ₂ 梯度声明其在谱隙充分时有效。
-- 定位一律「据本文调研所及」，不写「首个/唯一」。深空 SDP4 不做；TEME→ECEF 仅 GMST z 旋转（无极移，与主链同款近似）。
+- 三个 KPI 都是 soft 代理：软 ≤K-hop 路径自由能（报告为软期望时延）↔ Dijkstra 最短路时延、软距离阈值比例 ↔（大 dmax 下）可达 OD 占比、软 λ₂ ↔ **同一软拉普拉斯**的精确第二小特征值（不是 {0,1} 硬邻接的 λ₂）。报告均给了数值对照与差距。
+- softmin **排除零代价自环**：若把 `W[j,j]=0` 纳入 softmin，则 softmin(d,d)=d−τlog2，距离会每步向 −∞ 漂移；`K` 是度量的一部分（≤K 跳），τsp→0 且 K≥直径时恢复 Dijkstra。
+- 连通度扰动 VJP `∂λ₂/∂w_ij=(v_i−v_j)²` **仅在 Fiedler 残差低于容差时启用**（Hellmann–Feynman/包络定理在收敛处成立）；否则 `:blockdiag` 回退到 Enzyme 对有限-K Rayleigh 商本身求导。
+- 不连续处（链路通断 / 选路 argmin / 距离阈值 / 地球遮挡）一律软松弛（sigmoid / softmin），引用 **Suh et al., ICML'22** 作为可微仿真器一阶梯度在刚性/不连续处可能失效的广义警示；AD 返回的是松弛本身的分支导数，不是硬仿真器的梯度。LOS 掠射与 λ₂ 近简并谱即此类。
+- 定位一律「据本文调研所及」，不写「首个/唯一」。深空 SDP4 不做；TEME→ECEF 仅 GMST z 旋转（无极移，与主链同款近似）。默认 `los=false` 时软邻接允许穿地弦，物理 ISL 需显式打开 LOS。
+- 时延/可达 Enzyme 反向 tape 随 `K·N²·|src|·NT`，本轮时延做到 N=200；连通度免 tape 路径可到 1584。稠密 soft 尾在大 N 上使图近乎完全，进一步扩规模需候选图稀疏化（后续）。
+- 公共 KPI 与 dL/dP 入口接受 `AbstractArray`/`SubArray`；Enzyme shadow 递归镜像视图结构，不要求调用者复制。
 
 ## 六、验证与评审机制
 

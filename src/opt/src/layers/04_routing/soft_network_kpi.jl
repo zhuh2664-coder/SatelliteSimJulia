@@ -145,6 +145,8 @@ function network_kpi_config(
     big > 0 || throw(ArgumentError("big (unreachable soft-distance sentinel) must be positive"))
     bellman_K == 0 || bellman_K >= 1 ||
         throw(ArgumentError("bellman_K must be ≥ 1 (or 0 for the N-dependent default)"))
+    kind in (:latency, :reachability, :connectivity, :combined) ||
+        throw(ArgumentError("unknown kind $kind (use :latency, :reachability, :connectivity, :combined)"))
 
     # resolve combination weights from `kind` unless explicitly overridden
     if w_lat == 0 && w_reach == 0 && w_conn == 0
@@ -453,21 +455,22 @@ end
 right choice at small/moderate `N`. For large-`N` connectivity use
 [`soft_connectivity_loss_vjp`](@ref) (tape-free).
 
-Accepts any `AbstractArray{Float64,3}` (including a `SubArray` view), but
-`Enzyme.Duplicated` requires the primal and its shadow to share a concrete
-array type, so non-`Array` inputs are copied once into a plain `Array` before
-differentiation.
+Accepts any `AbstractArray{Float64,3}`. For a `SubArray`, the Enzyme shadow
+recursively mirrors the same view structure, so the primal view is not copied.
 """
+_enzyme_shadow(A::Array) = zero(A)
+_enzyme_shadow(A::SubArray) = view(_enzyme_shadow(parent(A)), parentindices(A)...)
+_enzyme_shadow(A::AbstractArray) = zero(A)
+
 function network_kpi_loss_grad_positions(P::AbstractArray{Float64,3}, cfg::NetworkKPIConfig)
     size(P) == (cfg.N, cfg.NT, 3) ||
         throw(ArgumentError("network_kpi_loss_grad_positions: positions size $(size(P)) ≠ (N=$(cfg.N), NT=$(cfg.NT), 3) from cfg"))
-    Pc = P isa Array{Float64,3} ? P : Array(P)
-    dP = zero(Pc)
+    dP = _enzyme_shadow(P)
     res = Enzyme.autodiff(
         Enzyme.set_runtime_activity(Enzyme.ReverseWithPrimal),
         Enzyme.Const(_network_kpi_loss),
         Enzyme.Active,
-        Enzyme.Duplicated(Pc, dP),
+        Enzyme.Duplicated(P, dP),
         Enzyme.Const(cfg),
     )
     return res[2], dP
