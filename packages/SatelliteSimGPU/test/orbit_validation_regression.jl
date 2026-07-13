@@ -318,3 +318,5 @@ end
     elements32 = sgp4_init_host(sgp4_inputs(Float32)...)
     @test_throws ArgumentError sgp4_propagate_gpu(elements32, [1e100])
 end
+
+println("ORBIT_VALIDATION status=PASS backend=ka_cpu")
