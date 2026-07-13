@@ -1,6 +1,6 @@
 # 可微 SGP4 → 轨道-网络端到端可微（设计与分步计划）
 
-> 状态：进行中（步进实施，每步经用户评审 + 独立评估子程序把关）。
+> 状态：进行中（Step 1–2 已完成；后续步骤继续按评审结果推进）。
 > 目标一句话：让梯度能从**真实 TLE 的 SGP4 轨道参数**（而不只是解析 J2 的 Walker 参数）一路反传到**网络 KPI**（覆盖 / 软 ISL / 软路由），并用有限差分逐步验证。
 > 定位依据：据本文调研所及，未发现「轨道六根数 → 端到端可微 → 网络 KPI」的公开先例（dSGP4 止于轨道、Kacker&Cahoy 止于几何覆盖、dNE 止于地面 TE）。
 
@@ -27,7 +27,7 @@
 
 - **Step 1（可行性冒烟，先行）**：真实 Starlink TLE（10 颗）→ 时间序列 SGP4（~1 轨道周期、10 时间步）→ GMST 旋转到 ECEF → `coverage_loss` → ForwardDiff 对 70 个 TLE 参数求梯度。
   **验收**：损失有限、梯度有限且非零；vs 中心差分最大相对误差 < 1e-3（含浮动地板）；记录耗时。
-- **Step 2（正式 API）**：在 Opt 落 `sgp4_constellation_series(params, epochs, ts_min)`（AD 透明，(N,NT,3) TEME）与 `sgp4_series_ecef(...)`（含 GMST 旋转、epoch 对齐），export + 测试。
+- **Step 2（正式 API）✅（2026-07-13）**：在 Opt 落 `sgp4_constellation_series(params, epochs, ts_min)`（AD 透明，(N,NT,3) TEME）与 `sgp4_series_ecef(...)`（含 GMST 旋转、epoch 对齐），export + 测试。
   **验收**：与 `src/orbit` 的 SGP4 非可微路径在 Float64 下位置一致（同 epoch 约定）；ForwardDiff 梯度 FD 对标。
 - **Step 3（接真网络损失）**：TLE 参数 → 序列 → 覆盖损失 + 软 ISL/软路由损失（N 星推广，非 3 星玩具）→ 标量 KPI 梯度；输出按参数类别（n₀/e/i/Ω/ω/M/B*）的敏感度归因。
   **验收**：FD 对标；给出一个"梯度即归因"的最小演示（哪类轨道参数对该 KPI 最敏感）。
@@ -82,7 +82,7 @@ julia --project=src/opt --threads=4 src/opt/scripts/sgp4_step1_check.jl
 - **顺手修复**：`coverage.jl` 的 `soft_coverage`/`logsumexp_max` 把 Dual 数塞进 `Float64` 字段导致 ForwardDiff 报错 → 改为默认字段构造分派 token；`sgp4_e2e_gradient` 中 `dP` 与 ForwardDiff Jacobian 展平顺序对齐（`(NT,3)` → `(3,NT)` 列主序）。
 - 环境注意：`src/opt/Manifest.toml` 需在 Link 加依赖后 `Pkg.resolve()`（本机已做，Manifest 未提交）。
 
-### Step 2' — 1584 真实规模端到端梯度 ✅（2026-07-13）
+### Step 2 — 正式 API 与 1584 真实规模扩展 ✅（2026-07-13）
 
 **交付**：`src/opt/src/layers/06_optimization/sgp4_e2e.jl`（`SatelliteSimOpt.jl` include + export），测试 `src/opt/test/test_sgp4_e2e.jl`（已接入 `src/opt/test/runtests.jl` 实际运行路径）。
 
@@ -93,9 +93,11 @@ julia --project=src/opt --threads=4 src/opt/scripts/sgp4_step1_check.jl
 - `coverage_loss_vjp(positions, gp, w; ...) -> (loss, dP)`：`coverage_loss` 的手写 CPU 伴随（数学与 GPU 包 `adjoint.jl` 同款），`dt` 必须传真实时间步长（分钟）；
 - `sgp4_e2e_gradient(params, epochs, ts_min, gp, w; jd_ref, engine=:enzyme|:blockdiag, dt=真实步长, ...) -> (loss, grad::Vector{7N})`。
 
+**Step 2 正式验收**：两个 series API 均为公开 export；同一公共墙钟 epoch 下，2 颗真实 Starlink、3 个时刻的 Float64 ECEF 位置与 `SatelliteSimOrbit.propagate_to_ecef` 主链最大分量差约 `6.3e-5 km`（验收 `<1e-4 km`，差异来自等价墙钟/Julian-date 计算的 Float64 舍入）；对 7 类 TLE 参数分别穿过 TEME 与 ECEF 两个公开 API 的 ForwardDiff 梯度逐分量做中心差分步长扫描，两条路径均满足最大相对误差 `<1e-5`。
+
 **双引擎**：主引擎 `:enzyme`（Enzyme 整链反向，一次反传拿全部 7N 梯度，单线程）；交叉验证引擎 `:blockdiag`（手写 loss 伴随 → dL/dP，再每星 ForwardDiff Jacobian 3NT×7（chunk=7，`Threads.@threads`）块对角收缩）。域校验：n₀>0、周期 ≥225 min 抛 ArgumentError（SDP4 不支持）、e∈[0,1)、|B*|<1。
 
-**对标（N=10 真实 Starlink，NT=10，G=50）**：两引擎 vs 全量 ForwardDiff 相对 L2 **≈1.1e-15 / 1.3e-15**（验收 <1e-8）；中心差分 10 随机分量步长扫描（h×{0.1,1,10}）best-rel <1e-4 全过；随机方向导数相对误差 <1e-5；伴随 vs ForwardDiff-on-P（N=6,NT=4,G=20）rtol 1e-10 过。`Pkg.test` 全绿（aon_throughput 2 + SGP4 e2e 58）。
+**对标（N=10 真实 Starlink，NT=10，G=50）**：两引擎 vs 全量 ForwardDiff 相对 L2 **≈1.1e-15 / 1.3e-15**（验收 <1e-8）；中心差分 10 随机分量步长扫描（h×{0.1,1,10}）best-rel <1e-4 全过；随机方向导数相对误差 <1e-5；伴随 vs ForwardDiff-on-P（N=6,NT=4,G=20）rtol 1e-10 过。`Pkg.test` 全绿（aon_throughput 2 + SGP4 e2e 84）。
 
 **1584 真实实验**（本机 M2 Max 32GB，julia 1.12.6，`-t auto`=8 线程；真实 Starlink TLE 前 1584 颗，epoch 跨度 3558 min；G=800（ground_grid(20,40)），λ=0.1，dt=真实步长，jd_ref=max(epochs)=2461199.83338。数字为实测非估算）：
 
