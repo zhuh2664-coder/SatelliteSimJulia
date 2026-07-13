@@ -133,6 +133,23 @@ result = run_experiment(config)
 
 JuliaSpace 后端同理使用 `OrbitBackendSpec(:julia_space; propagator=:j2)`。选择外部后端后，传播器应写在后端规格中；`ExperimentConfig.propagator` 只控制默认原生传播路径。Native、Stub、JuliaSpace 已由同一 `run_experiment(config)` 集成测试覆盖，后端输出会继续进入 GSL、ISL、路由与 Traffic AON，Link/Net/Traffic 不引用具体后端包。
 
+CPU/GPU 选择与轨道后端分开配置。CPU 用户无需安装 CUDA；GPU 环境显式加载并注册设备后端：
+
+```julia
+using CUDA, SatelliteSimGPU, SatelliteSimLab
+
+register_kernel_compute_backend!(:cuda, CUDA.CUDABackend())
+available_compute_backends()  # [:cpu, :cuda]
+
+config = ExperimentConfig(
+    gsl_backend=ComputeBackendSpec(:cuda),
+    users=[GroundUser("durham", 35.994, -78.899)],
+)
+result = run_experiment(config)
+```
+
+`gsl_backend` 只控制 GSL 批评估。Orbit、ISL、拓扑、路由、Traffic 与 Metrics 当前仍在 CPU；GPU 后端在边界内完成传输，并把普通 host `Array` 交回主链。非 CPU 实验必须配置至少一个 `user` 或 `ground_station`，否则会在传播前拒绝运行，避免“选择了 GPU 但没有执行 GPU kernel”。默认精度为 `Float64`；可显式选择 `precision="float32"` 提高吞吐，但距离/仰角恰好位于硬阈值的链路可能因量化改变可用性判定。软覆盖优化的 GPU kernel 继续通过 `coverage_loss_gpu` 显式调用。
+
 ## 文档
 
 - [用户手册](docs/USER_GUIDE.md) — 6 个场景（覆盖评估 / 参数扫描 / 星座对比 / AI 仿真 / 可微优化 / TLE 仿真）
@@ -151,6 +168,9 @@ SATSIM_RUN_OPTIONAL=1 julia --project=. scripts/test_all.jl
 
 # Nightly：JuliaSpace + 三后端端到端 + 性能基线 smoke
 SATSIM_RUN_NIGHTLY=1 julia --project=. scripts/test_all.jl
+
+# 硬件门禁：Modal A10G（需已配置 Modal 凭据）
+SATSIM_RUN_GPU=1 julia --project=. scripts/test_all.jl
 
 # 单独记录 orbit backend 性能/分配基线；--full 扩大工作负载
 julia --project=envs/backends-integration -e 'using Pkg; Pkg.instantiate()'

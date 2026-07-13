@@ -1,6 +1,6 @@
 # SatelliteSimJulia 依赖与后端隔离设计（正本）
 
-> 更新：2026-07-09。完成状态只按测试证据判断，不按旧 Phase 文档判断。
+> 更新：2026-07-13。完成状态只按测试证据判断，不按旧 Phase 文档判断。
 
 ## 目标
 
@@ -24,9 +24,11 @@ Foundation/Orbit/Link/Metrics → Core
 主链领域包 → Lab（编排与 AI 控制面）
 
 SatelliteSimBackends → Orbit（传播契约）
+SatelliteSimBackends → Link（CPU GSL 计算契约）
 SatelliteSimBackends → Lab（选择/配置契约）
 SatelliteSimBackends ← StubBackend
 SatelliteSimBackends + SatelliteToolbox ← JuliaSpaceBackend
+SatelliteSimBackends ← SatelliteSimGPU（可选 GSL 计算后端）
 
 Opt / Security / Viz / GMAT：显式选择，不由根伞包隐式导出
 ```
@@ -39,6 +41,7 @@ Opt / Security / Viz / GMAT：显式选择，不由根伞包隐式导出
 4. 外部轨道后端返回 ECEF km，并通过 `validate_orbit_result`。
 5. Stub 后端必须确定性、无重依赖，可在无网络服务的 CI 中运行。
 6. 具体后端包不进入主链聚合依赖；用户必须显式加载它，才能在当前 Julia session 注册后端名称。
+7. 计算设备选择按操作声明；`gsl_backend` 不得暗示 Orbit、ISL、路由、Traffic 或 Metrics 已迁移到 GPU。
 
 ## 后端契约当前范围
 
@@ -73,6 +76,32 @@ Opt / Security / Viz / GMAT：显式选择，不由根伞包隐式导出
 
 注册表只在当前 Julia session 内有效。`OrbitBackendSpec(:julia_space; propagator=:j2)` 中的 `propagator` 是后端专属选项；一旦选择外部后端，`ExperimentConfig.propagator` 不会隐式覆盖该选项。
 
+## GSL 计算后端契约
+
+轨道实现选择与计算设备选择是两个独立维度：
+
+- `ExperimentConfig.orbit_backend` 选择轨道传播实现。
+- `ExperimentConfig.gsl_backend` 只选择 GSL 批评估的执行后端；默认 `:cpu`。
+- `ComputeBackendSpec`、`AbstractComputeBackend` 与独立注册表负责可选设备发现。
+- `SatelliteSimLink` 实现内建 `CPUComputeBackend`；Lab 对 CPU/GPU 调用同一个 `evaluate_gsl_series` 契约。
+- `assess_gsl_series` 接收 `(satellite,time,xyz)`、ECEF km 的 `AbstractArray`，返回 `(satellite,station,time)` 的 `GSLSeriesResult`。
+- 加速后端负责 host/device 传输；跨层返回值固定为普通 host `Array`，因此 Traffic、Net 和 Metrics 不需要依赖 CUDA。
+
+`SatelliteSimGPU` 只依赖 `KernelAbstractions` 与后端契约，不直接依赖 CUDA。GPU 环境显式加载设备包并注册：
+
+```julia
+using CUDA, SatelliteSimGPU, SatelliteSimLab
+
+register_kernel_compute_backend!(:cuda, CUDA.CUDABackend())
+config = ExperimentConfig(
+    gsl_backend=ComputeBackendSpec(:cuda),
+    users=[GroundUser("durham", 35.994, -78.899)],
+)
+result = run_experiment(config)
+```
+
+这条配置只把 GSL series kernel 放到 CUDA。非 CPU 后端在一次实验中只解析一次，并且必须存在 user 或 ground station 使其真正执行；平台元数据来自同一个后端实例。默认 `Float64` 对齐 CPU 判定；显式 `Float32` 是吞吐优先模式，硬阈值附近允许出现量化导致的可用性差异。当前 Orbit、ISL、拓扑、路由、Traffic 与 Metrics 仍在 CPU；软覆盖优化继续使用 `coverage_loss_gpu` 的显式低层 API，不受 `gsl_backend` 控制。
+
 ## CI 分层
 
 | 层 | 工作流 | 内容 |
@@ -80,6 +109,7 @@ Opt / Security / Viz / GMAT：显式选择，不由根伞包隐式导出
 | Core | `.github/workflows/test.yml` | boundary、core smoke、bare-array、Lab、Stub backend |
 | Optional | `.github/workflows/optional.yml` | Opt、Security、Viz、GMAT |
 | Nightly | `.github/workflows/nightly.yml` | 根当前回归、JuliaSpace adapter、三后端高层 E2E、性能基线 smoke |
+| GPU hardware | 本地/受控 runner | `SATSIM_RUN_GPU=1` 调 Modal A10G，验证注册、传输、Float32/64 parity 与 host 输出 |
 
 本地门禁：
 
@@ -92,6 +122,7 @@ julia --project=envs/backends-stub test/backends/test_stub_backend_pkg.jl
 julia --project=envs/backends-integration -e 'using Pkg; Pkg.instantiate()'
 julia --project=envs/backends-integration test/backends/test_backend_end_to_end.jl
 julia --project=envs/backends-integration scripts/benchmark_orbit_backends.jl --smoke
+SATSIM_RUN_GPU=1 julia --project=. scripts/test_all.jl
 ```
 
 Manifest 检查对不存在的文件输出 `SKIP`；在核心 CI 中，`envs/core` 与 `envs/backends-stub` 会先 instantiate，因此这两个基线有实际约束。根 Manifest 不提交，只在本地存在时报告。

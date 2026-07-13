@@ -60,3 +60,4 @@ if HAS_GLMAKIE
 end
 
 include("test_package_boundaries.jl")
+include(joinpath(@__DIR__, "test_unified_runner_timeout.jl"))
