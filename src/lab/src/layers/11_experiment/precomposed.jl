@@ -137,10 +137,9 @@ function _resolve_gsl_compute_backend(backend)
 end
 
 function _resolve_experiment_gsl_backend(config::ExperimentConfig)
-    if config.gsl_backend.name != :cpu &&
-       isempty(config.users) && isempty(config.ground_stations)
+    if config.gsl_backend.name != :cpu && isempty(config.ground_endpoints)
         throw(ArgumentError(
-            "non-CPU gsl_backend requires at least one user or ground station",
+            "non-CPU gsl_backend requires at least one ground endpoint",
         ))
     end
     return _validate_gsl_compute_backend(
@@ -213,34 +212,34 @@ function _gsl_matrices_by_time(result::GSLSeriesResult)
 end
 
 """
-    assess_coverage(positions, users, constraints; gsl_backend=:cpu)
+    assess_coverage(positions, ground_endpoints, constraints; gsl_backend=:cpu)
         -> (gsl_available, coverage)
 
 预编排：位置矩阵 → GSL 批评估 → 覆盖率计算。
 
 输入：
 - `positions::AbstractArray{<:Real,3}`：N×T×3 ECEF 位置
-- `users::Vector{GroundUser}`：地面用户列表
+- `ground_endpoints::Vector{GroundEndpoint}`：统一地面端点列表
 - `constraints::PhysicalConstraints`：物理约束
 
 返回 GSL 可用矩阵和覆盖结果。
 """
 function assess_coverage(
     positions::AbstractArray{<:Real,3},
-    users,
+    ground_endpoints::Vector{GroundEndpoint},
     constraints;
     gsl_backend=:cpu,
 )
-    user_tuples = [(u.lat, u.lon, 0.0) for u in users]
+    station_tuples = [ground_endpoint_tuple(ep) for ep in ground_endpoints]
     last_positions = @view positions[:, size(positions, 2):size(positions, 2), :]
     gsl = assess_gsl_series(
         last_positions,
-        user_tuples,
+        station_tuples,
         constraints;
         backend=gsl_backend,
     )
     gsl_available = gsl.available[:, :, 1]
-    coverage = compute_coverage(gsl_available, [u.id for u in users])
+    coverage = compute_coverage(gsl_available, [ep.id for ep in ground_endpoints])
     return gsl_available, coverage
 end
 
@@ -478,7 +477,7 @@ link id 稳定，构造 GSL access，再通过 Traffic bridge 进入 AON/MinLoad
 function assess_ground_traffic_temporal_dynamic(
     positions::AbstractArray{<:Real,3}, T::Int, P::Int,
     strategy_builder::Function, constraints,
-    ground_stations::Vector{GroundStation},
+    ground_endpoints::Vector{GroundEndpoint},
     demands::Vector{TrafficDemand};
     elapsed_by_time = collect(0:(n_timesteps(positions)-1)),
     routing_algorithm = nothing,
@@ -492,7 +491,7 @@ function assess_ground_traffic_temporal_dynamic(
     n_time = n_timesteps(positions)
     length(elapsed_by_time) == n_time ||
         throw(ArgumentError("elapsed_by_time length must match positions time dimension"))
-    isempty(ground_stations) && throw(ArgumentError("ground_stations must not be empty"))
+    isempty(ground_endpoints) && throw(ArgumentError("ground_endpoints must not be empty"))
 
     grid = _simulation_time_grid_from_tspan(Float64.(elapsed_by_time), n_time)
     grid === nothing && throw(ArgumentError(
@@ -514,10 +513,10 @@ function assess_ground_traffic_temporal_dynamic(
         for t in 1:n_time
     ]
 
-    gs_tuples = _ground_station_tuples(ground_stations)
+    station_tuples = [ground_endpoint_tuple(ep) for ep in ground_endpoints]
     gsl_series = assess_gsl_series(
         positions,
-        gs_tuples,
+        station_tuples,
         constraints;
         backend=gsl_backend,
     )
@@ -530,7 +529,7 @@ function assess_ground_traffic_temporal_dynamic(
         gsl_by_time.available,
         gsl_by_time.distance_km,
         gsl_by_time.elevation_deg,
-        _ground_station_ids(ground_stations),
+        collect(1:length(ground_endpoints)),
         grid,
         demands;
         isl_capacity_mbps = Float64(isl_capacity_mbps),
@@ -553,17 +552,6 @@ function _validate_satellite_node_demands(demands::Vector{TrafficDemand}, T::Int
     end
     return nothing
 end
-
-_ground_station_ids(ground_stations::Vector{GroundStation}) = [station.id for station in ground_stations]
-
-_ground_station_tuples(ground_stations::Vector{GroundStation}) = [
-    (
-        station.position.latitude_deg,
-        station.position.longitude_deg,
-        station.position.altitude_km,
-    )
-    for station in ground_stations
-]
 
 function _topology_links(strategy, T::Int, P::Int)::Vector{Tuple{Int,Int}}
     topo_output = generate_topology(strategy, T, P)
@@ -656,43 +644,30 @@ end
 # 地面站接入辅助（路由/流量降级共用）
 # ────────────────────────────────────────────────────────────
 
-"""从 GroundStation 或带 lat/lon 字段的对象提取 (lat, lon, alt) 元组。"""
-function _ground_station_tuple(gs)
-    if hasproperty(gs, :position)
-        pos = gs.position
-        return (pos.latitude_deg, pos.longitude_deg, pos.altitude_km)
-    elseif hasproperty(gs, :lat) && hasproperty(gs, :lon)
-        alt = hasproperty(gs, :alt) ? Float64(gs.alt) :
-              hasproperty(gs, :altitude) ? Float64(gs.altitude) : 0.0
-        return (Float64(gs.lat), Float64(gs.lon), alt)
-    end
-    throw(ArgumentError("ground station must have position or lat/lon fields"))
-end
-
 """
-    _build_ground_access_map(positions, ground_stations, constraints)
+    _build_ground_access_map(positions, ground_endpoints, constraints)
 
-为每个地面站 ID（1-based 枚举顺序）选取仰角最高的接入卫星及 GSL 时延（ms）。
+为每个地面端点（1-based 枚举顺序）选取仰角最高的接入卫星及 GSL 时延（ms）。
 """
 function _build_ground_access_map(
     positions,
-    ground_stations,
+    ground_endpoints::Vector{GroundEndpoint},
     constraints;
     gsl_backend=:cpu,
 )
     access_map = Dict{Int, NamedTuple{(:sat_id, :delay_ms), Tuple{Int, Float64}}}()
-    isempty(ground_stations) && return access_map
+    isempty(ground_endpoints) && return access_map
 
     time_index = size(positions, 2)
     last_positions = @view positions[:, time_index:time_index, :]
-    station_tuples = [_ground_station_tuple(station) for station in ground_stations]
+    station_tuples = [ground_endpoint_tuple(ep) for ep in ground_endpoints]
     gsl = assess_gsl_series(
         last_positions,
         station_tuples,
         constraints;
         backend=gsl_backend,
     )
-    for gid in eachindex(ground_stations)
+    for gid in eachindex(ground_endpoints)
         best_sat = 0
         best_elev = -Inf
         best_delay = Inf
@@ -713,8 +688,8 @@ end
 function _resolve_routing_endpoint_pairs(config, T::Int)
     if !isempty(config.ground_pairs)
         return config.ground_pairs, true
-    elseif !isempty(config.ground_stations)
-        n_gs = length(config.ground_stations)
+    elseif !isempty(config.ground_endpoints)
+        n_gs = length(config.ground_endpoints)
         gs_ids = 1:n_gs
         pairs = [(a, b) for (k, a) in enumerate(gs_ids) for b in gs_ids[k+1:end]]
         return pairs, true
@@ -817,7 +792,7 @@ function _full_constellation_assessment(
     _, positions = _propagate_constellation_positions(config, orbit_resolution)
     gsl_available, coverage = assess_coverage(
         positions,
-        config.users,
+        config.ground_endpoints,
         config.constraints;
         gsl_backend=gsl_backend,
     )
@@ -828,7 +803,7 @@ function _full_constellation_assessment(
 
     access_map = _build_ground_access_map(
         positions,
-        config.ground_stations,
+        config.ground_endpoints,
         config.constraints;
         gsl_backend=gsl_backend,
     )
@@ -1128,12 +1103,12 @@ function _evaluate_traffic_full(
 )
     n_time = size(positions, 2)
     n_time >= 1 || return nothing
-    isempty(config.ground_stations) && return nothing
+    isempty(config.ground_endpoints) && return nothing
     isempty(isl_pairs) && return nothing
 
-    # 地面站经纬高（统一经 _ground_station_tuple）；id 保留配置原值
-    gs_tuples = [_ground_station_tuple(gs) for gs in config.ground_stations]
-    ground_ids = _ground_station_ids(config.ground_stations)
+    # 地面端点统一经纬高；id 保留配置原值
+    station_tuples = [ground_endpoint_tuple(ep) for ep in config.ground_endpoints]
+    ground_ids = collect(1:length(config.ground_endpoints))
 
     # 构造和 positions 时间维严格一致的时间网格。
     grid = _simulation_time_grid_from_tspan(config.tspan, n_time)
@@ -1146,7 +1121,7 @@ function _evaluate_traffic_full(
     ]
     gsl_series = assess_gsl_series(
         positions,
-        gs_tuples,
+        station_tuples,
         config.constraints;
         backend=gsl_backend,
     )

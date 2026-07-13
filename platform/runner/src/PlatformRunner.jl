@@ -14,7 +14,7 @@ const EXPERIMENT_SCHEMA_VERSION = "satellitesim.experiment/v1"
 const _ALLOWED_FIELDS = Set([
     "schema_version", "name", "constellation", "propagator", "orbit_backend", "gsl_backend",
     "tspan", "steps", "topology_strategy", "routing_algorithm", "traffic",
-    "ground_pairs", "users", "random_seed", "alpha",
+    "ground_pairs", "ground_endpoints", "users", "random_seed", "alpha",
 ])
 const _ALLOWED_PROPAGATORS = Set(["two_body", "j2", "j4"])
 const _ALLOWED_TOPOLOGIES = Set(["balanced", "mesh", "gridplus", "grid_plus"])
@@ -114,10 +114,20 @@ end
 
 function _normalise_pairs(value)
     pairs = _asvector(value, "ground_pairs")
-    isempty(pairs) || throw(PlatformConfigError(
-        "ground_pairs is not supported in $EXPERIMENT_SCHEMA_VERSION because ground_stations are not defined; provide an empty array",
-    ))
-    return Tuple{Int,Int}[]
+    normalized = Tuple{Int,Int}[]
+    for (index, pair_value) in enumerate(pairs)
+        pair = _asvector(pair_value, "ground_pairs[$index]")
+        length(pair) == 2 || throw(PlatformConfigError(
+            "ground_pairs[$index] must contain exactly two integers",
+        ))
+        a = _integer(pair[1], "ground_pairs[$index][1]"; minimum=1)
+        b = _integer(pair[2], "ground_pairs[$index][2]"; minimum=1)
+        a != b || throw(PlatformConfigError(
+            "ground_pairs[$index] must connect distinct endpoints",
+        ))
+        push!(normalized, (a, b))
+    end
+    return normalized
 end
 
 function _normalise_users(value)
@@ -177,6 +187,77 @@ function _normalise_users(value)
     return users
 end
 
+function _normalise_ground_endpoints(value)
+    endpoints = Dict{String,Any}[]
+    seen_ids = Set{String}()
+    allowed = Set([
+        "id", "lat", "lon", "alt_km", "uplink_demand_mbps", "downlink_demand_mbps",
+        "service_type", "tags",
+    ])
+    for (index, endpoint_value) in enumerate(_asvector(value, "ground_endpoints"))
+        input = _string_key_dict(_asdict(endpoint_value, "ground_endpoints[$index]"))
+        unknown = setdiff(Set(keys(input)), allowed)
+        isempty(unknown) || throw(PlatformConfigError(
+            "ground_endpoints[$index] has unsupported fields: $(join(sort!(collect(unknown)), ", "))",
+        ))
+        for required in ("id", "lat", "lon")
+            haskey(input, required) ||
+                throw(PlatformConfigError("ground_endpoints[$index].$required is required"))
+        end
+        id = input["id"]
+        id isa AbstractString && !isempty(strip(id)) ||
+            throw(PlatformConfigError("ground_endpoints[$index].id must be a non-empty string"))
+        id = String(id)
+        id in seen_ids &&
+            throw(PlatformConfigError("ground_endpoints[$index].id '$id' is duplicated"))
+        push!(seen_ids, id)
+        latitude = _finite_number(input["lat"], "ground_endpoints[$index].lat")
+        longitude = _finite_number(input["lon"], "ground_endpoints[$index].lon")
+        -90 <= latitude <= 90 ||
+            throw(PlatformConfigError("ground_endpoints[$index].lat must be between -90 and 90"))
+        -180 <= longitude <= 180 ||
+            throw(PlatformConfigError("ground_endpoints[$index].lon must be between -180 and 180"))
+        altitude = _finite_number(
+            get(input, "alt_km", 0.0),
+            "ground_endpoints[$index].alt_km",
+        )
+        uplink = _finite_number(
+            get(input, "uplink_demand_mbps", 0.0),
+            "ground_endpoints[$index].uplink_demand_mbps",
+        )
+        downlink = _finite_number(
+            get(input, "downlink_demand_mbps", 0.0),
+            "ground_endpoints[$index].downlink_demand_mbps",
+        )
+        uplink >= 0 ||
+            throw(PlatformConfigError("ground_endpoints[$index].uplink_demand_mbps must be non-negative"))
+        downlink >= 0 ||
+            throw(PlatformConfigError("ground_endpoints[$index].downlink_demand_mbps must be non-negative"))
+        service_type = get(input, "service_type", nothing)
+        service_type isa Union{Nothing,AbstractString} ||
+            throw(PlatformConfigError("ground_endpoints[$index].service_type must be a string or null"))
+        raw_tags = get(input, "tags", Dict{String,Any}())
+        tags = _string_key_dict(_asdict(raw_tags, "ground_endpoints[$index].tags"))
+        for (tag_key, tag_value) in tags
+            tag_value isa AbstractString ||
+                throw(PlatformConfigError("ground_endpoints[$index].tags.$tag_key must be a string"))
+        end
+        if service_type !== nothing
+            tags["service_type"] = String(service_type)
+        end
+        push!(endpoints, Dict{String,Any}(
+            "id" => id,
+            "lat" => latitude,
+            "lon" => longitude,
+            "alt_km" => altitude,
+            "uplink_demand_mbps" => uplink,
+            "downlink_demand_mbps" => downlink,
+            "tags" => tags,
+        ))
+    end
+    return endpoints
+end
+
 """
     validate_experiment_config(raw) -> Dict{String,Any}
 
@@ -224,9 +305,24 @@ function validate_experiment_config(raw)::Dict{String,Any}
         "gsl_backend",
     )
     users = _normalise_users(get(input, "users", Any[]))
-    gsl_backend["name"] != "cpu" && isempty(users) &&
+    ground_endpoints = _normalise_ground_endpoints(get(input, "ground_endpoints", Any[]))
+
+    # users 是 ground_endpoints 的 legacy 别名；id 在合并后必须唯一。
+    user_ids = Set(user["id"] for user in users)
+    endpoint_ids = Set(ep["id"] for ep in ground_endpoints)
+    intersect = user_ids ∩ endpoint_ids
+    isempty(intersect) || throw(PlatformConfigError(
+        "users and ground_endpoints share duplicate ids: $(join(sort(collect(intersect)), ", "))",
+    ))
+    total_endpoints = length(users) + length(ground_endpoints)
+    for (a, b) in pairs
+        (a <= total_endpoints && b <= total_endpoints) || throw(PlatformConfigError(
+            "ground_pairs index out of range: ($a, $b) not in 1:$total_endpoints",
+        ))
+    end
+    gsl_backend["name"] != "cpu" && total_endpoints == 0 &&
         throw(PlatformConfigError(
-            "non-CPU gsl_backend requires at least one user",
+            "non-CPU gsl_backend requires at least one ground endpoint",
         ))
 
     return Dict{String,Any}(
@@ -246,6 +342,7 @@ function validate_experiment_config(raw)::Dict{String,Any}
         "traffic" => String(traffic),
         "ground_pairs" => [[source, target] for (source, target) in pairs],
         "users" => users,
+        "ground_endpoints" => ground_endpoints,
         "random_seed" => random_seed,
         "alpha" => alpha,
     )
@@ -284,6 +381,18 @@ function experiment_config_from_json(raw)::ExperimentConfig
         )
         for user in normalised["users"]
     ]
+    ground_endpoints = GroundEndpoint[
+        GroundEndpoint(
+            ep["id"],
+            ep["lat"],
+            ep["lon"],
+            ep["alt_km"];
+            uplink_demand_mbps=ep["uplink_demand_mbps"],
+            downlink_demand_mbps=ep["downlink_demand_mbps"],
+            tags=Dict{String,String}(String(k) => String(v) for (k, v) in ep["tags"]),
+        )
+        for ep in normalised["ground_endpoints"]
+    ]
     common = (;
         name=normalised["name"],
         propagator=Symbol(normalised["propagator"]),
@@ -297,6 +406,7 @@ function experiment_config_from_json(raw)::ExperimentConfig
         alpha=normalised["alpha"],
         ground_pairs=ground_pairs,
         users=users,
+        ground_endpoints=ground_endpoints,
     )
 
     if constellation isa String
@@ -330,9 +440,9 @@ function _environment_hash()
 end
 
 function _preflight_gsl_backend(config::ExperimentConfig)
-    if config.gsl_backend.name != :cpu && isempty(config.users)
+    if config.gsl_backend.name != :cpu && isempty(config.ground_endpoints)
         throw(PlatformConfigError(
-            "non-CPU gsl_backend requires at least one user so the selected backend is exercised",
+            "non-CPU gsl_backend requires at least one ground endpoint so the selected backend is exercised",
         ))
     end
     resolution = try
@@ -433,6 +543,8 @@ function run_platform_experiment(raw; output_dir::AbstractString, overwrite::Boo
         "gsl_backend" => normalised["gsl_backend"],
         "resolved_gsl_backend" => resolved_gsl_backend,
         "random_seed" => normalised["random_seed"],
+        "ground_endpoints" => length(config.ground_endpoints),
+        "ground_pairs" => length(config.ground_pairs),
     )
     _write_json(metadata_path, metadata)
     _write_json(index_path, _artifact_index(output_dir, [

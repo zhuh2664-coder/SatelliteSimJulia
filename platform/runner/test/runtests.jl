@@ -105,17 +105,26 @@ const VALID_CONFIG = Dict{String,Any}(
     unknown["raw_julia_code"] = "run()"
     @test_throws PlatformConfigError validate_experiment_config(unknown)
 
-    unsupported_pairs = copy(VALID_CONFIG)
-    unsupported_pairs["ground_pairs"] = [[1, 2]]
-    pair_error = try
-        validate_experiment_config(unsupported_pairs)
-        nothing
-    catch err
-        err
-    end
-    @test pair_error isa PlatformConfigError
-    @test pair_error isa PlatformConfigError &&
-          occursin("ground_stations are not defined", sprint(showerror, pair_error))
+    endpoints_config = copy(VALID_CONFIG)
+    endpoints_config["ground_endpoints"] = [
+        Dict("id" => "durham", "lat" => 35.9940, "lon" => -78.8986),
+    ]
+    normalised_endpoints = validate_experiment_config(endpoints_config)
+    @test length(normalised_endpoints["ground_endpoints"]) == 1
+    @test normalised_endpoints["ground_endpoints"][1]["id"] == "durham"
+    parsed_endpoints = experiment_config_from_json(endpoints_config)
+    @test length(parsed_endpoints.ground_endpoints) == 1
+    @test parsed_endpoints.ground_endpoints[1].id == "durham"
+
+    duplicate_ids = copy(VALID_CONFIG)
+    duplicate_ids["users"] = [Dict("id" => "probe", "lat" => 35.0, "lon" => -78.0)]
+    duplicate_ids["ground_endpoints"] = [Dict("id" => "probe", "lat" => 36.0, "lon" => -79.0)]
+    @test_throws PlatformConfigError validate_experiment_config(duplicate_ids)
+
+    invalid_pair_index = copy(VALID_CONFIG)
+    invalid_pair_index["ground_endpoints"] = [Dict("id" => "a", "lat" => 0.0, "lon" => 0.0)]
+    invalid_pair_index["ground_pairs"] = [[1, 2]]
+    @test_throws PlatformConfigError validate_experiment_config(invalid_pair_index)
 
     invalid_backend = copy(VALID_CONFIG)
     invalid_backend["orbit_backend"] = Dict("name" => "stub", "options" => Dict("bad-key" => 1))
@@ -131,9 +140,9 @@ const VALID_CONFIG = Dict{String,Any}(
     @test parsed_gpu_config.gsl_backend.name == :cuda
     @test parsed_gpu_config.gsl_backend.options == (precision="float32",)
 
-    gpu_without_users = copy(VALID_CONFIG)
-    gpu_without_users["gsl_backend"] = "cuda"
-    @test_throws PlatformConfigError validate_experiment_config(gpu_without_users)
+    gpu_without_endpoints = copy(VALID_CONFIG)
+    gpu_without_endpoints["gsl_backend"] = "cuda"
+    @test_throws PlatformConfigError validate_experiment_config(gpu_without_endpoints)
 
     invalid_gsl_backend = copy(VALID_CONFIG)
     invalid_gsl_backend["gsl_backend"] = Dict(
@@ -154,7 +163,8 @@ end
     @test Set(schema["required"]) == Set(["name", "constellation"])
     @test schema["properties"]["schema_version"]["default"] ==
           EXPERIMENT_SCHEMA_VERSION
-    @test schema["properties"]["ground_pairs"]["maxItems"] == 0
+    @test !haskey(schema["properties"]["ground_pairs"], "maxItems")
+    @test haskey(schema["properties"], "ground_endpoints")
 
     option_name_pattern = "^[A-Za-z][A-Za-z0-9_]*\$"
     for backend in ("orbit_backend", "gsl_backend")
@@ -262,4 +272,65 @@ end
     finally
         unregister_compute_backend!(:platform_mismatched_metadata)
     end
+end
+
+@testset "PlatformRunner ground endpoint demand validation" begin
+    negative_uplink = copy(VALID_CONFIG)
+    negative_uplink["ground_endpoints"] = [
+        Dict("id" => "a", "lat" => 0.0, "lon" => 0.0, "uplink_demand_mbps" => -1.0),
+    ]
+    @test_throws PlatformConfigError validate_experiment_config(negative_uplink)
+
+    negative_downlink = copy(VALID_CONFIG)
+    negative_downlink["ground_endpoints"] = [
+        Dict("id" => "a", "lat" => 0.0, "lon" => 0.0, "downlink_demand_mbps" => -1.0),
+    ]
+    @test_throws PlatformConfigError validate_experiment_config(negative_downlink)
+
+    non_numeric_demand = copy(VALID_CONFIG)
+    non_numeric_demand["ground_endpoints"] = [
+        Dict("id" => "a", "lat" => 0.0, "lon" => 0.0, "uplink_demand_mbps" => "fast"),
+    ]
+    @test_throws PlatformConfigError validate_experiment_config(non_numeric_demand)
+end
+
+@testset "PlatformRunner traffic demand propagation" begin
+    traffic_config = copy(VALID_CONFIG)
+    traffic_config["name"] = "platform-traffic-bridge"
+    traffic_config["constellation"] = Dict("T" => 24, "P" => 6, "F" => 1, "alt_km" => 550.0, "inc_deg" => 53.0)
+    traffic_config["ground_endpoints"] = [
+        Dict("id" => "src", "lat" => 0.0, "lon" => 0.0, "alt_km" => 0.0, "uplink_demand_mbps" => 100.0),
+        Dict("id" => "dst", "lat" => 10.0, "lon" => 10.0, "alt_km" => 0.0, "downlink_demand_mbps" => 100.0),
+    ]
+    traffic_config["ground_pairs"] = [[1, 2]]
+    traffic_config["traffic"] = "uniform"
+
+    mktempdir() do directory
+        run = run_platform_experiment(traffic_config; output_dir=directory)
+        @test run["metadata"]["ground_endpoints"] == 2
+        @test run["metadata"]["ground_pairs"] == 1
+        @test run["result"]["traffic_evaluation_ran"] == true
+        @test run["result"]["traffic_demands"] == 1
+        @test run["result"]["offered_mbps"] > 0.0
+    end
+end
+
+@testset "PlatformRunner legacy users merge with ground_endpoints" begin
+    merged_config = copy(VALID_CONFIG)
+    merged_config["name"] = "platform-legacy-merge"
+    merged_config["users"] = [
+        Dict("id" => "legacy", "lat" => 35.0, "lon" => -78.0, "uplink_demand_mbps" => 10.0),
+    ]
+    merged_config["ground_endpoints"] = [
+        Dict("id" => "new", "lat" => 36.0, "lon" => -79.0, "downlink_demand_mbps" => 20.0),
+    ]
+    normalised = validate_experiment_config(merged_config)
+    @test length(normalised["users"]) == 1
+    @test length(normalised["ground_endpoints"]) == 1
+    config = experiment_config_from_json(normalised)
+    @test length(config.ground_endpoints) == 2
+    @test Set(ep.id for ep in config.ground_endpoints) == Set(["legacy", "new"])
+    by_id = Dict(ep.id => ep for ep in config.ground_endpoints)
+    @test by_id["legacy"].uplink_demand_mbps == 10.0
+    @test by_id["new"].downlink_demand_mbps == 20.0
 end

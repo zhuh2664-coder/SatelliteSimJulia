@@ -13,11 +13,56 @@ struct ExperimentConfig
     topology_strategy::AbstractTopologyStrategy
     routing_algorithm::AbstractRoutingAlgorithm
     traffic_demands::Vector{TrafficDemand}    # 流量需求（由 TrafficIntent 翻译而来）
-    ground_stations::Vector{GroundStation}
-    users::Vector{GroundUser}
+    ground_endpoints::Vector{GroundEndpoint}    # 统一地面端点（覆盖 + GSL + Traffic 共用）
     random_seed::Int
     alpha::Float64
     ground_pairs::Vector{Tuple{Int,Int}}
+end
+
+# 把 legacy GroundStation / GroundUser / 直接 GroundEndpoint 合并成统一的 ground_endpoints。
+# 按输入顺序保留，按 id 去重；id 冲突时取第一次出现，保证结果可预测。
+function _merge_ground_endpoints(
+    endpoints::Vector{GroundEndpoint},
+    stations::Vector{GroundStation},
+    users::Vector{GroundUser},
+)::Vector{GroundEndpoint}
+    merged = GroundEndpoint[]
+    sizehint!(merged, length(endpoints) + length(stations) + length(users))
+    for station in stations
+        push!(merged, GroundEndpoint(station))
+    end
+    for user in users
+        push!(merged, GroundEndpoint(user))
+    end
+    for endpoint in endpoints
+        push!(merged, endpoint)
+    end
+    seen = Set{String}()
+    unique_endpoints = GroundEndpoint[]
+    sizehint!(unique_endpoints, length(merged))
+    for endpoint in merged
+        id = endpoint.id
+        id in seen && continue
+        push!(seen, id)
+        push!(unique_endpoints, endpoint)
+    end
+    return unique_endpoints
+end
+
+# 验证 ground_pairs 的索引落在统一端点范围内。
+function _validate_ground_pairs(
+    pairs::Vector{Tuple{Int,Int}},
+    n_endpoints::Int,
+)::Nothing
+    for (a, b) in pairs
+        (1 <= a <= n_endpoints && 1 <= b <= n_endpoints) || throw(ArgumentError(
+            "ground_pairs index out of range: ($a, $b) not in 1:$n_endpoints"
+        ))
+        a != b || throw(ArgumentError(
+            "ground_pairs must connect distinct endpoints: ($a, $b)"
+        ))
+    end
+    return nothing
 end
 
 # 把星座参数（意图/符号/直接配置）翻译成 WalkerConstellationConfig。
@@ -88,6 +133,8 @@ function ExperimentConfig(;
     routing_algorithm = DefaultRouting,
     # 接受 TrafficIntent（推荐）或 :uniform/:hotspot 等旧符号或 Vector{TrafficDemand}（高级）
     traffic = DefaultTraffic,
+    # 统一地面端点（推荐）。仍兼容旧 `ground_stations` / `users` 参数。
+    ground_endpoints::Vector{GroundEndpoint} = GroundEndpoint[],
     ground_stations::Vector{GroundStation} = GroundStation[],
     users::Vector{GroundUser} = GroundUser[],
     random_seed::Integer = 42,
@@ -112,9 +159,14 @@ function ExperimentConfig(;
                             inc_deg=resolved_constellation.inc_deg)
     # 先解析 tspan（流量翻译依赖它）
     resolved_tspan = resolve_time_horizon(tspan, ctx)
+    # 统一地面端点：legacy + 新参数合并、去重
+    resolved_ground_endpoints = _merge_ground_endpoints(
+        ground_endpoints, ground_stations, users,
+    )
+    _validate_ground_pairs(ground_pairs, length(resolved_ground_endpoints))
     # 流量翻译：依赖 ground 数据 + tspan（端点不足时降级为空需求）
     ground_ids = isempty(ground_pairs) ? Int[] : unique!(sort(vcat(first.(ground_pairs), last.(ground_pairs))))
-    tctx = TrafficResolutionContext(base=ctx, ground_ids=ground_ids, tspan=resolved_tspan)
+    tctx = TrafficResolutionContext(base=ctx, ground_ids=ground_ids, ground_pairs=ground_pairs, tspan=resolved_tspan)
     resolved_traffic = traffic isa Vector{TrafficDemand} ? traffic :
                        traffic isa TrafficIntent ? resolve_traffic_intent(traffic, tctx) :
                        traffic isa Symbol ? resolve_traffic_intent(traffic, tctx) :
@@ -130,8 +182,7 @@ function ExperimentConfig(;
         _resolve_topo_param(topology_strategy, ctx),
         _resolve_routing_param(routing_algorithm, ctx),
         resolved_traffic,
-        ground_stations,
-        users,
+        resolved_ground_endpoints,
         Int(random_seed),
         Float64(alpha),
         ground_pairs,

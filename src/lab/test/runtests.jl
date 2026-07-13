@@ -232,7 +232,7 @@ function _small_config(;
             GroundUser("beijing", 39.9042, 116.4074, 20.0, 100.0, "smoke"),
             GroundUser("singapore", 1.3521, 103.8198, 20.0, 100.0, "smoke"),
         ],
-        ground_pairs = [(1, 4), (2, 5), (3, 6)],
+        ground_pairs = [(1, 2)],
     )
 end
 
@@ -295,7 +295,7 @@ end
                 propagator = :two_body,
                 topology_strategy = GridPlusStrategy(),
                 routing_algorithm = DijkstraRouting(),
-                users = native_config.users,
+                ground_endpoints = native_config.ground_endpoints,
                 ground_pairs = native_config.ground_pairs,
                 orbit_backend = OrbitBackendSpec(:lab_offset; x_offset_km=1.25),
             )
@@ -514,7 +514,7 @@ end
             LAB_COMPUTE_FACTORY_CALLS[] = 0
             empty_available, empty_coverage = assess_coverage(
                 empty_positions,
-                GroundUser[],
+                GroundEndpoint[],
                 empty_config.constraints;
                 gsl_backend=:lab_passthrough,
             )

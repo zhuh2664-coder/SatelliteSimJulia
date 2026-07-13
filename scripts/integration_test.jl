@@ -87,7 +87,7 @@ try
     )
 
     println("  ✓ ExperimentConfig created: name=$(config.name)")
-    println("  ✓ Users: $(length(config.users))")
+    println("  ✓ Ground endpoints: $(length(config.ground_endpoints))")
     println("  ✓ Time slots: $(length(config.tspan))")
 
     println("[PASS] Lab experiment config functional")

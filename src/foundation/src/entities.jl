@@ -4,7 +4,8 @@
 # SatelliteConfig 是卫星硬件配置（实体的组成部分）。
 
 export AbstractOrbitElementSet, SourceMetadata,
-       Satellite, GroundStation, UserTerminal,
+       Satellite, GroundStation, UserTerminal, GroundEndpoint,
+       ground_endpoint_tuple,
        SatelliteConfig, DEFAULT_SAT_CONFIG, KUIPER_SAT_CONFIG
 
 using Dates
@@ -73,4 +74,74 @@ Base.@kwdef struct UserTerminal
     id::Int
     name::Union{Nothing,String} = nothing
     position::GeodeticPosition             # 用户位置
+end
+
+"""地面端点：统一地面站 / 用户终端 / 平台用户
+
+`GroundEndpoint` 是地面侧的唯一事实端点。它把 `GroundStation`、
+`UserTerminal` 以及平台 JSON 里的 `users` 统一成同一几何与身份契约，
+供 GSL 评估、覆盖率和 Traffic AON 共同消费，避免 GroundUser/GroundStation
+/TrafficDemand 之间的歧义转换。
+"""
+Base.@kwdef struct GroundEndpoint
+    id::String
+    position::GeodeticPosition
+    uplink_demand_mbps::Float64 = 0.0
+    downlink_demand_mbps::Float64 = 0.0
+    tags::Dict{String,String} = Dict{String,String}()
+end
+
+"""从大地坐标构造地面端点（id 为字符串，便于平台/JSON 对齐）。"""
+function GroundEndpoint(
+    id::AbstractString,
+    latitude_deg::Real,
+    longitude_deg::Real,
+    altitude_km::Real=0.0;
+    uplink_demand_mbps::Real=0.0,
+    downlink_demand_mbps::Real=0.0,
+    tags::Union{AbstractDict{<:AbstractString,<:AbstractString},Nothing}=nothing,
+)
+    tag_dict = tags === nothing ? Dict{String,String}() :
+        Dict{String,String}(String(k) => String(v) for (k, v) in tags)
+    # 排序后插入，保证 repr/hash 的确定性。
+    sorted_tags = Dict{String,String}()
+    for key in sort(collect(keys(tag_dict)))
+        sorted_tags[key] = tag_dict[key]
+    end
+    return GroundEndpoint(
+        String(id),
+        GeodeticPosition(latitude_deg, longitude_deg, altitude_km),
+        Float64(uplink_demand_mbps),
+        Float64(downlink_demand_mbps),
+        sorted_tags,
+    )
+end
+
+"""从 GroundStation 构造地面端点（保留原始 int id 为字符串）。"""
+GroundEndpoint(station::GroundStation) = GroundEndpoint(
+    string(station.id),
+    station.position.latitude_deg,
+    station.position.longitude_deg,
+    station.position.altitude_km;
+    tags = station.name === nothing ? Dict{String,String}() :
+        Dict{String,String}("name" => String(station.name)),
+)
+
+"""从 UserTerminal 构造地面端点（保留原始 int id 为字符串）。"""
+GroundEndpoint(terminal::UserTerminal) = GroundEndpoint(
+    string(terminal.id),
+    terminal.position.latitude_deg,
+    terminal.position.longitude_deg,
+    terminal.position.altitude_km;
+    tags = terminal.name === nothing ? Dict{String,String}() :
+        Dict{String,String}("name" => String(terminal.name)),
+)
+
+"""提取地面端点的 (lat, lon, alt_km) 元组，供 GSL 评估使用。"""
+function ground_endpoint_tuple(endpoint::GroundEndpoint)::NTuple{3,Float64}
+    return (
+        endpoint.position.latitude_deg,
+        endpoint.position.longitude_deg,
+        endpoint.position.altitude_km,
+    )
 end

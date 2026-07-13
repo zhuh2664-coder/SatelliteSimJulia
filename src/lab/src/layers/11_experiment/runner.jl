@@ -6,8 +6,8 @@ function _last_position_matrix(positions::AbstractArray{<:Real,3})::AbstractMatr
     return positions_at_last(positions)
 end
 
-function _user_position_tuples(users::Vector{GroundUser})::Vector{NTuple{3,Float64}}
-    return [(u.lat, u.lon, 0.0) for u in users]
+function _ground_endpoint_tuples(endpoints::Vector{GroundEndpoint})::Vector{NTuple{3,Float64}}
+    return [ground_endpoint_tuple(ep) for ep in endpoints]
 end
 
 function _default_pairs(T::Int, n::Int)::Vector{Tuple{Int,Int}}
@@ -45,8 +45,8 @@ function run_multiframe_experiment(config::ExperimentConfig)
 
     constellation = config.constellation
     T = constellation.T
-    user_tuples = _user_position_tuples(config.users)
-    isempty(user_tuples) && error("run_multiframe_experiment requires at least one user")
+    endpoint_tuples = _ground_endpoint_tuples(config.ground_endpoints)
+    isempty(endpoint_tuples) && error("run_multiframe_experiment requires at least one ground endpoint")
     gsl_backend = _backend_from_resolution(
         config,
         _resolve_experiment_gsl_backend(config),
@@ -60,7 +60,7 @@ function run_multiframe_experiment(config::ExperimentConfig)
 
     gsl_result = assess_gsl_series(
         positions,
-        user_tuples,
+        endpoint_tuples,
         config.constraints;
         backend=gsl_backend,
     )
@@ -69,7 +69,7 @@ function run_multiframe_experiment(config::ExperimentConfig)
     result = compute_temporal_coverage(gsl_series, Float64(dt_s))
     println(
         "多帧实验完成: $(round(time() - t_start, digits=1))s, ",
-        "$(n_time) 帧, $(length(user_tuples)) 地面站, $(n_sat) 颗星",
+        "$(n_time) 帧, $(length(endpoint_tuples)) 地面站, $(n_sat) 颗星",
     )
     return result
 end
