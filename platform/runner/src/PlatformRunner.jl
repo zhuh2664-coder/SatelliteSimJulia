@@ -460,6 +460,37 @@ function _preflight_gsl_backend(config::ExperimentConfig)
     return resolution
 end
 
+"""
+Resolve/validate the orbit backend before any platform artifacts are written.
+
+Uses Lab's resolve-once helper when present (orbit-writer rebase), otherwise the
+Backends `resolve_orbit_backend` API if exported, else `create_orbit_backend`.
+This patch deliberately does not invent a second resolution type.
+"""
+function _preflight_orbit_backend(config::ExperimentConfig)
+    config.orbit_backend === nothing && return nothing
+    backend = try
+        if isdefined(SatelliteSimLab, :_resolve_experiment_orbit_backend)
+            SatelliteSimLab._resolve_experiment_orbit_backend(config)
+        elseif isdefined(SatelliteSimBackends, :resolve_orbit_backend)
+            SatelliteSimBackends.resolve_orbit_backend(config.orbit_backend)
+        else
+            create_orbit_backend(config.orbit_backend)
+        end
+    catch err
+        err isa ArgumentError || rethrow()
+        throw(PlatformConfigError(
+            "invalid orbit_backend: $(sprint(showerror, err))",
+        ))
+    end
+    capabilities = backend_capabilities(backend)
+    frames = hasproperty(capabilities, :frames) ? Tuple(capabilities.frames) : ()
+    :ecef in frames || throw(PlatformConfigError(
+        "orbit_backend '$(config.orbit_backend.name)' does not advertise ECEF frames",
+    ))
+    return backend
+end
+
 _backend_metadata_value(value::Symbol) = String(value)
 _backend_metadata_value(value::Type) = string(value)
 _backend_metadata_value(value::Tuple) =
@@ -469,6 +500,51 @@ _backend_metadata_value(value::NamedTuple) = Dict{String,Any}(
     for name in propertynames(value)
 )
 _backend_metadata_value(value) = value
+
+function _orbit_instance_binding()
+    if isdefined(SatelliteSimLab, :_resolve_experiment_orbit_backend)
+        return "lab_resolve_once"
+    elseif isdefined(SatelliteSimBackends, :resolve_orbit_backend)
+        return "backends_resolve_orbit_backend"
+    else
+        # Preflight validates via create_orbit_backend; Lab still constructs once
+        # more during propagation until the orbit resolve-once track lands.
+        return "preflight_create_orbit_backend"
+    end
+end
+
+function _resolved_orbit_backend_metadata(backend, requested_spec)
+    requested_spec === nothing && return Dict{String,Any}(
+        "name" => "native",
+        "mode" => "native",
+        "instance_binding" => "native",
+        "requested_spec" => nothing,
+    )
+    requested = Dict{String,Any}(
+        "name" => String(requested_spec.name),
+        "options" => _backend_metadata_value(requested_spec.options),
+    )
+    capabilities = _backend_metadata_value(backend_capabilities(backend))
+    metadata = Dict{String,Any}(
+        "name" => String(backend_name(backend)),
+        "mode" => "registered",
+        "instance_binding" => _orbit_instance_binding(),
+        "requested_spec" => requested,
+        "capabilities" => capabilities,
+    )
+    if isdefined(SatelliteSimBackends, :orbit_backend_fingerprint)
+        metadata["fingerprint"] = _backend_metadata_value(
+            SatelliteSimBackends.orbit_backend_fingerprint(backend),
+        )
+    end
+    if hasproperty(backend, :_registration_generation)
+        metadata["registration_generation"] = Int(getproperty(backend, :_registration_generation))
+    end
+    if hasproperty(backend, :_resolution_id)
+        metadata["resolution_id"] = Int(getproperty(backend, :_resolution_id))
+    end
+    return metadata
+end
 
 function _resolved_gsl_backend_metadata(resolution::ResolvedComputeBackend)
     provenance = compute_backend_provenance(resolution)
@@ -501,27 +577,48 @@ function _artifact_index(directory::AbstractString, names::Vector{String})
     )
 end
 
+function _assert_output_dir_writable(output_dir::AbstractString; overwrite::Bool)
+    if isdir(output_dir) && !isempty(readdir(output_dir)) && !overwrite
+        throw(ArgumentError(
+            "output_dir '$output_dir' is not empty; use a new directory or overwrite=true",
+        ))
+    end
+    return nothing
+end
+
 """
     run_platform_experiment(raw; output_dir, overwrite=false) -> Dict{String,Any}
 
 Execute a schema-validated experiment locally and write the platform-compatible
 reproducibility artifact set. Remote object storage and Kubernetes scheduling are
 intentionally outside this runner; those services transport these same files.
+
+Backend resolution and capability validation always run before any output
+directory creation or artifact writes. Failed preflight or execution leaves the
+output directory untouched (no partial records).
 """
 function run_platform_experiment(raw; output_dir::AbstractString, overwrite::Bool=false)
     normalised = validate_experiment_config(raw)
     config = experiment_config_from_json(normalised)
+    # Preflight both backends before touching output_dir / writing artifacts.
     gsl_resolution = _preflight_gsl_backend(config)
-    if isdir(output_dir) && !isempty(readdir(output_dir)) && !overwrite
-        throw(ArgumentError("output_dir '$output_dir' is not empty; use a new directory or overwrite=true"))
-    end
+    orbit_backend = _preflight_orbit_backend(config)
+    _assert_output_dir_writable(output_dir; overwrite=overwrite)
 
     started_at = now(UTC)
     result = SatelliteSimLab._run_experiment(config, gsl_resolution)
     finished_at = now(UTC)
     result_summary = Dict(String(key) => value for (key, value) in to_dict(result))
 
+    # Provenance is captured from the resolved objects that were actually used
+    # for GSL (resolve-once). Orbit metadata uses the preflighted binding until
+    # Lab expose a resolve-once pass-through; see instance_binding.
     resolved_gsl_backend = _resolved_gsl_backend_metadata(gsl_resolution)
+    resolved_orbit_backend = _resolved_orbit_backend_metadata(
+        orbit_backend,
+        config.orbit_backend,
+    )
+
     mkpath(output_dir)
     config_path = joinpath(output_dir, "config.snapshot.json")
     result_path = joinpath(output_dir, "result.json")
@@ -541,6 +638,7 @@ function run_platform_experiment(raw; output_dir::AbstractString, overwrite::Boo
         "input_config_sha256" => _sha256_file(config_path),
         "orbit_backend" => normalised["orbit_backend"],
         "gsl_backend" => normalised["gsl_backend"],
+        "resolved_orbit_backend" => resolved_orbit_backend,
         "resolved_gsl_backend" => resolved_gsl_backend,
         "random_seed" => normalised["random_seed"],
         "ground_endpoints" => length(config.ground_endpoints),
