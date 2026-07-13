@@ -8,6 +8,59 @@ end
 struct ConfiguredComputeBackend <: AbstractComputeBackend
     precision::Symbol
 end
+struct IdentityComputeBackend <: AbstractComputeBackend
+    name::String
+    revision::Int
+    reported_name::String
+end
+struct ContractCPUDeviceBackend <: AbstractComputeBackend end
+mutable struct MutableCapabilityComputeBackend <: AbstractComputeBackend
+    operations::Vector{Symbol}
+    details::Dict{Symbol,Vector{String}}
+end
+
+SatelliteSimBackends.compute_backend_name(backend::IdentityComputeBackend) =
+    backend.name
+SatelliteSimBackends.compute_backend_capabilities(::IdentityComputeBackend) = (
+    operations=(:gsl_series,),
+    device=:test,
+    input_residency=:host,
+    output_residency=:host,
+)
+SatelliteSimBackends.compute_backend_cache_token(backend::IdentityComputeBackend) =
+    (revision=backend.revision,)
+SatelliteSimBackends.compute_backend_source_files(::IdentityComputeBackend) =
+    [@__FILE__]
+SatelliteSimBackends.compute_backend_capabilities(::ContractCPUDeviceBackend) = (
+    operations=(:gsl_series,),
+    device=:cpu,
+    input_residency=:host,
+    output_residency=:host,
+)
+SatelliteSimBackends.compute_backend_capabilities(backend::MutableCapabilityComputeBackend) = (
+    operations=backend.operations,
+    device=:test,
+    input_residency=:host,
+    output_residency=:host,
+    details=backend.details,
+)
+
+function SatelliteSimBackends.evaluate_gsl_series(
+    backend::IdentityComputeBackend,
+    positions,
+    stations;
+    gsl_min_elevation_deg,
+    gsl_max_range_km,
+)
+    output_size = (size(positions, 1), length(stations), size(positions, 2))
+    return GSLSeriesResult(
+        falses(output_size),
+        zeros(output_size),
+        zeros(output_size),
+        zeros(output_size),
+        Dict{String,Any}("backend" => backend.reported_name),
+    )
+end
 
 @testset "SatelliteSimBackends contract" begin
     @test backend_name(MissingBackend()) == "MissingBackend"
@@ -23,7 +76,7 @@ end
     cpu = create_compute_backend(:cpu)
     @test cpu isa CPUComputeBackend
     @test compute_backend_name(cpu) == "cpu"
-    @test :gsl_series in compute_backend_capabilities(cpu).operations
+    @test isempty(compute_backend_capabilities(cpu).operations)
     @test compute_backend_fingerprint(cpu).name == "cpu"
     @test compute_backend_cache_token(cpu) === nothing
     @test isempty(compute_backend_source_files(cpu))
@@ -55,6 +108,50 @@ end
             Dict{String,Any}(),
         ),
     )
+
+    valid_isl = ISLSeriesResult(
+        falses(1, 2),
+        zeros(1, 2),
+        zeros(1, 2),
+        trues(1, 2),
+        reshape([0.0, 90.0], 1, 2),
+        reshape([-1.0, 1.0], 1, 2),
+        zeros(1, 2),
+        Dict{String,Any}("backend" => "test"),
+    )
+    @test validate_isl_series_result(
+        valid_isl;
+        expected_pairs=1,
+        expected_times=2,
+    ) === valid_isl
+    for invalid_elevation in (-0.1, 90.1)
+        @test_throws ArgumentError validate_isl_series_result(
+            ISLSeriesResult(
+                falses(1, 1),
+                zeros(1, 1),
+                zeros(1, 1),
+                trues(1, 1),
+                fill(invalid_elevation, 1, 1),
+                zeros(1, 1),
+                zeros(1, 1),
+                Dict{String,Any}(),
+            ),
+        )
+    end
+    for invalid_cos_psi in (-1.1, 1.1)
+        @test_throws ArgumentError validate_isl_series_result(
+            ISLSeriesResult(
+                falses(1, 1),
+                zeros(1, 1),
+                zeros(1, 1),
+                trues(1, 1),
+                fill(45.0, 1, 1),
+                fill(invalid_cos_psi, 1, 1),
+                zeros(1, 1),
+                Dict{String,Any}(),
+            ),
+        )
+    end
 end
 
 @testset "Orbit backend discovery and configuration" begin
@@ -139,5 +236,179 @@ end
         @test_throws ArgumentError create_compute_backend(:invalid_compute_factory)
     finally
         unregister_compute_backend!(:invalid_compute_factory)
+    end
+end
+
+@testset "Compute backend capability snapshots are immutable" begin
+    name = :mutable_capability_snapshot
+    unregister_compute_backend!(name)
+    backend_ref = Ref{Union{Nothing,MutableCapabilityComputeBackend}}(nothing)
+    register_compute_backend!(
+        name,
+        _ -> begin
+            backend = MutableCapabilityComputeBackend(
+                [:gsl_series],
+                Dict(:driver => ["v1"]),
+            )
+            backend_ref[] = backend
+            backend
+        end,
+    )
+    try
+        resolution = resolve_compute_backend(name)
+        capabilities = compute_backend_capabilities(resolution)
+        @test capabilities.operations == (:gsl_series,)
+        @test capabilities.details == (:driver => ("v1",),)
+
+        push!(backend_ref[].operations, :mutated_operation)
+        push!(backend_ref[].details[:driver], "v2")
+        backend_ref[].details[:runtime] = ["changed"]
+
+        @test compute_backend_capabilities(resolution) == capabilities
+        @test compute_backend_provenance(resolution).capabilities == capabilities
+    finally
+        unregister_compute_backend!(name)
+    end
+end
+
+@testset "Compute backend resolution identity and lifecycle" begin
+    name = :resolution_lifecycle
+    unregister_compute_backend!(name)
+    factory_calls = Ref(0)
+    spec = ComputeBackendSpec(name; precision=:float64)
+    positions = zeros(1, 1, 3)
+    stations = [(0.0, 0.0, 0.0)]
+
+    register_compute_backend!(
+        name,
+        _ -> begin
+            factory_calls[] += 1
+            IdentityComputeBackend("lifecycle-v1", 1, "lifecycle-v1")
+        end,
+    )
+    try
+        first_resolution = resolve_compute_backend(spec)
+        @test first_resolution isa ResolvedComputeBackend
+        @test factory_calls[] == 1
+        @test compute_backend_spec(first_resolution) == spec
+        first_provenance = compute_backend_provenance(first_resolution)
+        @test first_provenance.requested_spec.name == name
+        @test first_provenance.implementation.name == "lifecycle-v1"
+        @test first_provenance.capabilities.device == :test
+        @test first_provenance.call_count == 0
+        @test_throws MethodError ResolvedComputeBackend(
+            spec,
+            IdentityComputeBackend("forged", 0, "forged"),
+        )
+
+        @test compute_backend_cache_token(first_resolution) == (revision=1,)
+        @test compute_backend_fingerprint(first_resolution).name == "lifecycle-v1"
+        @test compute_backend_source_files(first_resolution) == [@__FILE__]
+        delegated_fingerprint = compute_backend_fingerprint(first_resolution)
+        @test !hasproperty(delegated_fingerprint, :registration_generation)
+        @test !hasproperty(delegated_fingerprint, :resolution_id)
+
+        first_result = evaluate_gsl_series(
+            first_resolution,
+            positions,
+            stations;
+            gsl_min_elevation_deg=0.0,
+            gsl_max_range_km=10_000.0,
+        )
+        @test first_result.metadata["backend"] == "lifecycle-v1"
+        @test compute_backend_provenance(first_resolution).call_count == 1
+
+        register_compute_backend!(
+            name,
+            _ -> begin
+                factory_calls[] += 1
+                IdentityComputeBackend("lifecycle-v2", 2, "lifecycle-v2")
+            end;
+            replace=true,
+        )
+        second_resolution = resolve_compute_backend(spec)
+        second_provenance = compute_backend_provenance(second_resolution)
+        @test factory_calls[] == 2
+        @test second_provenance.registration_generation >
+              first_provenance.registration_generation
+        @test second_provenance.resolution_id != first_provenance.resolution_id
+        @test second_provenance.implementation.name == "lifecycle-v2"
+
+        old_result = evaluate_gsl_series(
+            first_resolution,
+            positions,
+            stations;
+            gsl_min_elevation_deg=0.0,
+            gsl_max_range_km=10_000.0,
+        )
+        @test old_result.metadata["backend"] == "lifecycle-v1"
+
+        @test unregister_compute_backend!(name)
+        @test_throws ArgumentError resolve_compute_backend(spec)
+        surviving_result = evaluate_gsl_series(
+            second_resolution,
+            positions,
+            stations;
+            gsl_min_elevation_deg=0.0,
+            gsl_max_range_km=10_000.0,
+        )
+        @test surviving_result.metadata["backend"] == "lifecycle-v2"
+
+        register_compute_backend!(
+            name,
+            _ -> begin
+                factory_calls[] += 1
+                IdentityComputeBackend("lifecycle-v3", 3, "lifecycle-v3")
+            end,
+        )
+        third_resolution = resolve_compute_backend(spec)
+        third_provenance = compute_backend_provenance(third_resolution)
+        @test factory_calls[] == 3
+        @test third_provenance.registration_generation >
+              second_provenance.registration_generation
+        @test third_provenance.resolution_id != second_provenance.resolution_id
+
+        calls_before_create = factory_calls[]
+        created = create_compute_backend(spec)
+        @test created isa IdentityComputeBackend
+        @test factory_calls[] == calls_before_create + 1
+    finally
+        unregister_compute_backend!(name)
+    end
+end
+
+@testset "Compute backend resolution rejects false identity" begin
+    positions = zeros(1, 1, 3)
+    stations = [(0.0, 0.0, 0.0)]
+
+    register_compute_backend!(
+        :mismatched_metadata,
+        _ -> IdentityComputeBackend("expected-backend", 1, "different-backend");
+        replace=true,
+    )
+    try
+        resolution = resolve_compute_backend(:mismatched_metadata)
+        @test_throws ArgumentError evaluate_gsl_series(
+            resolution,
+            positions,
+            stations;
+            gsl_min_elevation_deg=0.0,
+            gsl_max_range_km=10_000.0,
+        )
+        @test compute_backend_provenance(resolution).call_count == 1
+    finally
+        unregister_compute_backend!(:mismatched_metadata)
+    end
+
+    register_compute_backend!(:cpu_alias, _ -> CPUComputeBackend(); replace=true)
+    register_compute_backend!(:cpu_device, _ -> ContractCPUDeviceBackend(); replace=true)
+    try
+        @test_throws ArgumentError create_compute_backend(:cpu_alias)
+        @test_throws ArgumentError resolve_compute_backend(:cpu_alias)
+        @test_throws ArgumentError create_compute_backend(:cpu_device)
+        @test_throws ArgumentError resolve_compute_backend(:cpu_device)
+    finally
+        unregister_compute_backend!(:cpu_alias)
+        unregister_compute_backend!(:cpu_device)
     end
 end

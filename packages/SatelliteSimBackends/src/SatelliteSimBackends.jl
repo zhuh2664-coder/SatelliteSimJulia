@@ -5,6 +5,8 @@ export AbstractOrbitBackend, OrbitResult, OrbitBackendSpec,
        register_orbit_backend!, unregister_orbit_backend!, orbit_backend_registered,
        available_orbit_backends, create_orbit_backend,
        AbstractComputeBackend, CPUComputeBackend, ComputeBackendSpec,
+       ResolvedComputeBackend, resolve_compute_backend,
+       compute_backend_spec, compute_backend_provenance,
        GSLSeriesResult, ISLSeriesResult, compute_backend_name, compute_backend_capabilities,
        compute_backend_cache_token, compute_backend_fingerprint,
        compute_backend_source_files,
@@ -181,6 +183,52 @@ ComputeBackendSpec(name::Union{Symbol,AbstractString}; kwargs...) =
 ComputeBackendSpec(name::AbstractString, options::NamedTuple) =
     ComputeBackendSpec(Symbol(name), options)
 
+mutable struct _ResolvedComputeBackendToken end
+const _RESOLVED_COMPUTE_BACKEND_TOKEN = _ResolvedComputeBackendToken()
+
+mutable struct _ComputeBackendExecutionState
+    lock::ReentrantLock
+    gsl_call_count::UInt64
+end
+
+"""
+Opaque binding between a requested compute-backend spec and the concrete
+implementation selected from the registry. Instances are created only by
+`resolve_compute_backend`; callers pass the binding itself to compute
+operations so a spec cannot be paired with a different implementation.
+"""
+struct ResolvedComputeBackend <: AbstractComputeBackend
+    _spec::ComputeBackendSpec
+    _backend::AbstractComputeBackend
+    _implementation::NamedTuple
+    _capabilities::NamedTuple
+    _registration_generation::UInt64
+    _resolution_id::UInt64
+    _execution_state::_ComputeBackendExecutionState
+
+    function ResolvedComputeBackend(
+        token::_ResolvedComputeBackendToken,
+        spec::ComputeBackendSpec,
+        backend::AbstractComputeBackend,
+        implementation::NamedTuple,
+        capabilities::NamedTuple,
+        registration_generation::UInt64,
+        resolution_id::UInt64,
+    )
+        token === _RESOLVED_COMPUTE_BACKEND_TOKEN ||
+            throw(ArgumentError("compute backend resolutions must be created by resolve_compute_backend"))
+        return new(
+            spec,
+            backend,
+            implementation,
+            capabilities,
+            registration_generation,
+            resolution_id,
+            _ComputeBackendExecutionState(ReentrantLock(), 0),
+        )
+    end
+end
+
 compute_backend_name(backend::AbstractComputeBackend)::String =
     string(nameof(typeof(backend)))
 compute_backend_name(::CPUComputeBackend) = "cpu"
@@ -188,12 +236,6 @@ compute_backend_name(::CPUComputeBackend) = "cpu"
 compute_backend_capabilities(::AbstractComputeBackend) = (
     operations=(),
     device=:unknown,
-    input_residency=:host,
-    output_residency=:host,
-)
-compute_backend_capabilities(::CPUComputeBackend) = (
-    operations=(:gsl_series, :isl_series),
-    device=:cpu,
     input_residency=:host,
     output_residency=:host,
 )
@@ -233,6 +275,43 @@ end
 """Source files whose contents affect the resolved backend implementation."""
 compute_backend_source_files(::AbstractComputeBackend) = String[]
 
+compute_backend_spec(resolution::ResolvedComputeBackend) = resolution._spec
+compute_backend_name(resolution::ResolvedComputeBackend) =
+    resolution._implementation.name
+compute_backend_capabilities(resolution::ResolvedComputeBackend) =
+    resolution._capabilities
+compute_backend_cache_token(resolution::ResolvedComputeBackend) =
+    compute_backend_cache_token(resolution._backend)
+compute_backend_fingerprint(resolution::ResolvedComputeBackend) =
+    compute_backend_fingerprint(resolution._backend)
+compute_backend_source_files(resolution::ResolvedComputeBackend) =
+    compute_backend_source_files(resolution._backend)
+
+function _gsl_call_count(resolution::ResolvedComputeBackend)::UInt64
+    state = resolution._execution_state
+    return lock(state.lock) do
+        state.gsl_call_count
+    end
+end
+
+"""
+Return the immutable identity snapshot captured at resolution time together
+with the number of GSL calls that have returned from the bound implementation.
+"""
+function compute_backend_provenance(resolution::ResolvedComputeBackend)
+    return (
+        requested_spec=(
+            name=resolution._spec.name,
+            options=resolution._spec.options,
+        ),
+        implementation=resolution._implementation,
+        capabilities=resolution._capabilities,
+        registration_generation=resolution._registration_generation,
+        resolution_id=resolution._resolution_id,
+        call_count=_gsl_call_count(resolution),
+    )
+end
+
 """
 Host-resident GSL results for all `(satellite, station, time)` combinations.
 Optional accelerators own device transfers internally so layer boundaries keep
@@ -254,6 +333,37 @@ function evaluate_gsl_series(
     gsl_max_range_km,
 )
     throw(MethodError(evaluate_gsl_series, (backend, positions, stations)))
+end
+
+function evaluate_gsl_series(
+    resolution::ResolvedComputeBackend,
+    positions,
+    stations;
+    gsl_min_elevation_deg,
+    gsl_max_range_km,
+)
+    result = evaluate_gsl_series(
+        resolution._backend,
+        positions,
+        stations;
+        gsl_min_elevation_deg=gsl_min_elevation_deg,
+        gsl_max_range_km=gsl_max_range_km,
+    )
+    state = resolution._execution_state
+    lock(state.lock) do
+        state.gsl_call_count += 1
+    end
+    result isa GSLSeriesResult || throw(ArgumentError(
+        "compute backend '$(resolution._implementation.name)' returned $(typeof(result)); " *
+        "expected GSLSeriesResult",
+    ))
+    reported_backend = get(result.metadata, "backend", nothing)
+    reported_backend == resolution._implementation.name || throw(ArgumentError(
+        "GSL result backend identity mismatch: resolved " *
+        "'$(resolution._implementation.name)' but result metadata reported " *
+        "$(repr(reported_backend))",
+    ))
+    return result
 end
 
 function validate_gsl_series_result(
@@ -357,11 +467,17 @@ function validate_isl_series_result(
         throw(ArgumentError("ISL delays must be non-negative"))
     all(value -> value >= 0, result.duration_s) ||
         throw(ArgumentError("ISL durations must be non-negative"))
+    all(value -> 0 <= value <= 90, result.elevation_deg) ||
+        throw(ArgumentError("ISL elevations must be in [0, 90] degrees"))
+    all(value -> -1 <= value <= 1, result.cos_psi) ||
+        throw(ArgumentError("ISL cos_psi values must be in [-1, 1]"))
     return result
 end
 
 const _COMPUTE_BACKEND_REGISTRY_LOCK = ReentrantLock()
 const _COMPUTE_BACKEND_FACTORIES = Dict{Symbol,Function}()
+const _COMPUTE_BACKEND_GENERATIONS = Dict{Symbol,UInt64}()
+const _NEXT_COMPUTE_BACKEND_RESOLUTION_ID = Ref{UInt64}(0)
 
 """
     register_compute_backend!(name, factory; replace=false)
@@ -382,7 +498,9 @@ function register_compute_backend!(
         if haskey(_COMPUTE_BACKEND_FACTORIES, key) && !replace
             throw(ArgumentError("compute backend :$key is already registered"))
         end
+        generation = get(_COMPUTE_BACKEND_GENERATIONS, key, UInt64(0)) + UInt64(1)
         _COMPUTE_BACKEND_FACTORIES[key] = factory
+        _COMPUTE_BACKEND_GENERATIONS[key] = generation
     end
     return key
 end
@@ -410,15 +528,18 @@ function available_compute_backends()::Vector{Symbol}
     return sort!(push!(registered, :cpu); by=String)
 end
 
-function create_compute_backend(spec::ComputeBackendSpec)::AbstractComputeBackend
+function _compute_backend_factory_snapshot(spec::ComputeBackendSpec)
     if spec.name == :cpu
         isempty(spec.options) ||
             throw(ArgumentError("the built-in :cpu compute backend accepts no options"))
-        return CPUComputeBackend()
+        return nothing, UInt64(1)
     end
 
-    factory = lock(_COMPUTE_BACKEND_REGISTRY_LOCK) do
-        get(_COMPUTE_BACKEND_FACTORIES, spec.name, nothing)
+    factory, generation = lock(_COMPUTE_BACKEND_REGISTRY_LOCK) do
+        (
+            get(_COMPUTE_BACKEND_FACTORIES, spec.name, nothing),
+            get(_COMPUTE_BACKEND_GENERATIONS, spec.name, UInt64(0)),
+        )
     end
     if factory === nothing
         available = available_compute_backends()
@@ -428,15 +549,125 @@ function create_compute_backend(spec::ComputeBackendSpec)::AbstractComputeBacken
             "load its optional package and register the device backend first",
         ))
     end
-    backend = factory(spec.options)
+    return factory, generation
+end
+
+function _instantiate_compute_backend(spec::ComputeBackendSpec)
+    factory, generation = _compute_backend_factory_snapshot(spec)
+    backend = factory === nothing ? CPUComputeBackend() : factory(spec.options)
     backend isa AbstractComputeBackend || throw(ArgumentError(
         "factory for compute backend :$(spec.name) returned $(typeof(backend)); " *
         "expected AbstractComputeBackend",
     ))
+    backend isa ResolvedComputeBackend && throw(ArgumentError(
+        "factory for compute backend :$(spec.name) returned a resolution wrapper; " *
+        "expected a concrete AbstractComputeBackend implementation",
+    ))
+    capabilities = compute_backend_capabilities(backend)
+    capabilities isa NamedTuple || throw(ArgumentError(
+        "compute backend :$(spec.name) capabilities must be a NamedTuple",
+    ))
+    if spec.name != :cpu
+        device = hasproperty(capabilities, :device) ?
+            Symbol(lowercase(string(capabilities.device))) : :unknown
+        if backend isa CPUComputeBackend || device == :cpu
+            throw(ArgumentError(
+                "requested non-CPU compute backend :$(spec.name) resolved to " *
+                "CPU device/CPUComputeBackend",
+            ))
+        end
+    end
+    return backend, capabilities, generation
+end
+
+function _immutable_backend_snapshot(value::NamedTuple)
+    return (; (
+        name => _immutable_backend_snapshot(getproperty(value, name))
+        for name in propertynames(value)
+    )...)
+end
+_immutable_backend_snapshot(value::Tuple) =
+    map(_immutable_backend_snapshot, value)
+_immutable_backend_snapshot(value::AbstractArray) =
+    Tuple(_immutable_backend_snapshot(item) for item in value)
+_immutable_backend_snapshot(value::Pair) =
+    _immutable_backend_snapshot(first(value)) =>
+    _immutable_backend_snapshot(last(value))
+function _immutable_backend_snapshot(value::AbstractDict)
+    entries = sort!(collect(value); by=entry -> repr(first(entry)))
+    return Tuple(_immutable_backend_snapshot(entry) for entry in entries)
+end
+function _immutable_backend_snapshot(value::AbstractSet)
+    entries = sort!(collect(value); by=repr)
+    return Tuple(_immutable_backend_snapshot(entry) for entry in entries)
+end
+_immutable_backend_snapshot(value::AbstractString) = String(value)
+_immutable_backend_snapshot(value::Symbol) = value
+_immutable_backend_snapshot(value::Number) = value
+_immutable_backend_snapshot(value::Char) = value
+_immutable_backend_snapshot(::Nothing) = nothing
+_immutable_backend_snapshot(::Missing) = missing
+_immutable_backend_snapshot(value::Type) = value
+_immutable_backend_snapshot(value) = isbits(value) ? value : (
+    type=string(typeof(value)),
+    representation=repr(value),
+)
+
+function _compute_backend_implementation_snapshot(backend::AbstractComputeBackend)
+    fingerprint = compute_backend_fingerprint(backend)
+    module_ = parentmodule(typeof(backend))
+    return (
+        name=String(compute_backend_name(backend)),
+        type=string(
+            hasproperty(fingerprint, :type) ? fingerprint.type : typeof(backend),
+        ),
+        implementation_module=string(
+            hasproperty(fingerprint, :implementation_module) ?
+            fingerprint.implementation_module : module_,
+        ),
+        implementation_version=string(
+            hasproperty(fingerprint, :implementation_version) ?
+            fingerprint.implementation_version : _package_version(module_),
+        ),
+    )
+end
+
+function _next_compute_backend_resolution_id()::UInt64
+    return lock(_COMPUTE_BACKEND_REGISTRY_LOCK) do
+        _NEXT_COMPUTE_BACKEND_RESOLUTION_ID[] += UInt64(1)
+    end
+end
+
+function create_compute_backend(spec::ComputeBackendSpec)::AbstractComputeBackend
+    backend, _, _ = _instantiate_compute_backend(spec)
     return backend
 end
 
 create_compute_backend(name::Union{Symbol,AbstractString}; kwargs...) =
     create_compute_backend(ComputeBackendSpec(name; kwargs...))
+
+"""
+    resolve_compute_backend(spec) -> ResolvedComputeBackend
+    resolve_compute_backend(name; kwargs...) -> ResolvedComputeBackend
+
+Resolve a compute backend exactly once and bind the requested spec to the
+concrete instance, identity/capability snapshot, registry generation, and a
+per-resolution identifier.
+"""
+function resolve_compute_backend(spec::ComputeBackendSpec)::ResolvedComputeBackend
+    backend, capabilities, generation = _instantiate_compute_backend(spec)
+    return ResolvedComputeBackend(
+        _RESOLVED_COMPUTE_BACKEND_TOKEN,
+        spec,
+        backend,
+        _compute_backend_implementation_snapshot(backend),
+        _immutable_backend_snapshot(capabilities),
+        generation,
+        _next_compute_backend_resolution_id(),
+    )
+end
+
+resolve_compute_backend(name::Union{Symbol,AbstractString}; kwargs...) =
+    resolve_compute_backend(ComputeBackendSpec(name; kwargs...))
 
 end
