@@ -1,11 +1,11 @@
 # CURRENT — 唯一现状入口
 
-> 更新：2026-07-09（分支 `refactor/v2-architecture`）
+> 更新：2026-07-13（分支 `refactor/v2-architecture`）
 > 规则：当前事实与“明确不做”只改这一页；`重构计划.md` 是本轮短期验收记录，合并稳定后归档。
 
 ## 一句话
 
-仓库已经收敛出一条可重复验证的 LEO 裸数组主链，并把 Traffic/Lab 编排、可选重依赖和轨道后端隔离为显式边界；Native、Stub、JuliaSpace 已能经过同一高层实验入口并直接进入 GSL/ISL/路由/Traffic，JuliaSpace 的独立长期项实现也已完成跨实现对标；下一阶段重点是高保真数值参考、后端 options schema 与长期性能回归。
+仓库已经收敛出一条可重复验证的 LEO 裸数组主链，并把 Traffic/Lab 编排、可选重依赖和轨道后端隔离为显式边界；Native、Stub、JuliaSpace 已能经过同一高层实验入口并直接进入 GSL/ISL/路由/Traffic，JuliaSpace 的独立长期项实现也已完成跨实现对标；`SatelliteSimGPU` 已通过 KernelAbstractions 提供后端无关 GPU 加速（含设备端融合归约与 SGP4-on-device），Modal A10G 硬件门禁与 1584 真实 TLE 前向已有实测证据，可微 SGP4 Step1–2 端到端梯度已落地；下一阶段重点是高保真数值参考、后端 options schema 与长期性能回归。
 
 ## 真相文档
 
@@ -44,6 +44,16 @@
 - `envs/core/Manifest.toml` 与 `envs/backends-stub/Manifest.toml` 作为核心可复现基线提交；optional 环境 Manifest 保持本地生成并忽略。
 - Manifest 基线实测：root 155、core 139、backends-stub 12，增长门禁 `PASS`。
 
+### GPU / 可微 / 硬件门禁
+
+- `SatelliteSimGPU`：KernelAbstractions 后端无关内核（coverage/GSL/ISL），同一源码可在 CPU 或 CUDA 后端运行（`3b59314`）。
+- 设备端融合归约（`gsl_visible_counts`/`station_ratio`、`isl_available_counts`/`pair_ratio`/`satellite_degree`）与 SGP4-on-device（`a5b4e7d`）；设备端 ISL 对齐正交 RTN 与解析链路时长，TEME→PEF 显式历元（`c861ec9`）。
+- `ComputeBackendResolution` 计算后端解析绑定与 ISL 结果域校验（`3c102bd`）；Link ISL 几何改正交 RTN 基（`6eba1e8`）；Lab GSL 计算后端按操作选择并重建实验缓存（`8e56ce8`）；`ExperimentConfig` 暴露 `gsl_backend` 并贯通 runner/schema/示例（`f2046d3`）。
+- Modal A10G/CPU 硬件门禁：1584 真实 Starlink TLE 前向与 `SatelliteSimOpt` 冷载基准（`b945189`）；Modal 镜像继承 `CUDA_Runtime_jll` 偏好、忽略本地 LocalPreferences（`a8aa552`）。实测证据见 [`packages/SatelliteSimGPU/bench_results_modal.md`](packages/SatelliteSimGPU/bench_results_modal.md)：`MODAL_GPU_VALIDATION status=PASS`；GPU↔CPU 后端 parity 全等（各 scale `avail_mismatch=0`；Float64 ≈ machine-eps，Float32 ≈ 1e-4…1e-6）；coverage 峰值约 63 Geval/s；1584 TLE 前向 PASS；Opt 冷载 total wall ~170 s PASS。
+- 统一 runner 支持超时与 GPU/平台门禁；docs 补 GSL 后端契约（`9ae61c6`）。
+- Orbit：OMM/GP JSON 数据源与 SGP4 桥接（`d6e71f1`）；可复用轨道精度验证 harness（`81b46de`）。
+- Opt（独立包，本轮仅记录状态）：可微 SGP4 端到端梯度 1584 真实规模（`066b0dc`）；coverage 软松弛 ForwardDiff Dual 修复与设计文档（`5deda6b`）；Step2 正式 series API 验收与文档状态（`f7b83d3`）。
+
 ### 实测结果
 
 | 验证项 | 结果 |
@@ -66,6 +76,9 @@
 | optional/nightly 本地开关 | Opt、Security、Viz、GMAT、JuliaSpace 均通过 |
 | PlatformRunner | package contract `21/21`，CLI artifact smoke 通过 |
 | Platform Alpha local contracts | Storage `17/17`；FakeScheduler `18/18`；Constellation Optimization v1 `11/11`；Kubernetes renderer/fake client `36/36`；Control Plane `43/43`；benchmark CLI `--verify` 通过 |
+| Modal A10G 硬件门禁 | `MODAL_GPU_VALIDATION status=PASS`；GPU↔CPU 后端 parity 全等（`avail_mismatch=0`）；证据见 [`packages/SatelliteSimGPU/bench_results_modal.md`](packages/SatelliteSimGPU/bench_results_modal.md) |
+| 1584 真实 TLE 前向（Modal） | Starlink GP 1584 星 SGP4→coverage PASS；Opt 冷载 total wall ~170 s PASS（同证据文件 §10） |
+| gpu-contract（`SatelliteSimGPU` 包内测试） | 统一 runner 目标已接入（`9ae61c6`） |
 
 本次 backend E2E 增量后，默认统一入口已重跑为 `14 passed, 0 failed, 7 skipped`；JuliaSpace、三后端 E2E、性能 baseline 的 nightly 筛选入口为 `3 passed, 0 failed`。集成测试为 `71/71`，Lab 为 `105/105 + 10/10`，Traffic 为 `22/22`，JuliaSpace 为 `22/22`；依赖边界、Manifest 基线、core smoke 与 bare-array 均在当前本地环境通过。
 
@@ -80,19 +93,19 @@
 
 1. Platform Alpha 已补本地的受限 Job renderer/fake client 与 identity/quota 控制面契约；S3/MinIO、提交 HTTP API、真实 OIDC/JWKS、分布式 quota lease、真实 Kubernetes client/集群、数据库元数据和公开注册仍未实现。
 2. JuliaSpace 与 Native 已是两条独立代码路径，但使用同一组 EGM2008 常数、同一类长期项解析模型，并共享 SatelliteToolbox TEME→PEF 坐标变换；现有误差证据不是相对高保真数值力模型的精度认证。
-3. 性能脚本已能记录 elapsed/allocations，但尚未积累跨提交历史、噪声模型或稳定的回归阈值。
-4. backend options 尚无统一 schema、冲突校验与跨版本迁移策略；TLE/SGP4 等专用传播入口也未统一到注册表配置。
-5. 远程 GitHub Actions runner 尚未产生实际运行证据。
+3. GPU 加速、Modal A10G 硬件门禁与可微 SGP4 Step1–2 已落地并有证据（见 [`packages/SatelliteSimGPU/bench_results_modal.md`](packages/SatelliteSimGPU/bench_results_modal.md)）；性能脚本与 Modal 基准已能记录 elapsed/throughput，但仿真主链尚未积累跨提交历史、噪声模型或稳定的回归阈值。
+4. backend options 已有 DRAFT schema：`SatelliteSimBackends` 提供 `BackendOptionSpec` / `BackendOptionsSchema` / `validate_backend_options` / `migrate_backend_options`（[`packages/SatelliteSimBackends/src/SatelliteSimBackends.jl`](packages/SatelliteSimBackends/src/SatelliteSimBackends.jl)），含 unknown-key/type/allowed/required/conflict 校验与带 rename map 的最小版本迁移 stub，零新增依赖、包内测试通过；但仍为 opt-in，尚未接入 `create_orbit_backend` / `create_compute_backend` / `resolve_compute_backend`，TLE/SGP4 等专用传播入口也未统一到注册表配置——缺口收窄但未闭合。
+5. 远程 GitHub Actions runner 尚未产生实际运行证据（Modal GPU 门禁为独立远程证据，不等同于 GHA）。
 6. 根 Manifest 仍设计为不提交；增长门禁只对当前存在或已提交的环境 Manifest 生效。
 
 ## 下一阶段优先级
 
 1. 在既有 PlatformRunner/Storage/FakeScheduler/artifact、Job renderer 与本地 control-plane 契约上补真实 remote adapter：先做 OIDC/JWKS、持久化/分布式 quota lease、Kubernetes RBAC/NetworkPolicy 与单区域集群验收，始终不把云依赖引回仿真主链。
-2. 扩展已发布的 constellation-optimization/v1：多场景、独立参考实现、golden vectors、数值误差预算及跨提交性能历史；在有抗噪证据前不设硬时间门禁。
-3. 接入独立的高保真数值参考传播实现，复用现有 E2E/误差 harness，建立相对真值的物理误差预算。
-4. 为 backend options 增加 schema、冲突校验和版本迁移；专用 Orbit 入口保持在 Orbit 边界，不把具体后端回灌到 Link/Net/Traffic。
-5. 为性能 CSV 建立跨提交存档和抗噪回归判定，再决定是否成为强制门禁。
-6. 在远程 runner 验证 Core/Optional/Nightly，并记录平台特有失败而不是修改业务逻辑迎合环境。
+2. 扩展已发布的 constellation-optimization/v1：多场景、独立参考实现、golden vectors、数值误差预算及跨提交性能历史；Modal A10G 基准已提供单次硬件证据，下一步是把 GPU/CPU 吞吐纳入跨提交存档；在有抗噪证据前不设硬时间门禁。
+3. 接入独立的高保真数值参考传播实现，复用现有 E2E/误差 harness 与轨道精度验证 harness，建立相对真值的物理误差预算。
+4. 把已起草的 `BackendOptionsSchema` / `validate_backend_options` 接入 `create_orbit_backend` / `resolve_compute_backend`，并补跨版本迁移覆盖；专用 Orbit 入口保持在 Orbit 边界，不把具体后端回灌到 Link/Net/Traffic。
+5. 为性能 CSV 与 Modal GPU 基准建立跨提交存档和抗噪回归判定，再决定是否成为强制门禁。
+6. 在远程 GitHub Actions runner 验证 Core/Optional/Nightly，并记录平台特有失败而不是修改业务逻辑迎合环境（Modal 门禁继续作为 GPU 专项远程证据）。
 7. 本轮分支合并稳定后，将 `重构计划.md` 迁入归档，避免继续生长为长期总规划。
 
 ## 明确不做

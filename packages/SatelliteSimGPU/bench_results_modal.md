@@ -355,3 +355,130 @@ OPT_LOAD instantiate_s=165.956883324
 OPT_LOAD status=PASS using_s=3.969847532 total_wall_s=170.1838641166687
 MODAL_OPT_LOAD status=PASS
 ```
+
+## 11. Reduction / device-aggregate hard gate
+
+This section is a **reproducible gate**, not a raw-log dump. It locks the pass/fail
+contract for `bench_gsl_reduction` + `bench_isl_reduction` in
+`modal_gpu_runner.jl`.
+
+### 11.1 Parity gate (fail-closed, exact equality)
+
+- In both reduction benches, parity is checked **before** any `BENCH op=..._reduction`
+  line is emitted:
+  - `bench_gsl_reduction_case`: `parity == "PASS" || error(...)`
+  - `bench_isl_reduction_case`: `parity == "PASS" || error(...)`
+- `validate_reductions(Float32/Float64)` also enforces exact-equality parity and emits
+  `REDUCTIONS_PARITY type=<T> status=PASS` only on success.
+- Gate statement: **device-aggregate output must equal full-download host-reduce exactly
+  (Int counts); any mismatch fails the suite**.
+- Offline CPU-backend confirmation (network-free): `bench_reduction.jl` completed with
+  `exit_code=0` at `N=550,M=40,NT=90` and `N=1584,M=64,NT=90` after internal `@assert`
+  equality checks for GSL/ISL visible-count reductions.
+
+### 11.2 Transfer-reduction hard floor (analytical, hardware-independent)
+
+`transfer_reduction` is deterministic math from output tensor shapes and element widths:
+
+- GSL (`op=gsl_reduction`):  
+  `bytes_full/bytes_agg = [N*M*NT*(sizeof(Bool)+3*sizeof(T))] / [M*NT*sizeof(Int32)] = N*(1+3*sizeof(T))/4`
+- ISL (`op=isl_reduction`):  
+  `bytes_full/bytes_agg = [P*NT*(2*sizeof(Bool)+5*sizeof(T))] / [NT*sizeof(Int32)] = P*(2+5*sizeof(T))/4`
+  (here `actual_pairs == P` for listed scales)
+
+Per-scale hard floors:
+
+| op | type | N | M/P | NT | transfer_reduction (floor) |
+|---|---|---:|---:|---:|---:|
+| gsl_reduction | Float32 | 550 | 40 | 90 | **1787.5x** |
+| gsl_reduction | Float32 | 1584 | 64 | 90 | **5148.0x** |
+| gsl_reduction | Float32 | 1584 | 100 | 90 | **5148.0x** |
+| gsl_reduction | Float64 | 550 | 40 | 90 | **3437.5x** |
+| gsl_reduction | Float64 | 1584 | 64 | 90 | **9900.0x** |
+| gsl_reduction | Float64 | 1584 | 100 | 90 | **9900.0x** |
+| isl_reduction | Float32 | 550 | 1100 | 90 | **6050.0x** |
+| isl_reduction | Float32 | 1584 | 3168 | 90 | **17424.0x** |
+| isl_reduction | Float32 | 1584 | 6336 | 90 | **34848.0x** |
+| isl_reduction | Float64 | 550 | 1100 | 90 | **11550.0x** |
+| isl_reduction | Float64 | 1584 | 3168 | 90 | **33264.0x** |
+| isl_reduction | Float64 | 1584 | 6336 | 90 | **66528.0x** |
+
+Geomean floors by suite/type:
+
+| group | geomean transfer_reduction floor |
+|---|---:|
+| gsl_reduction Float32 | **3618.326x** |
+| gsl_reduction Float64 | **6958.319x** |
+| isl_reduction Float32 | **15429.802x** |
+| isl_reduction Float64 | **29456.896x** |
+
+Gate statement: **each scale must meet or exceed its listed analytical
+`transfer_reduction` floor; any regression below floor fails**.
+
+### 11.3 GPU end-to-end speedup gate (capture-defined)
+
+No A10G reduction BENCH lines are currently checked into this file (raw section 9
+predates reduction suites). Until measured lines are captured, the speed gate is:
+
+- `speedup = full_e2e_s / agg_e2e_s >= 1.0` for every reduction scale/type
+- expected `> 1` because isolated GSL/ISL e2e is transfer-bound in existing results
+  (see sections 5 and 6: GSL isolated e2e ~9–37x vs CPU, and e2e << compute due to D2H)
+
+Capture command (A10G):
+
+```bash
+cd packages/SatelliteSimGPU
+MODAL_PROFILE=satsim-gpu modal run modal_gpu.py --suites bench_gsl_reduction,bench_isl_reduction
+```
+
+When captured, the measured `speedup` per-scale and geomean become hard-gate numbers.
+
+### 11.4 Gate predicate + reproduce
+
+**GATE = PASS iff** parity is exact (fail-closed) **and** every scale meets the
+analytical transfer-reduction floor **and** reduction e2e speedup shows no regression
+(`speedup >= 1.0`) on captured A10G runs.
+
+Reproduce:
+
+```bash
+cd /Users/zhuhai/Research/SatelliteSimJulia
+julia --project=packages/SatelliteSimGPU packages/SatelliteSimGPU/bench_reduction.jl 550 40 90
+# optional second scale:
+julia --project=packages/SatelliteSimGPU packages/SatelliteSimGPU/bench_reduction.jl 1584 64 90
+```
+
+```bash
+cd packages/SatelliteSimGPU
+MODAL_PROFILE=satsim-gpu modal run modal_gpu.py --suites bench_gsl_reduction,bench_isl_reduction
+```
+
+## 12. Parallel-suite hard gate (coverage/GSL/ISL distilled)
+
+This is the compact hard-gate summary for the existing parallel-suite data already in
+sections 4/5/6 and raw section 9 (no raw line duplication here).
+
+### 12.1 Geomean speedup gate (existing measured data)
+
+| op | type | geomean speedup_compute | geomean speedup_e2e |
+|---|---|---:|---:|
+| coverage | Float32 | **1174.987x** | **1141.481x** |
+| coverage | Float64 | **66.669x** | **66.152x** |
+| gsl | Float32 | **151.512x** | **18.054x** |
+| gsl | Float64 | **80.162x** | **12.178x** |
+| isl | Float32 | **53.529x** | **4.211x** |
+| isl | Float64 | **1.769x** | **1.447x** |
+
+### 12.2 Parity + harness invariants (fail-closed)
+
+- Parity remains PASS at every published scale:
+  - coverage scalar parity PASS (`COVERAGE_PARITY`)
+  - GSL parity PASS with `avail_mismatch=0`
+  - ISL parity PASS with `available_mismatch=0` and `los_mismatch=0`
+- Parallel launcher `_suite_passed` is fail-closed:
+  - requires `exit_code == 0`
+  - requires **exactly one** `MODAL_GPU_VALIDATION status=PASS suite=<suite>` sentinel
+  - requires that sentinel to be the final output line
+- `DEFAULT_PARALLEL_SUITES` includes the reduction and reduction-bench shards
+  (`reductions_f32/f64`, `bench_gsl_reduction`, `bench_isl_reduction`), so the same
+  sentinel gate applies there.

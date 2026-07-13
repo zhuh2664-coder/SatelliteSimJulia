@@ -21,6 +21,12 @@ export MU_KM3_S2, R_EARTH_KM, OMEGA_EARTH,
        walker_raans, walker_mas,
        satellite_ecef_j2, constellation_positions_j2, j2_mean_elements,
        isl_adjacency, cross_plane_isl_count, soft_cross_plane_isl,
+       soft_isl_adjacency, soft_isl_adjacency!, soft_isl_edge_weights,
+       soft_los_factor, hard_isl_adjacency, ISL_R_OCCLUSION_KM,
+       NetworkKPIConfig, network_kpi_config, default_od_pairs,
+       soft_expected_latency_ms, soft_reachability_ratio, soft_algebraic_connectivity,
+       network_kpi_loss, network_kpi_loss_grad_positions,
+       soft_connectivity_loss_vjp, sgp4_network_kpi_gradient,
        NoisyORCoverage, LeakyRevisit, relax, soft_coverage,
        noisy_or_coverage, leaky_revisit, logsumexp_max, ground_grid,
        coverage_loss, coverage_depth_loss, end_to_end_loss, deadzone_scan_loss,
@@ -38,6 +44,7 @@ include("layers/01_orbit/propagator_keplerian.jl")
 include("layers/01_orbit/propagator_j2_differentiable.jl")
 include("layers/01_orbit/propagator_differentiable.jl")
 include("layers/03_topology/soft_isl.jl")
+include("layers/03_topology/soft_isl_general.jl")
 include("layers/04_routing/differentiable_routing.jl")
 include("layers/04_routing/pinn_model.jl")
 include("layers/04_routing/pinn_routing.jl")
@@ -45,6 +52,7 @@ include("layers/04_routing/pinn_routing.jl")
 # Optimization primitives.
 include("layers/06_optimization/coverage.jl")
 include("layers/06_optimization/sgp4_e2e.jl")
+include("layers/04_routing/soft_network_kpi.jl")
 include("layers/06_optimization/loss.jl")
 include("layers/06_optimization/differentiable_metrics.jl")
 include("layers/06_optimization/soft_selection.jl")

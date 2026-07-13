@@ -377,6 +377,78 @@ end
     end
 end
 
+@testset "Backend options schema (draft)" begin
+    schema = BackendOptionsSchema(
+        backend=:sgp4,
+        version=2,
+        options=[
+            BackendOptionSpec(:scale, Real; required=true),
+            BackendOptionSpec(:precision, Symbol; required=false, default=:float64,
+                              allowed=(:float32, :float64)),
+            BackendOptionSpec(:verbose, Bool; required=false, default=false),
+            BackendOptionSpec(:mode, Symbol; required=false),
+        ],
+    )
+
+    # (a) valid options pass; defaults are filled in schema order; no-default key omitted
+    result = validate_backend_options(schema, (scale=1.5,))
+    @test result.scale === 1.5
+    @test result.precision === :float64
+    @test result.verbose === false
+    @test !haskey(result, :mode)
+
+    # (b) unknown key rejected
+    @test_throws ArgumentError validate_backend_options(schema, (scale=1.0, unknown_key=42))
+
+    # (c) missing required key rejected
+    @test_throws ArgumentError validate_backend_options(schema, (precision=:float32,))
+
+    # (d) type mismatch rejected
+    @test_throws ArgumentError validate_backend_options(schema, (scale="not_a_number",))
+
+    # (e) allowed-set violation rejected
+    @test_throws ArgumentError validate_backend_options(schema, (scale=1.0, precision=:bfloat16))
+
+    # (f) conflict pair rejected
+    conflict_schema = BackendOptionsSchema(
+        backend=:conflict_backend,
+        options=[
+            BackendOptionSpec(:alpha, Real; required=false, default=1.0),
+            BackendOptionSpec(:beta, Real; required=false, default=1.0),
+        ],
+        conflicts=[(:alpha, :beta)],
+    )
+    @test_throws ArgumentError validate_backend_options(conflict_schema, (alpha=0.5, beta=0.5))
+    # only one present is fine
+    r_conflict = validate_backend_options(conflict_schema, (alpha=0.5,))
+    @test r_conflict.alpha === 0.5
+
+    # (g) convenience method via OrbitBackendSpec
+    orbit_spec = OrbitBackendSpec(:sgp4; scale=2.0, precision=:float32)
+    r2 = validate_backend_options(schema, orbit_spec)
+    @test r2.scale === 2.0
+    @test r2.precision === :float32
+    # name mismatch throws
+    wrong_spec = OrbitBackendSpec(:other_backend; scale=1.0)
+    @test_throws ArgumentError validate_backend_options(schema, wrong_spec)
+
+    # (h) migrate no-op when from_version == schema.version
+    opts = (scale=1.0, precision=:float32)
+    @test migrate_backend_options(schema, opts; from_version=2) === opts
+
+    # (i) migrate applies a rename
+    old_opts = (scale_factor=3.0,)
+    migrated = migrate_backend_options(
+        schema, old_opts;
+        from_version=1,
+        renames=Dict(:scale_factor => :scale),
+    )
+    @test migrated == (scale=3.0,)
+
+    # (j) migrate backward (from_version > schema.version) throws
+    @test_throws ArgumentError migrate_backend_options(schema, opts; from_version=99)
+end
+
 @testset "Compute backend resolution rejects false identity" begin
     positions = zeros(1, 1, 3)
     stations = [(0.0, 0.0, 0.0)]

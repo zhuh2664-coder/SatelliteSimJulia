@@ -13,7 +13,9 @@ export AbstractOrbitBackend, OrbitResult, OrbitBackendSpec,
        evaluate_gsl_series, validate_gsl_series_result,
        evaluate_isl_series, validate_isl_series_result,
        register_compute_backend!, unregister_compute_backend!,
-       compute_backend_registered, available_compute_backends, create_compute_backend
+       compute_backend_registered, available_compute_backends, create_compute_backend,
+       BackendOptionSpec, BackendOptionsSchema,
+       validate_backend_options, migrate_backend_options
 
 """Stable boundary implemented by optional orbit propagation backends."""
 abstract type AbstractOrbitBackend end
@@ -669,5 +671,198 @@ end
 
 resolve_compute_backend(name::Union{Symbol,AbstractString}; kwargs...) =
     resolve_compute_backend(ComputeBackendSpec(name; kwargs...))
+
+# ── Backend options schema (draft) ──────────────────────────────────────────
+
+"""
+    BackendOptionSpec(name, type; required=false, default=nothing, allowed=nothing)
+
+Describes a single option accepted by a backend.
+
+- `type`: expected Julia type for the value (e.g. `Real`, `Symbol`, `Bool`).
+- `required`: if `true`, the caller must supply this key; `default` must be `nothing`.
+- `default`: fill-in value for omitted optional keys. `nothing` is the "required
+  sentinel" — it means no default will be filled in (the only legal value when
+  `required=true`).
+- `allowed`: a `Tuple` of legal values, or `nothing` for unrestricted.
+"""
+struct BackendOptionSpec
+    name::Symbol
+    type::Type
+    required::Bool
+    default::Any
+    allowed::Union{Nothing,Tuple}
+
+    function BackendOptionSpec(
+        name::Symbol,
+        type::Type;
+        required::Bool=false,
+        default=nothing,
+        allowed::Union{Nothing,Tuple}=nothing,
+    )
+        required && default !== nothing && throw(ArgumentError(
+            "BackendOptionSpec :$name is required; `default` must be `nothing`",
+        ))
+        allowed !== nothing && default !== nothing && !(default in allowed) && throw(
+            ArgumentError(
+                "BackendOptionSpec :$name default $(repr(default)) is not in allowed set $allowed",
+            ),
+        )
+        new(name, type, required, default, allowed)
+    end
+end
+
+"""
+    BackendOptionsSchema(; backend, version=1, options=[], conflicts=[])
+
+Schema for the `options` NamedTuple accepted by a named backend.
+
+Draft: opt-in, not yet wired into the backend registry (create_*/resolve_*).
+
+- `backend`: the backend name (`:symbol`) this schema describes.
+- `version`: schema version integer, used for migration (`>= 1`).
+- `options`: `Vector{BackendOptionSpec}` listing every accepted key.
+- `conflicts`: `Vector{NTuple{2,Symbol}}` — pairs of option names that must not
+  both appear in the same call.
+"""
+struct BackendOptionsSchema
+    backend::Symbol
+    version::Int
+    options::Vector{BackendOptionSpec}
+    conflicts::Vector{NTuple{2,Symbol}}
+
+    function BackendOptionsSchema(;
+        backend::Union{Symbol,AbstractString},
+        version::Int=1,
+        options::Vector{BackendOptionSpec}=BackendOptionSpec[],
+        conflicts::Vector{NTuple{2,Symbol}}=NTuple{2,Symbol}[],
+    )
+        version >= 1 || throw(ArgumentError("BackendOptionsSchema version must be >= 1"))
+        names = [s.name for s in options]
+        allunique(names) ||
+            throw(ArgumentError("BackendOptionsSchema :$(Symbol(backend)) has duplicate option names"))
+        new(Symbol(backend), version, options, conflicts)
+    end
+end
+
+"""
+    validate_backend_options(schema, options::NamedTuple) -> NamedTuple
+
+Validate a raw `options` NamedTuple against `schema`.
+
+Checks (in order): unknown keys, missing required keys, type mismatches,
+allowed-set violations, mutual-exclusion conflicts.
+
+On success returns a normalized NamedTuple in schema declaration order with
+defaults filled in for any omitted optional key whose `default` is not `nothing`.
+
+Throws `ArgumentError` on the first violation encountered.
+"""
+function validate_backend_options(
+    schema::BackendOptionsSchema,
+    options::NamedTuple,
+)::NamedTuple
+    known = Set(s.name for s in schema.options)
+    for k in keys(options)
+        k in known || throw(ArgumentError(
+            "backend :$(schema.backend): unknown option :$k",
+        ))
+    end
+    for spec in schema.options
+        if haskey(options, spec.name)
+            val = options[spec.name]
+            val isa spec.type || throw(ArgumentError(
+                "backend :$(schema.backend): option :$(spec.name) expected $(spec.type)," *
+                " got $(typeof(val))",
+            ))
+            if spec.allowed !== nothing
+                val in spec.allowed || throw(ArgumentError(
+                    "backend :$(schema.backend): option :$(spec.name) value $(repr(val))" *
+                    " is not in allowed set $(spec.allowed)",
+                ))
+            end
+        elseif spec.required
+            throw(ArgumentError(
+                "backend :$(schema.backend): required option :$(spec.name) is missing",
+            ))
+        end
+    end
+    for (a, b) in schema.conflicts
+        if haskey(options, a) && haskey(options, b)
+            throw(ArgumentError(
+                "backend :$(schema.backend): options :$a and :$b are mutually exclusive",
+            ))
+        end
+    end
+    pairs = Pair{Symbol,Any}[]
+    for spec in schema.options
+        if haskey(options, spec.name)
+            push!(pairs, spec.name => options[spec.name])
+        elseif !spec.required && spec.default !== nothing
+            push!(pairs, spec.name => spec.default)
+        end
+    end
+    return NamedTuple(pairs)
+end
+
+"""
+    validate_backend_options(schema, spec::OrbitBackendSpec) -> NamedTuple
+
+Convenience: validate `spec.options` against `schema`, asserting `spec.name == schema.backend`.
+"""
+function validate_backend_options(
+    schema::BackendOptionsSchema,
+    spec::OrbitBackendSpec,
+)::NamedTuple
+    spec.name == schema.backend || throw(ArgumentError(
+        "schema is for backend :$(schema.backend), but spec is for :$(spec.name)",
+    ))
+    validate_backend_options(schema, spec.options)
+end
+
+"""
+    validate_backend_options(schema, spec::ComputeBackendSpec) -> NamedTuple
+
+Convenience: validate `spec.options` against `schema`, asserting `spec.name == schema.backend`.
+"""
+function validate_backend_options(
+    schema::BackendOptionsSchema,
+    spec::ComputeBackendSpec,
+)::NamedTuple
+    spec.name == schema.backend || throw(ArgumentError(
+        "schema is for backend :$(schema.backend), but spec is for :$(spec.name)",
+    ))
+    validate_backend_options(schema, spec.options)
+end
+
+"""
+    migrate_backend_options(schema, options; from_version, renames=Dict{Symbol,Symbol}()) -> NamedTuple
+
+Draft migration stub: carry `options` forward from `from_version` to `schema.version`.
+
+- `from_version == schema.version`: no-op, returns `options` unchanged.
+- `from_version > schema.version`: throws `ArgumentError` (cannot migrate backwards).
+- Otherwise applies `renames` (old key => new key) and returns the updated NamedTuple.
+  Keys not listed in `renames` are kept as-is. Richer transformations (value coercions,
+  key removal, multi-hop paths) are future work.
+"""
+function migrate_backend_options(
+    schema::BackendOptionsSchema,
+    options::NamedTuple;
+    from_version::Int,
+    renames::Dict{Symbol,Symbol}=Dict{Symbol,Symbol}(),
+)::NamedTuple
+    from_version > schema.version && throw(ArgumentError(
+        "backend :$(schema.backend): cannot migrate backwards" *
+        " (from_version=$from_version > schema.version=$(schema.version))",
+    ))
+    from_version == schema.version && return options
+    isempty(renames) && return options
+    pairs = Pair{Symbol,Any}[]
+    for k in keys(options)
+        push!(pairs, get(renames, k, k) => options[k])
+    end
+    return NamedTuple(pairs)
+end
 
 end
