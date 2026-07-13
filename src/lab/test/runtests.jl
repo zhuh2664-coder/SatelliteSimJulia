@@ -14,6 +14,16 @@ struct LabOffsetOrbitBackend <: AbstractOrbitBackend
     x_offset_km::Float64
 end
 
+SatelliteSimBackends.backend_name(::LabOffsetOrbitBackend) = "lab_offset"
+SatelliteSimBackends.backend_capabilities(::LabOffsetOrbitBackend) = (
+    frames=(:ecef,),
+    deterministic=true,
+)
+SatelliteSimBackends.orbit_backend_cache_token(backend::LabOffsetOrbitBackend) =
+    (x_offset_km=backend.x_offset_km,)
+SatelliteSimBackends.orbit_backend_source_files(::LabOffsetOrbitBackend) =
+    [@__FILE__]
+
 function SatelliteSimBackends.propagate_orbit(
     backend::LabOffsetOrbitBackend, elements, times; kwargs...
 )
@@ -22,6 +32,96 @@ function SatelliteSimBackends.propagate_orbit(
     return OrbitResult(
         positions,
         Dict{String,Any}("backend" => "lab_offset", "frame" => "ecef"),
+    )
+end
+
+struct LabCacheProbeOrbitBackend <: AbstractOrbitBackend
+    instance_id::Int
+    x_offset_km::Float64
+end
+mutable struct StatefulProbeOrbitBackend <: AbstractOrbitBackend
+    value::Int
+end
+struct LabMismatchedOrbitBackend <: AbstractOrbitBackend end
+const LAB_ORBIT_FACTORY_CALLS = Ref(0)
+const LAB_ORBIT_PROPAGATION_CALLS = Ref(0)
+const LAB_ORBIT_TOKEN_INSTANCE = Ref(0)
+const LAB_ORBIT_PROPAGATION_INSTANCE = Ref(0)
+const LAB_STATEFUL_ORBIT_PROPAGATION_CALLS = Ref(0)
+
+SatelliteSimBackends.backend_name(::LabCacheProbeOrbitBackend) =
+    "lab_cache_probe"
+SatelliteSimBackends.backend_capabilities(::LabCacheProbeOrbitBackend) = (
+    frames=(:ecef,),
+    deterministic=true,
+)
+function SatelliteSimBackends.orbit_backend_cache_token(
+    backend::LabCacheProbeOrbitBackend,
+)
+    LAB_ORBIT_TOKEN_INSTANCE[] = backend.instance_id
+    return (x_offset_km=backend.x_offset_km,)
+end
+SatelliteSimBackends.orbit_backend_source_files(::LabCacheProbeOrbitBackend) =
+    [@__FILE__]
+
+function SatelliteSimBackends.propagate_orbit(
+    backend::LabCacheProbeOrbitBackend,
+    elements,
+    times;
+    kwargs...,
+)
+    LAB_ORBIT_PROPAGATION_CALLS[] += 1
+    LAB_ORBIT_PROPAGATION_INSTANCE[] = backend.instance_id
+    positions = propagate_to_ecef(elements, Float64.(collect(times)); propagator=:two_body)
+    positions[:, :, 1] .+= backend.x_offset_km
+    return OrbitResult(
+        positions,
+        Dict{String,Any}("backend" => "lab_cache_probe", "frame" => "ecef"),
+    )
+end
+
+SatelliteSimBackends.backend_name(::StatefulProbeOrbitBackend) =
+    "stateful_orbit_probe"
+SatelliteSimBackends.backend_capabilities(::StatefulProbeOrbitBackend) = (
+    frames=(:ecef,),
+    deterministic=false,
+)
+SatelliteSimBackends.orbit_backend_source_files(::StatefulProbeOrbitBackend) =
+    [@__FILE__]
+function SatelliteSimBackends.propagate_orbit(
+    backend::StatefulProbeOrbitBackend,
+    elements,
+    times;
+    kwargs...,
+)
+    LAB_STATEFUL_ORBIT_PROPAGATION_CALLS[] += 1
+    positions = propagate_to_ecef(elements, Float64.(collect(times)); propagator=:two_body)
+    positions[:, :, 1] .+= backend.value
+    backend.value += 1
+    return OrbitResult(
+        positions,
+        Dict{String,Any}("backend" => "stateful_orbit_probe", "frame" => "ecef"),
+    )
+end
+
+SatelliteSimBackends.backend_name(::LabMismatchedOrbitBackend) =
+    "lab_expected_orbit"
+SatelliteSimBackends.backend_capabilities(::LabMismatchedOrbitBackend) = (
+    frames=(:ecef,),
+    deterministic=true,
+)
+SatelliteSimBackends.orbit_backend_cache_token(::LabMismatchedOrbitBackend) =
+    :lab_mismatched_orbit
+function SatelliteSimBackends.propagate_orbit(
+    ::LabMismatchedOrbitBackend,
+    elements,
+    times;
+    kwargs...,
+)
+    positions = propagate_to_ecef(elements, Float64.(collect(times)); propagator=:two_body)
+    return OrbitResult(
+        positions,
+        Dict{String,Any}("backend" => "different-orbit", "frame" => "ecef"),
     )
 end
 
@@ -110,6 +210,7 @@ end
 function _small_config(;
     name="lab-smoke",
     propagator=DefaultPropagator,
+    orbit_backend=nothing,
     gsl_backend=nothing,
 )
     return ExperimentConfig(
@@ -123,6 +224,7 @@ function _small_config(;
         ),
         tspan = [0.0, 60.0],
         propagator = propagator,
+        orbit_backend = orbit_backend,
         gsl_backend = gsl_backend,
         topology_strategy = GridPlusStrategy(),
         routing_algorithm = DijkstraRouting(),
@@ -209,6 +311,152 @@ end
             @test result.config.orbit_backend.name == :lab_offset
         finally
             unregister_orbit_backend!(:lab_offset)
+        end
+    end
+
+    @testset "resolved orbit backend cache binding" begin
+        name = :lab_cache_probe
+        unregister_orbit_backend!(name)
+        factory = options -> begin
+            LAB_ORBIT_FACTORY_CALLS[] += 1
+            LabCacheProbeOrbitBackend(
+                LAB_ORBIT_FACTORY_CALLS[],
+                Float64(get(options, :x_offset_km, 0.0)),
+            )
+        end
+        register_orbit_backend!(name, factory)
+        try
+            config = _small_config(
+                name="resolved-orbit-cache-binding",
+                propagator=:two_body,
+                orbit_backend=OrbitBackendSpec(name; x_offset_km=2.5),
+            )
+
+            LAB_ORBIT_FACTORY_CALLS[] = 0
+            first_resolution = resolve_orbit_backend(config.orbit_backend)
+            first_hash = SatelliteSimLab.config_hash(
+                config;
+                orbit_resolution=first_resolution,
+            )
+            second_resolution = resolve_orbit_backend(config.orbit_backend)
+            second_hash = SatelliteSimLab.config_hash(
+                config;
+                orbit_resolution=second_resolution,
+            )
+            @test LAB_ORBIT_FACTORY_CALLS[] == 2
+            @test first_hash == second_hash
+            @test orbit_backend_provenance(first_resolution).resolution_id !=
+                  orbit_backend_provenance(second_resolution).resolution_id
+
+            mismatched_config = _small_config(
+                name="mismatched-orbit-resolution",
+                propagator=:two_body,
+                orbit_backend=:different_orbit_spec,
+            )
+            propagation_calls = LAB_ORBIT_PROPAGATION_CALLS[]
+            @test_throws ArgumentError SatelliteSimLab.config_hash(
+                mismatched_config;
+                orbit_resolution=first_resolution,
+            )
+            @test_throws ArgumentError SatelliteSimLab._run_experiment(
+                mismatched_config,
+                first_resolution,
+                resolve_compute_backend(:cpu),
+            )
+            @test LAB_ORBIT_PROPAGATION_CALLS[] == propagation_calls
+            @test_throws ArgumentError SatelliteSimLab._run_experiment(
+                config,
+                nothing,
+                resolve_compute_backend(:cpu),
+            )
+
+            mktempdir() do root
+                cd(root) do
+                    LAB_ORBIT_FACTORY_CALLS[] = 0
+                    LAB_ORBIT_PROPAGATION_CALLS[] = 0
+                    LAB_ORBIT_TOKEN_INSTANCE[] = 0
+                    LAB_ORBIT_PROPAGATION_INSTANCE[] = 0
+
+                    miss = cached_experiment(config)
+                    @test miss isa ExperimentResult
+                    @test LAB_ORBIT_FACTORY_CALLS[] == 1
+                    @test LAB_ORBIT_PROPAGATION_CALLS[] == 1
+                    @test LAB_ORBIT_TOKEN_INSTANCE[] == 1
+                    @test LAB_ORBIT_PROPAGATION_INSTANCE[] == 1
+
+                    hit = cached_experiment(config)
+                    @test hit isa ExperimentResult
+                    @test LAB_ORBIT_FACTORY_CALLS[] == 2
+                    @test LAB_ORBIT_PROPAGATION_CALLS[] == 1
+                    @test LAB_ORBIT_TOKEN_INSTANCE[] == 2
+                    @test LAB_ORBIT_PROPAGATION_INSTANCE[] == 1
+
+                    forced = cached_experiment(config; force=true)
+                    @test forced isa ExperimentResult
+                    @test LAB_ORBIT_FACTORY_CALLS[] == 3
+                    @test LAB_ORBIT_PROPAGATION_CALLS[] == 2
+                    @test LAB_ORBIT_TOKEN_INSTANCE[] == 3
+                    @test LAB_ORBIT_PROPAGATION_INSTANCE[] == 3
+                end
+            end
+        finally
+            unregister_orbit_backend!(name)
+        end
+    end
+
+    @testset "uncacheable stateful orbit backend fails closed" begin
+        name = :stateful_orbit_probe
+        unregister_orbit_backend!(name)
+        factory_calls = Ref(0)
+        register_orbit_backend!(
+            name,
+            _ -> begin
+                factory_calls[] += 1
+                StatefulProbeOrbitBackend(factory_calls[])
+            end,
+        )
+        try
+            config = _small_config(
+                name="uncacheable-stateful-orbit",
+                propagator=:two_body,
+                orbit_backend=name,
+            )
+            LAB_STATEFUL_ORBIT_PROPAGATION_CALLS[] = 0
+            @test run_experiment(config) isa ExperimentResult
+            @test factory_calls[] == 1
+            @test LAB_STATEFUL_ORBIT_PROPAGATION_CALLS[] == 1
+
+            @test_throws ArgumentError SatelliteSimLab.config_hash(config)
+            @test factory_calls[] == 2
+            @test LAB_STATEFUL_ORBIT_PROPAGATION_CALLS[] == 1
+
+            mktempdir() do root
+                cd(root) do
+                    @test_throws ArgumentError cached_experiment(config)
+                    @test factory_calls[] == 3
+                    @test LAB_STATEFUL_ORBIT_PROPAGATION_CALLS[] == 1
+                    @test isempty(readdir(SatelliteSimLab._cache_dir()))
+                end
+            end
+        finally
+            unregister_orbit_backend!(name)
+        end
+    end
+
+    @testset "resolved orbit metadata identity is enforced" begin
+        name = :lab_mismatched_orbit
+        unregister_orbit_backend!(name)
+        register_orbit_backend!(name, _ -> LabMismatchedOrbitBackend())
+        try
+            @test_throws ArgumentError run_experiment(
+                _small_config(
+                    name="mismatched-orbit-metadata",
+                    propagator=:two_body,
+                    orbit_backend=name,
+                ),
+            )
+        finally
+            unregister_orbit_backend!(name)
         end
     end
 

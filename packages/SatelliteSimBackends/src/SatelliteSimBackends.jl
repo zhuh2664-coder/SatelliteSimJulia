@@ -4,6 +4,10 @@ export AbstractOrbitBackend, OrbitResult, OrbitBackendSpec,
        backend_name, backend_capabilities, propagate_orbit, validate_orbit_result,
        register_orbit_backend!, unregister_orbit_backend!, orbit_backend_registered,
        available_orbit_backends, create_orbit_backend,
+       ResolvedOrbitBackend, resolve_orbit_backend,
+       orbit_backend_spec, orbit_backend_provenance,
+       orbit_backend_cache_token, orbit_backend_fingerprint,
+       orbit_backend_source_files,
        AbstractComputeBackend, CPUComputeBackend, ComputeBackendSpec,
        ResolvedComputeBackend, resolve_compute_backend,
        compute_backend_spec, compute_backend_provenance,
@@ -49,11 +53,147 @@ OrbitBackendSpec(name::Union{Symbol,AbstractString}; kwargs...) =
 OrbitBackendSpec(name::AbstractString, options::NamedTuple) =
     OrbitBackendSpec(Symbol(name), options)
 
+mutable struct _ResolvedOrbitBackendToken end
+const _RESOLVED_ORBIT_BACKEND_TOKEN = _ResolvedOrbitBackendToken()
+
+mutable struct _OrbitBackendExecutionState
+    lock::ReentrantLock
+    propagation_call_count::UInt64
+end
+
+"""
+Opaque binding between a requested orbit-backend spec and the concrete
+implementation selected from the registry. Instances are created only by
+`resolve_orbit_backend`; propagation through the binding always uses that exact
+concrete instance.
+"""
+struct ResolvedOrbitBackend <: AbstractOrbitBackend
+    _spec::OrbitBackendSpec
+    _backend::AbstractOrbitBackend
+    _implementation::NamedTuple
+    _capabilities::NamedTuple
+    _fingerprint::NamedTuple
+    _cache_token
+    _source_files::Tuple
+    _registration_generation::UInt64
+    _resolution_id::UInt64
+    _execution_state::_OrbitBackendExecutionState
+
+    function ResolvedOrbitBackend(
+        token::_ResolvedOrbitBackendToken,
+        spec::OrbitBackendSpec,
+        backend::AbstractOrbitBackend,
+        implementation::NamedTuple,
+        capabilities::NamedTuple,
+        fingerprint::NamedTuple,
+        cache_token,
+        source_files::Tuple,
+        registration_generation::UInt64,
+        resolution_id::UInt64,
+    )
+        token === _RESOLVED_ORBIT_BACKEND_TOKEN ||
+            throw(ArgumentError("orbit backend resolutions must be created by resolve_orbit_backend"))
+        return new(
+            spec,
+            backend,
+            implementation,
+            capabilities,
+            fingerprint,
+            cache_token,
+            source_files,
+            registration_generation,
+            resolution_id,
+            _OrbitBackendExecutionState(ReentrantLock(), 0),
+        )
+    end
+end
+
 backend_name(backend::AbstractOrbitBackend)::String = string(nameof(typeof(backend)))
 backend_capabilities(::AbstractOrbitBackend) = (frames = (:ecef,), deterministic = false)
 
+"""
+Return deterministic, result-affecting instance state for cache provenance.
+Backends that do not implement this are deliberately treated as uncacheable.
+"""
+orbit_backend_cache_token(::AbstractOrbitBackend) = nothing
+
+"""Describe the concrete implementation behind an orbit backend."""
+function orbit_backend_fingerprint(backend::AbstractOrbitBackend)
+    module_ = parentmodule(typeof(backend))
+    return (
+        name=backend_name(backend),
+        type=string(typeof(backend)),
+        implementation_module=string(module_),
+        implementation_version=_package_version(module_),
+        capabilities=backend_capabilities(backend),
+        cache_token=orbit_backend_cache_token(backend),
+    )
+end
+
+"""Source files whose contents affect the resolved orbit implementation."""
+orbit_backend_source_files(::AbstractOrbitBackend) = String[]
+
+orbit_backend_spec(resolution::ResolvedOrbitBackend) = resolution._spec
+backend_name(resolution::ResolvedOrbitBackend) = resolution._implementation.name
+backend_capabilities(resolution::ResolvedOrbitBackend) = resolution._capabilities
+orbit_backend_cache_token(resolution::ResolvedOrbitBackend) = resolution._cache_token
+orbit_backend_fingerprint(resolution::ResolvedOrbitBackend) = resolution._fingerprint
+orbit_backend_source_files(resolution::ResolvedOrbitBackend) =
+    collect(String, resolution._source_files)
+
+function _orbit_propagation_call_count(resolution::ResolvedOrbitBackend)::UInt64
+    state = resolution._execution_state
+    return lock(state.lock) do
+        state.propagation_call_count
+    end
+end
+
+"""
+Return the immutable identity and cache-state snapshots captured at resolution
+time together with the number of propagation calls that returned from the
+bound implementation.
+"""
+function orbit_backend_provenance(resolution::ResolvedOrbitBackend)
+    return (
+        requested_spec=(
+            name=resolution._spec.name,
+            options=_immutable_backend_snapshot(resolution._spec.options),
+        ),
+        implementation=resolution._implementation,
+        capabilities=resolution._capabilities,
+        cache_token=resolution._cache_token,
+        registration_generation=resolution._registration_generation,
+        resolution_id=resolution._resolution_id,
+        call_count=_orbit_propagation_call_count(resolution),
+    )
+end
+
 function propagate_orbit(backend::AbstractOrbitBackend, elements, tspan; kwargs...)
     throw(MethodError(propagate_orbit, (backend, elements, tspan)))
+end
+
+function propagate_orbit(
+    resolution::ResolvedOrbitBackend,
+    elements,
+    tspan;
+    kwargs...,
+)
+    result = propagate_orbit(resolution._backend, elements, tspan; kwargs...)
+    state = resolution._execution_state
+    lock(state.lock) do
+        state.propagation_call_count += 1
+    end
+    result isa OrbitResult || throw(ArgumentError(
+        "orbit backend '$(resolution._implementation.name)' returned $(typeof(result)); " *
+        "expected OrbitResult",
+    ))
+    reported_backend = get(result.metadata, "backend", nothing)
+    reported_backend == resolution._implementation.name || throw(ArgumentError(
+        "orbit result backend identity mismatch: resolved " *
+        "'$(resolution._implementation.name)' but result metadata reported " *
+        "$(repr(reported_backend))",
+    ))
+    return result
 end
 
 function validate_orbit_result(
@@ -77,6 +217,8 @@ end
 # backends without importing concrete implementation types into Lab/Core APIs.
 const _ORBIT_BACKEND_REGISTRY_LOCK = ReentrantLock()
 const _ORBIT_BACKEND_FACTORIES = Dict{Symbol,Function}()
+const _ORBIT_BACKEND_GENERATIONS = Dict{Symbol,UInt64}()
+const _NEXT_ORBIT_BACKEND_RESOLUTION_ID = Ref{UInt64}(0)
 
 """
     register_orbit_backend!(name, factory; replace=false)
@@ -96,7 +238,9 @@ function register_orbit_backend!(
         if haskey(_ORBIT_BACKEND_FACTORIES, key) && !replace
             throw(ArgumentError("orbit backend :$key is already registered"))
         end
+        generation = get(_ORBIT_BACKEND_GENERATIONS, key, UInt64(0)) + UInt64(1)
         _ORBIT_BACKEND_FACTORIES[key] = factory
+        _ORBIT_BACKEND_GENERATIONS[key] = generation
     end
     return key
 end
@@ -124,17 +268,12 @@ function available_orbit_backends()::Vector{Symbol}
     end
 end
 
-"""
-    create_orbit_backend(spec) -> AbstractOrbitBackend
-    create_orbit_backend(name; kwargs...) -> AbstractOrbitBackend
-
-Construct a registered backend without exposing its concrete type to callers.
-Registration is explicit and session-local: users must first load the optional
-package that owns the selected backend.
-"""
-function create_orbit_backend(spec::OrbitBackendSpec)::AbstractOrbitBackend
-    factory = lock(_ORBIT_BACKEND_REGISTRY_LOCK) do
-        get(_ORBIT_BACKEND_FACTORIES, spec.name, nothing)
+function _orbit_backend_factory_snapshot(spec::OrbitBackendSpec)
+    factory, generation = lock(_ORBIT_BACKEND_REGISTRY_LOCK) do
+        (
+            get(_ORBIT_BACKEND_FACTORIES, spec.name, nothing),
+            get(_ORBIT_BACKEND_GENERATIONS, spec.name, UInt64(0)),
+        )
     end
     if factory === nothing
         available = available_orbit_backends()
@@ -145,16 +284,121 @@ function create_orbit_backend(spec::OrbitBackendSpec)::AbstractOrbitBackend
             "load the optional backend package before running the experiment",
         ))
     end
+    return factory, generation
+end
+
+function _instantiate_orbit_backend(spec::OrbitBackendSpec)
+    factory, generation = _orbit_backend_factory_snapshot(spec)
     backend = factory(spec.options)
     backend isa AbstractOrbitBackend || throw(ArgumentError(
         "factory for orbit backend :$(spec.name) returned $(typeof(backend)); " *
         "expected AbstractOrbitBackend",
     ))
+    backend isa ResolvedOrbitBackend && throw(ArgumentError(
+        "factory for orbit backend :$(spec.name) returned a resolution wrapper; " *
+        "expected a concrete AbstractOrbitBackend implementation",
+    ))
+    capabilities = backend_capabilities(backend)
+    capabilities isa NamedTuple || throw(ArgumentError(
+        "orbit backend :$(spec.name) capabilities must be a NamedTuple",
+    ))
+    return backend, capabilities, generation
+end
+
+function _orbit_backend_implementation_snapshot(
+    backend::AbstractOrbitBackend,
+    fingerprint::NamedTuple,
+    name::String,
+)
+    module_ = parentmodule(typeof(backend))
+    return (
+        name=name,
+        type=string(
+            hasproperty(fingerprint, :type) ? fingerprint.type : typeof(backend),
+        ),
+        implementation_module=string(
+            hasproperty(fingerprint, :implementation_module) ?
+            fingerprint.implementation_module : module_,
+        ),
+        implementation_version=string(
+            hasproperty(fingerprint, :implementation_version) ?
+            fingerprint.implementation_version : _package_version(module_),
+        ),
+    )
+end
+
+function _next_orbit_backend_resolution_id()::UInt64
+    return lock(_ORBIT_BACKEND_REGISTRY_LOCK) do
+        _NEXT_ORBIT_BACKEND_RESOLUTION_ID[] += UInt64(1)
+    end
+end
+
+"""
+    create_orbit_backend(spec) -> AbstractOrbitBackend
+    create_orbit_backend(name; kwargs...) -> AbstractOrbitBackend
+
+Construct a registered backend without exposing its concrete type to callers.
+Registration is explicit and session-local: users must first load the optional
+package that owns the selected backend.
+"""
+function create_orbit_backend(spec::OrbitBackendSpec)::AbstractOrbitBackend
+    backend, _, _ = _instantiate_orbit_backend(spec)
     return backend
 end
 
 create_orbit_backend(name::Union{Symbol,AbstractString}; kwargs...) =
     create_orbit_backend(OrbitBackendSpec(name; kwargs...))
+
+"""
+    resolve_orbit_backend(spec) -> ResolvedOrbitBackend
+    resolve_orbit_backend(name; kwargs...) -> ResolvedOrbitBackend
+
+Resolve an orbit backend exactly once and bind the requested spec to the
+concrete instance plus immutable identity, capability, and cache-state
+snapshots.
+"""
+function resolve_orbit_backend(spec::OrbitBackendSpec)::ResolvedOrbitBackend
+    backend, capabilities, generation = _instantiate_orbit_backend(spec)
+    name = String(backend_name(backend))
+    raw_fingerprint = orbit_backend_fingerprint(backend)
+    raw_fingerprint isa NamedTuple || throw(ArgumentError(
+        "orbit backend :$(spec.name) fingerprint must be a NamedTuple",
+    ))
+    if hasproperty(raw_fingerprint, :name) &&
+       string(raw_fingerprint.name) != name
+        throw(ArgumentError(
+            "orbit backend :$(spec.name) fingerprint identity does not match backend_name",
+        ))
+    end
+    capabilities_snapshot = _immutable_backend_snapshot(capabilities)
+    raw_cache_token = orbit_backend_cache_token(backend)
+    cache_token = raw_cache_token === nothing ?
+        nothing : _immutable_backend_snapshot(raw_cache_token)
+    fingerprint = _immutable_backend_snapshot(merge(
+        raw_fingerprint,
+        (
+            name=name,
+            capabilities=capabilities_snapshot,
+            cache_token=cache_token,
+        ),
+    ))
+    source_files = Tuple(String.(orbit_backend_source_files(backend)))
+    return ResolvedOrbitBackend(
+        _RESOLVED_ORBIT_BACKEND_TOKEN,
+        spec,
+        backend,
+        _orbit_backend_implementation_snapshot(backend, fingerprint, name),
+        capabilities_snapshot,
+        fingerprint,
+        cache_token,
+        source_files,
+        generation,
+        _next_orbit_backend_resolution_id(),
+    )
+end
+
+resolve_orbit_backend(name::Union{Symbol,AbstractString}; kwargs...) =
+    resolve_orbit_backend(OrbitBackendSpec(name; kwargs...))
 
 """Stable boundary implemented by optional accelerated compute backends."""
 abstract type AbstractComputeBackend end

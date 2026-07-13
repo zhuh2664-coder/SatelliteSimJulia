@@ -5,6 +5,11 @@ struct MissingBackend <: AbstractOrbitBackend end
 struct ConfiguredBackend <: AbstractOrbitBackend
     scale::Float64
 end
+struct IdentityOrbitBackend <: AbstractOrbitBackend
+    name::String
+    revision::Int
+    reported_name::String
+end
 struct ConfiguredComputeBackend <: AbstractComputeBackend
     precision::Symbol
 end
@@ -17,6 +22,29 @@ struct ContractCPUDeviceBackend <: AbstractComputeBackend end
 mutable struct MutableCapabilityComputeBackend <: AbstractComputeBackend
     operations::Vector{Symbol}
     details::Dict{Symbol,Vector{String}}
+end
+
+SatelliteSimBackends.backend_name(backend::IdentityOrbitBackend) = backend.name
+SatelliteSimBackends.backend_capabilities(::IdentityOrbitBackend) = (
+    frames=(:ecef,),
+    deterministic=true,
+)
+SatelliteSimBackends.orbit_backend_cache_token(backend::IdentityOrbitBackend) =
+    (revision=backend.revision,)
+SatelliteSimBackends.orbit_backend_source_files(::IdentityOrbitBackend) =
+    [@__FILE__]
+
+function SatelliteSimBackends.propagate_orbit(
+    backend::IdentityOrbitBackend,
+    elements,
+    times;
+    kwargs...,
+)
+    positions = fill(Float64(backend.revision), length(elements), length(times), 3)
+    return OrbitResult(
+        positions,
+        Dict{String,Any}("backend" => backend.reported_name, "frame" => "ecef"),
+    )
 end
 
 SatelliteSimBackends.compute_backend_name(backend::IdentityComputeBackend) =
@@ -65,6 +93,8 @@ end
 @testset "SatelliteSimBackends contract" begin
     @test backend_name(MissingBackend()) == "MissingBackend"
     @test backend_capabilities(MissingBackend()).frames == (:ecef,)
+    @test orbit_backend_cache_token(MissingBackend()) === nothing
+    @test isempty(orbit_backend_source_files(MissingBackend()))
     @test_throws MethodError propagate_orbit(MissingBackend(), [1], [0.0])
 
     valid = OrbitResult(zeros(2, 3, 3), Dict{String,Any}())
@@ -192,6 +222,119 @@ end
         @test_throws ArgumentError create_orbit_backend(:invalid_factory)
     finally
         unregister_orbit_backend!(:invalid_factory)
+    end
+end
+
+@testset "Orbit backend resolution identity and lifecycle" begin
+    name = :orbit_resolution_lifecycle
+    unregister_orbit_backend!(name)
+    factory_calls = Ref(0)
+    spec = OrbitBackendSpec(name; revision=1)
+
+    register_orbit_backend!(
+        name,
+        _ -> begin
+            factory_calls[] += 1
+            IdentityOrbitBackend("orbit-lifecycle-v1", 1, "orbit-lifecycle-v1")
+        end,
+    )
+    try
+        first_resolution = resolve_orbit_backend(spec)
+        @test first_resolution isa ResolvedOrbitBackend
+        @test factory_calls[] == 1
+        @test orbit_backend_spec(first_resolution) == spec
+        first_provenance = orbit_backend_provenance(first_resolution)
+        @test first_provenance.requested_spec.name == name
+        @test first_provenance.implementation.name == "orbit-lifecycle-v1"
+        @test first_provenance.capabilities.frames == (:ecef,)
+        @test first_provenance.cache_token == (revision=1,)
+        @test first_provenance.call_count == 0
+        @test_throws MethodError ResolvedOrbitBackend(
+            spec,
+            IdentityOrbitBackend("forged", 0, "forged"),
+        )
+
+        @test backend_name(first_resolution) == "orbit-lifecycle-v1"
+        @test orbit_backend_cache_token(first_resolution) == (revision=1,)
+        @test orbit_backend_fingerprint(first_resolution).name ==
+              "orbit-lifecycle-v1"
+        @test orbit_backend_source_files(first_resolution) == [@__FILE__]
+        delegated_fingerprint = orbit_backend_fingerprint(first_resolution)
+        @test !hasproperty(delegated_fingerprint, :registration_generation)
+        @test !hasproperty(delegated_fingerprint, :resolution_id)
+
+        first_result = propagate_orbit(first_resolution, [1], [0.0])
+        @test first_result.metadata["backend"] == "orbit-lifecycle-v1"
+        @test orbit_backend_provenance(first_resolution).call_count == 1
+
+        register_orbit_backend!(
+            name,
+            _ -> begin
+                factory_calls[] += 1
+                IdentityOrbitBackend("orbit-lifecycle-v2", 2, "orbit-lifecycle-v2")
+            end;
+            replace=true,
+        )
+        second_resolution = resolve_orbit_backend(spec)
+        second_provenance = orbit_backend_provenance(second_resolution)
+        @test factory_calls[] == 2
+        @test second_provenance.registration_generation >
+              first_provenance.registration_generation
+        @test second_provenance.resolution_id != first_provenance.resolution_id
+        @test second_provenance.implementation.name == "orbit-lifecycle-v2"
+
+        old_result = propagate_orbit(first_resolution, [1], [0.0])
+        @test old_result.metadata["backend"] == "orbit-lifecycle-v1"
+
+        @test unregister_orbit_backend!(name)
+        @test_throws ArgumentError resolve_orbit_backend(spec)
+        surviving_result = propagate_orbit(second_resolution, [1], [0.0])
+        @test surviving_result.metadata["backend"] == "orbit-lifecycle-v2"
+
+        register_orbit_backend!(
+            name,
+            _ -> begin
+                factory_calls[] += 1
+                IdentityOrbitBackend("orbit-lifecycle-v3", 3, "orbit-lifecycle-v3")
+            end,
+        )
+        third_resolution = resolve_orbit_backend(spec)
+        third_provenance = orbit_backend_provenance(third_resolution)
+        @test factory_calls[] == 3
+        @test third_provenance.registration_generation >
+              second_provenance.registration_generation
+        @test third_provenance.resolution_id != second_provenance.resolution_id
+
+        calls_before_create = factory_calls[]
+        created = create_orbit_backend(spec)
+        @test created isa IdentityOrbitBackend
+        @test factory_calls[] == calls_before_create + 1
+
+        register_orbit_backend!(:orbit_resolution_wrapper, _ -> third_resolution)
+        try
+            @test_throws ArgumentError create_orbit_backend(:orbit_resolution_wrapper)
+            @test_throws ArgumentError resolve_orbit_backend(:orbit_resolution_wrapper)
+        finally
+            unregister_orbit_backend!(:orbit_resolution_wrapper)
+        end
+    finally
+        unregister_orbit_backend!(name)
+    end
+end
+
+@testset "Orbit backend resolution rejects false identity" begin
+    name = :orbit_mismatched_metadata
+    unregister_orbit_backend!(name)
+    register_orbit_backend!(
+        name,
+        _ -> IdentityOrbitBackend("expected-orbit", 1, "different-orbit"),
+    )
+    try
+        resolution = resolve_orbit_backend(name)
+        @test_throws ArgumentError propagate_orbit(resolution, [1], [0.0])
+        @test orbit_backend_provenance(resolution).call_count == 1
+    finally
+        unregister_orbit_backend!(name)
     end
 end
 

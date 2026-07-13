@@ -20,6 +20,11 @@ const TWO_BODY_ECEF_ATOL_KM = 1e-3
     capabilities = backend_capabilities(configured)
     @test capabilities.implementation == :independent_secular_elements
     @test capabilities.propagators == (:two_body, :j2, :j4)
+    @test orbit_backend_cache_token(configured) == (propagator=:j2,)
+    @test endswith(
+        only(orbit_backend_source_files(configured)),
+        "SatelliteSimJuliaSpaceBackend.jl",
+    )
 
     elements = generate_walker_delta(T=4, P=2, F=1, alt_km=550.0, inc_deg=53.0)
     result = propagate_orbit(JuliaSpaceOrbitBackend(), elements, [0.0, 10.0])

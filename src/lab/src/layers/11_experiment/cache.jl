@@ -22,14 +22,6 @@ const _CACHE_EXTENSION = ".bin"
 
 根据 ExperimentConfig 生成唯一 hash（用于缓存文件名）。
 """
-function _backend_package_version(backend)::String
-    return try
-        version = Base.pkgversion(parentmodule(typeof(backend)))
-        version === nothing ? "unknown" : string(version)
-    catch
-        "unknown"
-    end
-end
 
 function _module_source_files(module_)::Vector{String}
     entrypoint = try
@@ -91,8 +83,12 @@ function _local_simulation_source_files()::Vector{String}
     return sort!(unique!(files))
 end
 
-function _orbit_backend_fingerprint(config::ExperimentConfig)
-    if config.orbit_backend === nothing
+function _orbit_backend_fingerprint(
+    config::ExperimentConfig,
+    resolution::Union{Nothing,ResolvedOrbitBackend},
+)
+    backend = _orbit_backend_from_resolution(config, resolution)
+    if backend === nothing
         return (
             name=:native,
             implementation_module="SatelliteSimOrbit",
@@ -102,14 +98,20 @@ function _orbit_backend_fingerprint(config::ExperimentConfig)
             ),
         )
     end
-    backend = create_orbit_backend(config.orbit_backend)
-    module_ = parentmodule(typeof(backend))
-    return (
-        name=backend_name(backend),
-        type=string(typeof(backend)),
-        version=_backend_package_version(backend),
-        capabilities=backend_capabilities(backend),
-        source_sha256=_source_files_fingerprint(_module_source_files(module_)),
+    cache_token = orbit_backend_cache_token(backend)
+    cache_token === nothing &&
+        throw(ArgumentError(
+            "orbit backend '$(backend_name(backend))' does not define " *
+            "a deterministic cache token and cannot be used with cached_experiment",
+        ))
+    return merge(
+        orbit_backend_fingerprint(backend),
+        (
+            cache_token=cache_token,
+            source_sha256=_source_files_fingerprint(
+                orbit_backend_source_files(backend),
+            ),
+        ),
     )
 end
 
@@ -132,6 +134,7 @@ end
 
 function config_hash(
     config::ExperimentConfig;
+    orbit_resolution::Union{Nothing,ResolvedOrbitBackend}=nothing,
     gsl_resolution::Union{Nothing,ResolvedComputeBackend}=nothing,
 )::String
     # ExperimentConfig contains only deterministic value objects. Hashing its
@@ -141,9 +144,15 @@ function config_hash(
         _resolve_experiment_gsl_backend(config) :
         gsl_resolution
     gsl_backend = _backend_from_resolution(config, resolution)
+    resolved_orbit = if orbit_resolution === nothing &&
+                        config.orbit_backend !== nothing
+        _resolve_experiment_orbit_backend(config)
+    else
+        orbit_resolution
+    end
     payload = (
         config=config,
-        orbit_backend=_orbit_backend_fingerprint(config),
+        orbit_backend=_orbit_backend_fingerprint(config, resolved_orbit),
         gsl_backend=_gsl_backend_fingerprint(gsl_backend),
         environment_sha256=_active_environment_fingerprint(),
         simulation_source_sha256=_source_files_fingerprint(
@@ -252,8 +261,13 @@ function cached_experiment(
     force::Bool=false,
 )::ExperimentResult
     mkpath(_cache_dir())
+    orbit_resolution = _resolve_experiment_orbit_backend(config)
     gsl_resolution = _resolve_experiment_gsl_backend(config)
-    h = config_hash(config; gsl_resolution=gsl_resolution)
+    h = config_hash(
+        config;
+        orbit_resolution=orbit_resolution,
+        gsl_resolution=gsl_resolution,
+    )
     path = _cache_path(h)
 
     # 缓存命中
@@ -267,7 +281,7 @@ function cached_experiment(
 
     # 缓存未命中：跑实验
     @printf("[Cache] 未命中，执行仿真...\n")
-    result = _run_experiment(config, gsl_resolution)
+    result = _run_experiment(config, orbit_resolution, gsl_resolution)
 
     # 保存到缓存
     _write_cached_result(path, result)

@@ -23,9 +23,21 @@ end
 
 function _run_experiment(
     config::ExperimentConfig,
+    orbit_resolution::Union{Nothing,ResolvedOrbitBackend},
     gsl_resolution::ResolvedComputeBackend,
 )::ExperimentResult
-    return _full_constellation_assessment(config, gsl_resolution)
+    return _full_constellation_assessment(config, orbit_resolution, gsl_resolution)
+end
+
+function _run_experiment(
+    config::ExperimentConfig,
+    gsl_resolution::ResolvedComputeBackend,
+)::ExperimentResult
+    return _run_experiment(
+        config,
+        _resolve_experiment_orbit_backend(config),
+        gsl_resolution,
+    )
 end
 
 function run_multiframe_experiment(config::ExperimentConfig)
@@ -39,8 +51,9 @@ function run_multiframe_experiment(config::ExperimentConfig)
         config,
         _resolve_experiment_gsl_backend(config),
     )
+    orbit_resolution = _resolve_experiment_orbit_backend(config)
 
-    _, positions = propagate_constellation_positions(config)
+    _, positions = _propagate_constellation_positions(config, orbit_resolution)
     n_sat = T
     n_time = size(positions, 2)
     dt_s = length(config.tspan) > 1 ? config.tspan[2] - config.tspan[1] : 1.0

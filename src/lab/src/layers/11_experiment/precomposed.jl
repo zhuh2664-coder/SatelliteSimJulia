@@ -37,19 +37,65 @@ export propagate_constellation_positions, assess_gsl_series, assess_coverage, as
 这是几乎所有评估的公共前置步骤。
 返回 KeplerianElements 列表和 ECEF 位置矩阵。
 """
-function propagate_constellation_positions(config)
+function _validate_orbit_backend(resolution::ResolvedOrbitBackend)
+    capabilities = backend_capabilities(resolution)
+    hasproperty(capabilities, :frames) && :ecef in capabilities.frames ||
+        throw(ArgumentError(
+            "orbit backend '$(backend_name(resolution))' does not support ECEF output",
+        ))
+    return resolution
+end
+
+function _resolve_experiment_orbit_backend(config::ExperimentConfig)
+    config.orbit_backend === nothing && return nothing
+    return _validate_orbit_backend(resolve_orbit_backend(config.orbit_backend))
+end
+
+function _orbit_backend_from_resolution(
+    config::ExperimentConfig,
+    resolution::Union{Nothing,ResolvedOrbitBackend},
+)
+    if config.orbit_backend === nothing
+        resolution === nothing || throw(ArgumentError(
+            "resolved orbit backend does not match native ExperimentConfig orbit selection",
+        ))
+        return nothing
+    end
+    resolution === nothing && throw(ArgumentError(
+        "configured orbit backend requires a resolved backend binding",
+    ))
+    spec = orbit_backend_spec(resolution)
+    spec.name == config.orbit_backend.name &&
+        isequal(spec.options, config.orbit_backend.options) ||
+        throw(ArgumentError(
+            "resolved orbit backend does not match ExperimentConfig.orbit_backend",
+        ))
+    return _validate_orbit_backend(resolution)
+end
+
+function _propagate_constellation_positions(
+    config::ExperimentConfig,
+    orbit_resolution::Union{Nothing,ResolvedOrbitBackend},
+)
     constellation = config.constellation
     elems = generate_walker_delta(;
         T = constellation.T, P = constellation.P, F = constellation.F,
         alt_km = constellation.alt_km, inc_deg = constellation.inc_deg,
     )
-    positions = if config.orbit_backend === nothing
+    orbit_backend = _orbit_backend_from_resolution(config, orbit_resolution)
+    positions = if orbit_backend === nothing
         propagate_to_ecef(elems, config.tspan; propagator = config.propagator)
     else
-        backend = create_orbit_backend(config.orbit_backend)
-        propagate_to_ecef(backend, elems, config.tspan)
+        propagate_to_ecef(orbit_backend, elems, config.tspan)
     end
     return elems, positions
+end
+
+function propagate_constellation_positions(config::ExperimentConfig)
+    return _propagate_constellation_positions(
+        config,
+        _resolve_experiment_orbit_backend(config),
+    )
 end
 
 # ────────────────────────────────────────────────────────────
@@ -750,12 +796,14 @@ end
 function full_constellation_assessment(config::ExperimentConfig)
     return _full_constellation_assessment(
         config,
+        _resolve_experiment_orbit_backend(config),
         _resolve_experiment_gsl_backend(config),
     )
 end
 
 function _full_constellation_assessment(
     config::ExperimentConfig,
+    orbit_resolution::Union{Nothing,ResolvedOrbitBackend},
     gsl_resolution::ResolvedComputeBackend,
 )
     t_start = time()
@@ -766,7 +814,7 @@ function _full_constellation_assessment(
     P = constellation.P
     gsl_backend = _backend_from_resolution(config, gsl_resolution)
 
-    _, positions = propagate_constellation_positions(config)
+    _, positions = _propagate_constellation_positions(config, orbit_resolution)
     gsl_available, coverage = assess_coverage(
         positions,
         config.users,
@@ -875,6 +923,17 @@ function _full_constellation_assessment(
         config, coverage, latency, network, utilization,
         routing_metrics, fitness, time() - t_start,
         traffic_evaluation,
+    )
+end
+
+function _full_constellation_assessment(
+    config::ExperimentConfig,
+    gsl_resolution::ResolvedComputeBackend,
+)
+    return _full_constellation_assessment(
+        config,
+        _resolve_experiment_orbit_backend(config),
+        gsl_resolution,
     )
 end
 
