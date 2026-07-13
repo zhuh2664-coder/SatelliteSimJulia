@@ -83,6 +83,28 @@ image = image_builder.run_commands(
     "Pkg.add(name=\"CUDA\", version=\"6.2.1\"); "
     "Pkg.add(\"SatelliteToolboxSgp4\"); "
     "Pkg.precompile()'",
+    # A freshly Pkg.add-ed CUDA in this project does NOT inherit the base image's
+    # CUDA runtime-version preference (it lives only in the base default depot env),
+    # so CUDA.functional() is false on the A10G ("could not find an appropriate CUDA
+    # runtime"). Locate base LocalPreferences.toml files and inherit CUDA_Runtime_jll.
+    "find /depot /root/.julia /opt -maxdepth 6 -name LocalPreferences.toml 2>/dev/null "
+    "| tee /tmp/lp_paths.txt; "
+    "while read f; do echo \"=== $f ===\"; cat \"$f\"; done < /tmp/lp_paths.txt || true",
+    "julia --project=/opt/SatelliteSimGPU -e '"
+    "import TOML; "
+    "paths = isfile(\"/tmp/lp_paths.txt\") ? readlines(\"/tmp/lp_paths.txt\") : String[]; "
+    "src = nothing; cfg = nothing; "
+    "for p in paths; isfile(p) || continue; "
+    "t = try TOML.parsefile(p) catch; continue end; "
+    "if haskey(t, \"CUDA_Runtime_jll\") && cfg === nothing; global src = p; global cfg = t[\"CUDA_Runtime_jll\"]; end; "
+    "end; "
+    "cfg === nothing && error(\"no CUDA_Runtime_jll pref among: \" * join(paths, \", \")); "
+    "dst = \"/opt/SatelliteSimGPU/LocalPreferences.toml\"; "
+    "proj = isfile(dst) ? TOML.parsefile(dst) : Dict{String,Any}(); "
+    "proj[\"CUDA_Runtime_jll\"] = cfg; "
+    "open(dst, \"w\") do io; TOML.print(io, proj); end; "
+    "println(\"COPIED_CUDA_RT_PREF from=\" * src * \" cfg=\" * string(cfg))'",
+    "julia --project=/opt/SatelliteSimGPU -e 'using Pkg; Pkg.precompile()'",
     # Lock the image contract: under the runner's exact offline + narrow load path,
     # CUDA (pinned) and SatelliteToolboxSgp4 must both import. Fails the build early
     # (before spawning GPU containers) if the load path is too narrow to see CUDA.

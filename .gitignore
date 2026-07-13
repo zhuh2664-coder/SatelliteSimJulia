@@ -4,6 +4,8 @@
 !/envs/core/Manifest.toml
 !/envs/backends-stub/Manifest.toml
 *.jls
+# Machine-local package preferences (e.g. CUDA device prefs); never commit.
+LocalPreferences.toml
 
 # System
 .DS_Store
