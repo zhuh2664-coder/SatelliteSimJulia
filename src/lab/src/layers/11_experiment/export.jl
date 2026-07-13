@@ -6,7 +6,7 @@ using Printf
 
 """ExperimentResult → Dict"""
 function to_dict(result::ExperimentResult)
-    return Dict(
+    dict = Dict(
         :coverage     => result.coverage.coverage_ratio,
         :avg_lat_ms   => result.latency.avg_latency_ms,
         :max_lat_ms   => result.latency.max_latency_ms,
@@ -18,6 +18,23 @@ function to_dict(result::ExperimentResult)
         :fitness      => result.fitness,
         :duration_s   => result.duration_s,
     )
+    if result.traffic_evaluation !== nothing
+        te = result.traffic_evaluation
+        dict[:traffic_evaluation_ran] = true
+        dict[:traffic_demands] = length(te.demands)
+        dict[:traffic_assignments] = sum(length(a) for a in te.assignments_by_time)
+        dict[:carried_mbps] = sum(a.carried_mbps for a in Iterators.flatten(te.assignments_by_time))
+        dict[:dropped_mbps] = sum(a.dropped_mbps for a in Iterators.flatten(te.assignments_by_time))
+        dict[:offered_mbps] = sum(a.offered_mbps for a in Iterators.flatten(te.assignments_by_time))
+    else
+        dict[:traffic_evaluation_ran] = false
+        dict[:traffic_demands] = 0
+        dict[:traffic_assignments] = 0
+        dict[:carried_mbps] = 0.0
+        dict[:dropped_mbps] = 0.0
+        dict[:offered_mbps] = 0.0
+    end
+    return dict
 end
 
 """多结果 → CSV"""

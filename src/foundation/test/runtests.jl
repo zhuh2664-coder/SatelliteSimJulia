@@ -33,9 +33,42 @@ using Test
         @test Satellite isa DataType
         @test GroundStation isa DataType
         @test UserTerminal isa DataType
+        @test GroundEndpoint isa DataType
         @test SatelliteConfig isa DataType
         # 默认配置常量存在
         @test DEFAULT_SAT_CONFIG isa SatelliteConfig
+    end
+
+    @testset "GroundEndpoint 统一端点" begin
+        ep = GroundEndpoint("beijing", 39.9042, 116.4074, 0.0)
+        @test ep.id == "beijing"
+        @test ep.position.latitude_deg ≈ 39.9042
+        @test ep.position.longitude_deg ≈ 116.4074
+        @test ep.position.altitude_km == 0.0
+        @test ep.uplink_demand_mbps == 0.0
+        @test ep.downlink_demand_mbps == 0.0
+        @test ground_endpoint_tuple(ep) == (39.9042, 116.4074, 0.0)
+
+        station = GroundStation(id=1, name="durham", position=GeodeticPosition(35.9940, -78.8986, 0.0))
+        station_ep = GroundEndpoint(station)
+        @test station_ep.id == "1"
+        @test station_ep.tags["name"] == "durham"
+        @test ground_endpoint_tuple(station_ep) == (35.9940, -78.8986, 0.0)
+
+        terminal = UserTerminal(id=2, name="mobile", position=GeodeticPosition(1.0, 2.0, 3.0))
+        terminal_ep = GroundEndpoint(terminal)
+        @test terminal_ep.id == "2"
+        @test terminal_ep.tags["name"] == "mobile"
+        @test ground_endpoint_tuple(terminal_ep) == (1.0, 2.0, 3.0)
+
+        # tags 排序保证 repr 稳定（用于缓存 config_hash）
+        ep_a = GroundEndpoint("a", 0.0, 0.0, 0.0; tags=Dict("z" => "1", "a" => "2"))
+        ep_b = GroundEndpoint("a", 0.0, 0.0, 0.0; tags=Dict("a" => "2", "z" => "1"))
+        @test repr(ep_a) == repr(ep_b)
+
+        # 非法坐标应报错
+        @test_throws ArgumentError GroundEndpoint("bad", 91.0, 0.0, 0.0)
+        @test_throws ArgumentError GroundEndpoint("bad", 0.0, 181.0, 0.0)
     end
 
     @testset "链路类型契约" begin

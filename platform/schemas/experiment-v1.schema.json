@@ -81,13 +81,34 @@
     "traffic": {"type": "string", "enum": ["uniform", "hotspot"]},
     "ground_pairs": {
       "type": "array",
-      "description": "Reserved for a future ground_stations contract; v1 requires this array to be empty.",
-      "maxItems": 0,
+      "description": "1-based indices into the merged ground endpoint list (users + ground_endpoints).",
       "items": {
         "type": "array",
         "minItems": 2,
         "maxItems": 2,
         "items": {"type": "integer", "minimum": 1}
+      }
+    },
+    "ground_endpoints": {
+      "type": "array",
+      "description": "Unified ground endpoints for coverage, GSL, and traffic.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "lat", "lon"],
+        "properties": {
+          "id": {"type": "string", "minLength": 1},
+          "lat": {"type": "number", "minimum": -90, "maximum": 90},
+          "lon": {"type": "number", "minimum": -180, "maximum": 180},
+          "alt_km": {"type": "number"},
+          "uplink_demand_mbps": {"type": "number", "minimum": 0},
+          "downlink_demand_mbps": {"type": "number", "minimum": 0},
+          "service_type": {"type": ["string", "null"]},
+          "tags": {
+            "type": "object",
+            "additionalProperties": {"type": "string"}
+          }
+        }
       }
     },
     "users": {

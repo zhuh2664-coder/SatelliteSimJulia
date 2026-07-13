@@ -33,6 +33,7 @@ function study(name::String;
     topology = nothing,   # 接受 TopologyIntent（推荐）或具体策略
     routing = nothing,    # 接受 RoutingIntent 或具体算法
     constraints = nothing, # 接受 ConstraintIntent 或 PhysicalConstraints
+    ground_endpoints = nothing,
     ground_stations = nothing,
     users = nothing,
     random_seed::Int = 42,
@@ -46,6 +47,7 @@ function study(name::String;
         topology_strategy = something(topology, DefaultTopology),
         routing_algorithm = something(routing, DefaultRouting),
         constraints = something(constraints, LEO_DEFAULTS),
+        ground_endpoints = something(ground_endpoints, GroundEndpoint[]),
         ground_stations = something(ground_stations, GroundStation[]),
         users = something(users, GroundUser[]),
         random_seed = random_seed,

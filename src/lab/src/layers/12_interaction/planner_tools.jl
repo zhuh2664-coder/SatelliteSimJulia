@@ -74,7 +74,7 @@ function _tool_run_study_plan(args::AbstractDict)
         "connectivity_ratio" => round(result.network.connectivity_ratio, digits=4),
         "fitness" => round(result.fitness, digits=4),
         "traffic_demands" => length(result.config.traffic_demands),
-        "ground_stations" => length(result.config.ground_stations),
+        "ground_stations" => length(result.config.ground_endpoints),
         "ground_pairs" => length(result.config.ground_pairs),
         "traffic_evaluation_ran" => traffic_evaluation !== nothing,
         "traffic_fallback" => !isempty(result.config.traffic_demands) && traffic_evaluation === nothing,

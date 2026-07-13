@@ -146,7 +146,7 @@ end
 
         _, positions = propagate_constellation_positions(config)
         @test size(positions) == (6, 3, 3)
-        gsl_available, _ = assess_coverage(positions, config.users, config.constraints)
+        gsl_available, _ = assess_coverage(positions, config.ground_endpoints, config.constraints)
         D, available_isl, isl_results = assess_routing(
             positions, 6, 3, config.topology_strategy, config.constraints,
         )
@@ -176,10 +176,10 @@ end
         @test positions_view isa SubArray
 
         view_gsl, view_coverage = assess_coverage(
-            positions_view, padded.users, padded.constraints,
+            positions_view, padded.ground_endpoints, padded.constraints,
         )
         array_gsl, array_coverage = assess_coverage(
-            positions_array, padded.users, padded.constraints,
+            positions_array, padded.ground_endpoints, padded.constraints,
         )
         @test view_gsl == array_gsl
         @test coverage_summary(view_coverage) == coverage_summary(array_coverage)

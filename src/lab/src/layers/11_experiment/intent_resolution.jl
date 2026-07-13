@@ -195,6 +195,7 @@ _phase_for(P::Int) = P ÷ 4            # 默认相位参数
 Base.@kwdef struct TrafficResolutionContext
     base::ResolutionContext = ResolutionContext()
     ground_ids::Vector{Int} = Int[]    # 地面端点 id 列表
+    ground_pairs::Vector{Tuple{Int,Int}} = Tuple{Int,Int}[]  # 用户指定的 OD 对
     tspan::Vector{Float64} = [0.0]
 end
 
@@ -206,11 +207,13 @@ end
 """
 function resolve_traffic_intent(intent::TrafficIntent, tctx::TrafficResolutionContext)
     gids = tctx.ground_ids
+    pairs = tctx.ground_pairs
     length(gids) >= 2 || return TrafficDemand[]   # 端点不足，空需求
+    isempty(pairs) && return TrafficDemand[]    # 未指定 OD 对，不生成流量
     t0 = Int(first(tctx.tspan))
     t1 = Int(last(tctx.tspan))
     duration = max(t1 - t0, 1)
-    return _demands_for(intent, gids, t0, duration)
+    return _demands_for(intent, gids, pairs, t0, duration)
 end
 
 # 向后兼容：旧 Symbol（:uniform 等）→ 构造意图再翻译
@@ -220,13 +223,13 @@ resolve_traffic_intent(s::Symbol, tctx::TrafficResolutionContext) =
 # 全对（不含自环）
 _all_ground_pairs(gids) = [(a, b) for (i,a) in enumerate(gids) for b in gids[i+1:end]]
 
-_demands_for(::UniformLoad, gids, t0, dur) =
+_demands_for(::UniformLoad, gids, pairs, t0, dur) =
     [TrafficDemand(id=k, source_ground_id=a, destination_ground_id=b,
                    start_elapsed_s=t0, end_elapsed_s=t0+dur, rate_mbps=50.0)
-     for (k,(a,b)) in enumerate(_all_ground_pairs(gids))]
+     for (k,(a,b)) in enumerate(pairs)]
 
-function _demands_for(::HotspotLoad, gids, t0, dur)
-    pairs = _all_ground_pairs(gids); n = length(pairs)
+function _demands_for(::HotspotLoad, gids, pairs, t0, dur)
+    n = length(pairs)
     n_hot = max(1, round(Int, 0.2n))   # 20% 热点对
     [TrafficDemand(id=k, source_ground_id=a, destination_ground_id=b,
                    start_elapsed_s=t0, end_elapsed_s=t0+dur,
@@ -234,15 +237,15 @@ function _demands_for(::HotspotLoad, gids, t0, dur)
      for (k,(a,b)) in enumerate(pairs)]
 end
 
-_demands_for(::VideoLoad, gids, t0, dur) =
+_demands_for(::VideoLoad, gids, pairs, t0, dur) =
     [TrafficDemand(id=k, source_ground_id=a, destination_ground_id=b,
                    start_elapsed_s=t0, end_elapsed_s=t0+dur, rate_mbps=50.0)
-     for (k,(a,b)) in enumerate(_all_ground_pairs(gids))]
+     for (k,(a,b)) in enumerate(pairs)]
 
-_demands_for(::IoTLoad, gids, t0, dur) =
+_demands_for(::IoTLoad, gids, pairs, t0, dur) =
     [TrafficDemand(id=k, source_ground_id=a, destination_ground_id=b,
                    start_elapsed_s=t0, end_elapsed_s=t0+dur, rate_mbps=1.0)
-     for (k,(a,b)) in enumerate(_all_ground_pairs(gids))]
+     for (k,(a,b)) in enumerate(pairs)]
 
 # ════════════════════════════════════════════════════════════
 # 传播器意图翻译（实现名词 TwoBody/J2/J4 关在此处）
