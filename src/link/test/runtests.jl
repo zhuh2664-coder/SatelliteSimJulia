@@ -28,6 +28,115 @@ using Test
         @test lla[2] ≈ 116.4 atol=1e-6
     end
 
+    @testset "ISL 正交 RTN 与解析持续时间" begin
+        source = (7000.0, 0.0, 0.0)
+        velocity = (1.0, 2.0, 0.0)
+        target = (7003.0, 4.0, 12.0)
+        r, t, n = SatelliteSimLink.compute_rtn_coordinates(source, velocity, target)
+        @test r ≈ 3.0 atol=1e-12
+        @test t ≈ 4.0 atol=1e-12
+        @test n ≈ 12.0 atol=1e-12
+        @test SatelliteSimLink.compute_elevation_from_rtn(r, t, n) ≈
+              13.342363797088238 atol=1e-12
+        @test SatelliteSimLink.compute_azimuth_from_rtn(t, n) ≈
+              3 / sqrt(10) atol=1e-12
+
+        @test_throws DomainError SatelliteSimLink.compute_rtn_coordinates(
+            (0.0, 0.0, 0.0), velocity, target,
+        )
+        @test_throws DomainError SatelliteSimLink.compute_rtn_coordinates(
+            source, (0.0, 0.0, 0.0), target,
+        )
+        @test_throws DomainError SatelliteSimLink.compute_rtn_coordinates(
+            source, (1.0, 0.0, 0.0), target,
+        )
+        non_axis_radial_position = (7000.0, 1000.0, 2000.0)
+        @test_throws DomainError SatelliteSimLink.compute_rtn_coordinates(
+            non_axis_radial_position,
+            (14000.0, 2000.0, 4000.0),
+            (7003.0, 1004.0, 2012.0),
+        )
+
+        range_constraints = PhysicalConstraints(
+            isl_max_range_km=1000.0,
+            isl_require_los=false,
+            isl_max_cone_angle_deg=60.0,
+            isl_min_duration_s=10.5,
+        )
+        source_velocity = (0.0, 1.0, 0.0)
+        target_position = (7000.0, 0.0, 900.0)
+        target_velocity = (0.0, 1.0, 10.0)
+        available, _, _, _, details = SatelliteSimLink.evaluate_isl(
+            source,
+            target_position;
+            constraints=range_constraints,
+            vel_a=source_velocity,
+            vel_b=target_velocity,
+            time_horizon=300.0,
+            terminal_id=4,
+        )
+        @test !available
+        @test details.duration_s ≈ 10.0 atol=1e-12
+        @test !details.duration_ok
+
+        long_horizon_constraints = PhysicalConstraints(
+            isl_max_range_km=4097.00048828125,
+        )
+        @test SatelliteSimLink.estimate_link_duration(
+            source,
+            source_velocity,
+            (7000.0, 0.0, 1.0),
+            (0.0, 1.0, 2.0^-12),
+            16_777_220.0;
+            constraints=long_horizon_constraints,
+        ) ≈ 16_777_218.0 atol=1e-9
+        huge_range_constraints = PhysicalConstraints(isl_max_range_km=1.0e200)
+        @test SatelliteSimLink.estimate_link_duration(
+            source,
+            source_velocity,
+            (7000.0, 0.0, 1.0),
+            (0.0, 1.0, 2.0^-12),
+            300.0;
+            constraints=huge_range_constraints,
+        ) == 300.0
+
+        degenerate_positions = [
+            7000.0 0.0 0.0
+            7000.0 0.0 100.0
+        ]
+        degenerate_velocities = [
+            1.0 0.0 0.0
+            0.0 1.0 0.0
+        ]
+        permissive = PhysicalConstraints(
+            isl_max_range_km=1000.0,
+            isl_require_los=false,
+            isl_max_cone_angle_deg=180.0,
+            isl_min_duration_s=0.0,
+        )
+        degenerate = only(evaluate_isl_batch(
+            degenerate_positions,
+            [(1, 2)];
+            constraints=permissive,
+            vel_matrix=degenerate_velocities,
+        ))
+        @test !degenerate.available
+        @test degenerate.elevation_deg == 90.0
+        @test degenerate.cos_psi == 1.0
+        @test degenerate.duration_s == 0.0
+        @test all(isfinite, (
+            degenerate.distance_km,
+            degenerate.latency_ms,
+            degenerate.elevation_deg,
+            degenerate.cos_psi,
+            degenerate.duration_s,
+        ))
+        @test_throws ArgumentError evaluate_isl_batch(
+            degenerate_positions,
+            [(1, 1)],
+        )
+    end
+
     @testset "ISL 批评估" begin
         # evaluate_isl_batch 要 Matrix{Float64}(N×3 单时间步)，不是 3D
         elems = generate_walker_delta(; T=6, P=2, F=0, alt_km=550.0, inc_deg=53.0)
@@ -56,6 +165,9 @@ using Test
         )
         @test series.available[:, :, 1] == gsl[1]
         @test series.distance_km[:, :, 1] ≈ gsl[2]
+        cpu_capabilities = compute_backend_capabilities(CPUComputeBackend())
+        @test cpu_capabilities.operations == (:gsl_series, :isl_series)
+        @test cpu_capabilities.precision === Float64
         @test compute_backend_fingerprint(CPUComputeBackend()).implementation_module ==
               "SatelliteSimLink"
         cpu_source_files = compute_backend_source_files(CPUComputeBackend())
@@ -117,6 +229,33 @@ using Test
         @test size(empty_series.available) == (0, n_times)
         @test_throws ArgumentError evaluate_isl_series(
             CPUComputeBackend(), positions, [(1, 99)]; velocities=velocities,
+        )
+        @test_throws ArgumentError evaluate_isl_series(
+            CPUComputeBackend(), positions, [(1, 1)],
+        )
+        @test_throws ArgumentError evaluate_isl_series(
+            CPUComputeBackend(),
+            positions,
+            Tuple{Int,Int}[];
+            isl_max_range_km=big"1e10000",
+        )
+        @test_throws ArgumentError evaluate_isl_series(
+            CPUComputeBackend(),
+            positions,
+            Tuple{Int,Int}[];
+            isl_max_cone_angle_deg=-1.0,
+        )
+        @test_throws ArgumentError evaluate_isl_series(
+            CPUComputeBackend(),
+            positions,
+            Tuple{Int,Int}[];
+            isl_min_duration_s=-1.0,
+        )
+        @test_throws ArgumentError evaluate_isl_series(
+            CPUComputeBackend(),
+            positions,
+            Tuple{Int,Int}[];
+            time_horizon_s=0.0,
         )
     end
 

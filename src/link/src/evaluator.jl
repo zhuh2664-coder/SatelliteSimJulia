@@ -36,10 +36,15 @@ function evaluate_isl(
     # 2. 仰角检查（需速度计算 RTN）
     elev_ok = true
     elevation = 90.0
+    r = t = n = 0.0
     if available && vel_a !== nothing
-        r, t, n = compute_rtn_coordinates(pos_a, vel_a, pos_b)
-        elevation = compute_elevation_from_rtn(r, t, n)
-        elev_ok = check_isl_elevation(elevation; constraints=constraints)
+        rtn_valid, r, t, n = _try_compute_rtn_coordinates(pos_a, vel_a, pos_b)
+        if rtn_valid
+            elevation = compute_elevation_from_rtn(r, t, n)
+            elev_ok = check_isl_elevation(elevation; constraints=constraints)
+        else
+            elev_ok = false
+        end
         available &= elev_ok
     end
 
@@ -47,7 +52,6 @@ function evaluate_isl(
     azim_ok = true
     cos_psi = 1.0
     if available && vel_a !== nothing
-        r, t, n = compute_rtn_coordinates(pos_a, vel_a, pos_b)
         cos_psi = compute_azimuth_from_rtn(t, n)
         azim_ok = check_isl_azimuth(cos_psi, terminal_id; constraints=constraints)
         available &= azim_ok
@@ -57,7 +61,14 @@ function evaluate_isl(
     dur_ok = true
     duration = 0.0
     if available && vel_a !== nothing && vel_b !== nothing
-        duration = estimate_link_duration(pos_a, vel_a, pos_b, vel_b, time_horizon)
+        duration = estimate_link_duration(
+            pos_a,
+            vel_a,
+            pos_b,
+            vel_b,
+            time_horizon;
+            constraints=constraints,
+        )
         dur_ok = check_isl_duration(duration; constraints=constraints)
         available &= dur_ok
     end
@@ -75,7 +86,7 @@ end
 """
     estimate_link_duration(pos_a, vel_a, pos_b, vel_b, time_horizon) -> Float64
 
-用直线外推法估算 ISL 在最大距离约束下的持续时长（秒）。
+在恒定相对速度直线外推下，解析计算 ISL 首次越过最大距离约束的时刻（秒）。
 """
 function estimate_link_duration(
     pos_a::NTuple{3,Real},
@@ -85,18 +96,47 @@ function estimate_link_duration(
     time_horizon::Float64;
     constraints::PhysicalConstraints=LEO_DEFAULTS,
 )
-    rel_pos = Float64.(pos_b .- pos_a)
-    rel_vel = Float64.(vel_b .- vel_a)
     max_range = constraints.isl_max_range_km
+    isfinite(max_range) && max_range > 0.0 ||
+        throw(ArgumentError("isl_max_range_km must be finite and positive"))
+    isfinite(time_horizon) && time_horizon > 0.0 ||
+        throw(ArgumentError("time_horizon must be finite and positive"))
 
-    # 直线外推：每隔 1s 检查一次距离
-    for t in 1.0:1.0:time_horizon
-        p = rel_pos .+ t .* rel_vel
-        if norm(p) > max_range  # 超过 ISL 最大距离则视为断链
-            return t  # 返回可持续秒数
-        end
+    rel_pos = ntuple(i -> Float64(pos_b[i]) - Float64(pos_a[i]), 3)
+    rel_vel = ntuple(i -> Float64(vel_b[i]) - Float64(vel_a[i]), 3)
+    all(isfinite, rel_pos) && all(isfinite, rel_vel) ||
+        throw(ArgumentError("positions and velocities must be finite"))
+
+    position_scale = max(max_range, maximum(abs, rel_pos))
+    scaled_position = ntuple(i -> rel_pos[i] / position_scale, 3)
+    scaled_range = max_range / position_scale
+    scaled_distance = sqrt(sum(abs2, scaled_position))
+    range_residual =
+        (scaled_distance - scaled_range) * (scaled_distance + scaled_range)
+    range_residual > 0.0 && return 0.0
+
+    velocity_scale = maximum(abs, rel_vel)
+    velocity_scale == 0.0 && return time_horizon
+    scaled_velocity = ntuple(i -> rel_vel[i] / velocity_scale, 3)
+    speed_squared = sum(abs2, scaled_velocity)
+    radial_rate =
+        sum(scaled_position[i] * scaled_velocity[i] for i in 1:3)
+    range_residual == 0.0 && radial_rate >= 0.0 && return 0.0
+
+    discriminant = max(radial_rate^2 - speed_squared * range_residual, 0.0)
+    root = sqrt(discriminant)
+    crossing = if radial_rate >= 0.0
+        -range_residual / (radial_rate + root)
+    else
+        (-radial_rate + root) / speed_squared
     end
-    return time_horizon
+    time_scale = position_scale / velocity_scale
+    crossing = if isfinite(time_scale)
+        crossing * time_scale
+    else
+        (crossing * position_scale) / velocity_scale
+    end
+    return clamp(crossing, 0.0, time_horizon)
 end
 
 """
@@ -114,6 +154,7 @@ function evaluate_isl_batch(
     results = []
     has_vel = vel_matrix !== nothing
     for (i, j) in isl_pairs
+        i != j || throw(ArgumentError("ISL pair endpoints must be distinct"))
         a = (pos_matrix[i,1], pos_matrix[i,2], pos_matrix[i,3])
         b = (pos_matrix[j,1], pos_matrix[j,2], pos_matrix[j,3])
         va = has_vel ? (vel_matrix[i,1], vel_matrix[i,2], vel_matrix[i,3]) : nothing
@@ -189,6 +230,14 @@ function evaluate_gsl_batch(
     end
     return avail_mat, dist_mat, elev_mat, delay_mat
 end
+
+compute_backend_capabilities(::CPUComputeBackend) = (
+    operations=(:gsl_series, :isl_series),
+    device=:cpu,
+    precision=Float64,
+    input_residency=:host,
+    output_residency=:host,
+)
 
 compute_backend_fingerprint(backend::CPUComputeBackend) = (
     name="cpu",
@@ -311,13 +360,18 @@ function evaluate_isl_series(
         throw(ArgumentError("positions must be non-empty"))
     all(isfinite, positions) ||
         throw(ArgumentError("positions must contain only finite values"))
-    isfinite(isl_max_range_km) && isl_max_range_km > 0 ||
+
+    max_range = Float64(isl_max_range_km)
+    cone_angle = Float64(isl_max_cone_angle_deg)
+    min_duration = Float64(isl_min_duration_s)
+    time_horizon = Float64(time_horizon_s)
+    isfinite(max_range) && max_range > 0.0 ||
         throw(ArgumentError("isl_max_range_km must be finite and positive"))
-    isfinite(isl_max_cone_angle_deg) ||
-        throw(ArgumentError("isl_max_cone_angle_deg must be finite"))
-    isfinite(isl_min_duration_s) ||
-        throw(ArgumentError("isl_min_duration_s must be finite"))
-    isfinite(time_horizon_s) && time_horizon_s > 0 ||
+    isfinite(cone_angle) && 0.0 <= cone_angle <= 180.0 ||
+        throw(ArgumentError("isl_max_cone_angle_deg must be in [0, 180] degrees"))
+    isfinite(min_duration) && min_duration >= 0.0 ||
+        throw(ArgumentError("isl_min_duration_s must be finite and non-negative"))
+    isfinite(time_horizon) && time_horizon > 0.0 ||
         throw(ArgumentError("time_horizon_s must be finite and positive"))
     if velocities !== nothing
         size(velocities) == size(positions) ||
@@ -336,14 +390,15 @@ function evaluate_isl_series(
         i, j = Int(first(pair)), Int(last(pair))
         (1 <= i <= n_satellites && 1 <= j <= n_satellites) ||
             throw(ArgumentError("isl_pairs indices must be within 1:$(n_satellites)"))
+        i != j || throw(ArgumentError("ISL pair endpoints must be distinct"))
         push!(pairs, (i, j))
     end
 
     constraints = PhysicalConstraints(
-        isl_max_range_km=Float64(isl_max_range_km),
+        isl_max_range_km=max_range,
         isl_require_los=isl_require_los,
-        isl_max_cone_angle_deg=Float64(isl_max_cone_angle_deg),
-        isl_min_duration_s=Float64(isl_min_duration_s),
+        isl_max_cone_angle_deg=cone_angle,
+        isl_min_duration_s=min_duration,
     )
 
     n_pairs = length(pairs)
@@ -363,7 +418,7 @@ function evaluate_isl_series(
             pairs;
             constraints=constraints,
             vel_matrix=vel_matrix,
-            time_horizon=Float64(time_horizon_s),
+            time_horizon=time_horizon,
         )
         for (pair_index, link) in enumerate(results_at_time)
             available[pair_index, time_index] = link.available

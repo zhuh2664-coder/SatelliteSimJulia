@@ -114,32 +114,51 @@ end
     compute_rtn_coordinates(pos, vel, target_pos) -> (r, t, n)
 
 计算目标点在RTN坐标系中的坐标。
-R: 指向地心, T: 速度方向, N: R×T
+R: 径向向外, N: 轨道法向, T: 正交化后的切向（R,N,T 为正交单位基）
 返回 (r, t, n) 分量。
+
+当位置为零、速度为零/纯径向或输入非有限时，RTN 轨道面无定义并抛出
+`DomainError`。
 """
-function compute_rtn_coordinates(pos, vel, target_pos)
-    # 统一转为 Vector{Float64}（支持 Tuple 输入）
+function _try_compute_rtn_coordinates(pos, vel, target_pos)
     p = collect(Float64, pos)
     v = collect(Float64, vel)
     tgt = collect(Float64, target_pos)
 
-    # R轴：指向地心
-    R = p / norm(p)
+    if !all(isfinite, p) || !all(isfinite, v) || !all(isfinite, tgt)
+        return false, 0.0, 0.0, 0.0
+    end
 
-    # T轴：速度方向
-    T = v / norm(v)
+    position_norm = norm(p)
+    position_norm > 0.0 || return false, 0.0, 0.0, 0.0
+    R = p / position_norm
 
-    # N轴：R × T（右手法则）
-    N = cross(R, T)
-    N = N / norm(N)
+    velocity_scale = maximum(abs, v)
+    velocity_scale > 0.0 || return false, 0.0, 0.0, 0.0
+    scaled_velocity = v / velocity_scale
+    normal = cross(R, scaled_velocity)
+    normal_norm = norm(normal)
+    velocity_norm = norm(scaled_velocity)
+    normal_norm > 16 * eps(Float64) * velocity_norm ||
+        return false, 0.0, 0.0, 0.0
+    N = normal / normal_norm
+    T = cross(N, R)
 
-    # 计算相对位置在RTN中的坐标
     rel = tgt .- p
     r = dot(rel, R)
     t = dot(rel, T)
     n = dot(rel, N)
 
-    return (r, t, n)
+    return true, r, t, n
+end
+
+function compute_rtn_coordinates(pos, vel, target_pos)
+    valid, r, t, n = _try_compute_rtn_coordinates(pos, vel, target_pos)
+    valid || throw(DomainError(
+        (pos, vel),
+        "RTN frame requires a finite non-zero position and non-radial velocity",
+    ))
+    return r, t, n
 end
 
 """
@@ -149,9 +168,9 @@ end
 cos_psi = n / sqrt(n² + t²)
 """
 function compute_azimuth_from_rtn(t::Real, n::Real)::Float64
-    denom = sqrt(n^2 + t^2)
+    denom = hypot(n, t)
     denom < 1e-10 && return 1.0  # 两点重合
-    return n / denom
+    return clamp(n / denom, -1.0, 1.0)
 end
 
 """
@@ -161,7 +180,8 @@ end
 仰角 = arcsin(|r| / sqrt(r² + t² + n²))
 """
 function compute_elevation_from_rtn(r::Real, t::Real, n::Real)::Float64
-    dist = sqrt(r^2 + t^2 + n^2)
+    horizontal = hypot(t, n)
+    dist = hypot(r, horizontal)
     dist < 1e-10 && return 90.0
-    return rad2deg(asin(abs(r) / dist))
+    return rad2deg(atan(abs(r), horizontal))
 end
