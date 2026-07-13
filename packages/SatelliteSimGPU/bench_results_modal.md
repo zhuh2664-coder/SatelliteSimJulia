@@ -239,3 +239,119 @@ BENCH op=isl type=Float64 N=1584 P=3168 NT=90 cpu_backend_s=0.022383499 gpu_comp
 BENCH op=isl type=Float64 N=1584 P=6336 NT=90 cpu_backend_s=0.0562391 gpu_compute_s=0.013305113 gpu_e2e_s=0.016163198 speedup_compute=4.23 speedup_e2e=3.48
 MODAL_GPU_VALIDATION status=PASS
 ```
+
+## 10. 1584 real-scale forward (Starlink TLE → SGP4 → coverage loss)
+
+- **Date:** 2026-07-12 (EDT)
+- **Runner:** `MODAL_PROFILE=satsim-gpu modal run modal_gpu.py --suites real1584`
+  - forward jobs: `ap-GNsWR0G5rU4zAVKXTDttT2` (GPU + CPU PASS)
+  - opt load follow-up: `ap-3CpsyzMdwndovUhOxHBfo7` (`--suites opt_load`, PASS)
+- **Resources used:** 1× A10G + 1× CPU-4vCPU + 1× CPU-2vCPU (opt); released on completion
+- **TLE:** `/opt/data/tle/celestrak/starlink_gp_latest.tle` (local `data/tle/celestrak/…`, first **1584** near-Earth records: `STARLINK-1008` … `STARLINK-4308`, epoch JD ≈ 2.46119965×10⁶)
+- **Propagator (noted):** `sgp4_gpu.jl` **host init** + KernelAbstractions **propagate** (CUDA on GPU job / KA-CPU on CPU job) → position-only `teme_to_pef_gpu` (GMST Z-rotation with explicit `epoch_jd_ut1`; `jd = epoch_jd_ut1 + elapsed_s/86400`). The output is PEF, not polar-motion-corrected ITRF, and this path does not transform velocity. Not host `SatelliteToolbox` propagate.
+- **Coverage:** `coverage_loss_gpu`; Δt = 1 min between samples; G via lat×lon grid trimmed to requested size
+- **Timing口径:** warmup then **min-of-N**; GPU compute = resident kernel only (excludes compile + H2D); GPU e2e = `device_pipeline` H2D+kernel+scalar D2H; CPU = KA backend on host `Array`s. GPU parity vs CPU golden **PASS** at every cell before timing.
+
+### 10.1 Machines / config
+
+| Role | Hardware / request | Julia threads | Notes |
+|---|---|---:|---|
+| GPU forward | **NVIDIA A10G** 22.06 GiB, CC 8.6, driver 13.3.0, CUDA rt 12.9.0, CUDA.jl 6.2.1 | 1 | `cpu=2.0`, `memory=8192`; `gpu_samples=10` |
+| CPU forward | Modal CPU container, 20 visible cores (`cpu_model=unknown`) | **4** | `cpu=4.0`, `memory=8192`; `cpu_samples=3` |
+| Opt load | Modal CPU container, 18 visible cores | 1 | `cpu=2.0`; no gradient |
+
+### 10.2 CPU multi-thread baseline (`julia_threads=4`)
+
+Times in **ms** (min of 3, post-warmup). Throughput = N·NT·G / s.
+
+#### Float32
+| N | NT | G | CPU (ms) | Throughput |
+|---:|---:|---:|---:|---:|
+| 1584 | 20 | 800 | 284.5 | 89.1 Meval/s |
+| 1584 | 20 | 2000 | 712.6 | 88.9 Meval/s |
+| 1584 | 96 | 800 | 1344.8 | 90.5 Meval/s |
+| 1584 | 96 | 2000 | 3291.6 | 92.4 Meval/s |
+
+#### Float64
+| N | NT | G | CPU (ms) | Throughput |
+|---:|---:|---:|---:|---:|
+| 1584 | 20 | 800 | 318.8 | 79.5 Meval/s |
+| 1584 | 20 | 2000 | 797.6 | 79.4 Meval/s |
+| 1584 | 96 | 800 | 1502.1 | 81.0 Meval/s |
+| 1584 | 96 | 2000 | 3722.1 | 81.7 Meval/s |
+
+### 10.3 A10G GPU (`coverage_loss_gpu`) + parity
+
+`cpu_golden_s` on the GPU box is a **1-thread** KA reference (not the 4-thread baseline above). Speedups below are vs that 1-thread golden. All `parity=PASS` (F64 ~1e−15; F32 ~1e−6…2e−6).
+
+#### Float32
+| N | NT | G | CPU golden (ms) | GPU compute (ms) | GPU e2e (ms) | Speedup (compute) | Speedup (e2e) | GPU throughput |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1584 | 20 | 800 | 989.6 | 1.104 | 1.181 | **897×** | 838× | 23.0 Geval/s |
+| 1584 | 20 | 2000 | 2482.4 | 1.141 | 1.173 | **2176×** | 2117× | 55.5 Geval/s |
+| 1584 | 96 | 800 | 4758.6 | 2.848 | 3.048 | **1671×** | 1561× | 42.7 Geval/s |
+| 1584 | 96 | 2000 | 11876.4 | 6.777 | 6.960 | **1753×** | 1706× | 44.9 Geval/s |
+
+#### Float64
+| N | NT | G | CPU golden (ms) | GPU compute (ms) | GPU e2e (ms) | Speedup (compute) | Speedup (e2e) | GPU throughput |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1584 | 20 | 800 | 1130.5 | 56.95 | 57.04 | 19.9× | 19.8× | 0.45 Geval/s |
+| 1584 | 20 | 2000 | 2840.2 | 56.96 | 57.25 | 49.9× | 49.6× | 1.11 Geval/s |
+| 1584 | 96 | 800 | 5423.7 | 57.09 | 57.49 | **95.0×** | 94.3× | 2.13 Geval/s |
+| 1584 | 96 | 2000 | 13578.4 | 169.72 | 170.21 | 80.0× | 79.8× | 1.79 Geval/s |
+
+**vs 4-thread CPU (honest multi-core):** e.g. F32 NT=96 G=2000: CPU 3.29 s / GPU compute 6.78 ms ≈ **485×**; F64 same cell: 3.72 s / 170 ms ≈ **22×**. Coverage remains scalar-output so e2e ≈ compute.
+
+SGP4+frame propagate cost (once per NT, not in coverage timings): CPU NT=20 ≈ 0.37 s (incl. first compile), NT=96 ≈ 0.023 s; GPU NT=20 ≈ 8.7 s (first CUDA compile), NT=96 ≈ 0.005 s.
+
+### 10.4 Stage-2 paving: `SatelliteSimOpt` cold load
+
+Container ran `julia --project=/opt/src/opt modal_opt_load.jl` (foundation/orbit/link/net/opt mounted; Backends symlinked at `/opt/packages/SatelliteSimBackends`). **Load only — no gradient.**
+
+| Metric | Value |
+|---|---|
+| `Pkg.instantiate` (+ precompile) | **166.0 s** |
+| `using SatelliteSimOpt` | **4.0 s** |
+| Total wall | **170.2 s** |
+| Status | **PASS** |
+
+Reproduce:
+
+```bash
+cd packages/SatelliteSimGPU
+export HTTPS_PROXY=http://127.0.0.1:7890 HTTP_PROXY=http://127.0.0.1:7890 NO_PROXY=localhost,127.0.0.1,::1
+MODAL_PROFILE=satsim-gpu modal run modal_gpu.py --suites real1584
+MODAL_PROFILE=satsim-gpu modal run modal_gpu.py --suites opt_load
+```
+
+### 10.5 Raw measurement lines (verbatim)
+
+```text
+# CPU (julia_threads=4)
+GPU_INFO device=none julia=1.12.6 kernel_abstractions=0.9.42 julia_threads=4 cpu_threads_visible=20 cpu_model=unknown
+REAL1584_TLE loaded=1584 epoch_jd=2.46119965246276e6 first=STARLINK-1008 last=STARLINK-4308
+BENCH op=coverage_real1584 mode=cpu type=Float32 N=1584 NT=20 G=800 cpu_backend_s=0.284522563
+BENCH op=coverage_real1584 mode=cpu type=Float32 N=1584 NT=20 G=2000 cpu_backend_s=0.712577529
+BENCH op=coverage_real1584 mode=cpu type=Float32 N=1584 NT=96 G=800 cpu_backend_s=1.344780432
+BENCH op=coverage_real1584 mode=cpu type=Float32 N=1584 NT=96 G=2000 cpu_backend_s=3.291619224
+BENCH op=coverage_real1584 mode=cpu type=Float64 N=1584 NT=20 G=800 cpu_backend_s=0.318771099
+BENCH op=coverage_real1584 mode=cpu type=Float64 N=1584 NT=20 G=2000 cpu_backend_s=0.797571091
+BENCH op=coverage_real1584 mode=cpu type=Float64 N=1584 NT=96 G=800 cpu_backend_s=1.502057251
+BENCH op=coverage_real1584 mode=cpu type=Float64 N=1584 NT=96 G=2000 cpu_backend_s=3.722077708
+
+# GPU (A10G, julia_threads=1)
+GPU_INFO device=NVIDIA A10G total_mem_gib=22.06 compute_capability=8.6 driver=13.3.0 cuda_runtime=12.9.0 cuda_jl=6.2.1 julia=1.12.6 julia_threads=1 cpu_threads_visible=18
+BENCH op=coverage_real1584 mode=gpu type=Float32 N=1584 NT=20 G=800 gpu_compute_s=0.001103746 gpu_e2e_s=0.001180741 parity=PASS
+BENCH op=coverage_real1584 mode=gpu type=Float32 N=1584 NT=20 G=2000 gpu_compute_s=0.001140859 gpu_e2e_s=0.001172651 parity=PASS
+BENCH op=coverage_real1584 mode=gpu type=Float32 N=1584 NT=96 G=800 gpu_compute_s=0.002848291 gpu_e2e_s=0.003047813 parity=PASS
+BENCH op=coverage_real1584 mode=gpu type=Float32 N=1584 NT=96 G=2000 gpu_compute_s=0.006776776 gpu_e2e_s=0.006960426 parity=PASS
+BENCH op=coverage_real1584 mode=gpu type=Float64 N=1584 NT=20 G=800 gpu_compute_s=0.056947387 gpu_e2e_s=0.057042123 parity=PASS
+BENCH op=coverage_real1584 mode=gpu type=Float64 N=1584 NT=20 G=2000 gpu_compute_s=0.056957378 gpu_e2e_s=0.057251745 parity=PASS
+BENCH op=coverage_real1584 mode=gpu type=Float64 N=1584 NT=96 G=800 gpu_compute_s=0.057090195 gpu_e2e_s=0.057488 parity=PASS
+BENCH op=coverage_real1584 mode=gpu type=Float64 N=1584 NT=96 G=2000 gpu_compute_s=0.169718453 gpu_e2e_s=0.170210053 parity=PASS
+
+# Opt load
+OPT_LOAD instantiate_s=165.956883324
+OPT_LOAD status=PASS using_s=3.969847532 total_wall_s=170.1838641166687
+MODAL_OPT_LOAD status=PASS
+```

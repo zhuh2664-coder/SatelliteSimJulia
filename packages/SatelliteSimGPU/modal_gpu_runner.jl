@@ -1,12 +1,3 @@
-using Pkg
-# Ensure the pinned manifest deps are present in the container depot before load.
-# No-op when already instantiated; guarded so a working image is never broken.
-try
-    Pkg.instantiate()
-catch instantiate_error
-    @warn "Pkg.instantiate failed; attempting to load anyway" exception = instantiate_error
-end
-
 using Adapt
 using CUDA
 using ChainRulesCore
@@ -19,6 +10,10 @@ using SatelliteToolboxSgp4: sgp4_init, sgp4!, sgp4c_wgs84
 const EARTH_RADIUS_KM = 6378.137
 const SPEED_OF_LIGHT_KM_S = 299_792.458
 const EXPECTED_CUDA_JL_VERSION = v"6.2.1"
+const EXPECTED_JULIA_THREADS = 2
+const EXPECTED_GPU_NAMES = ("NVIDIA A10", "NVIDIA A10G")
+const EXPECTED_GPU_CAPABILITY = (8, 6)
+const MIN_GPU_MEMORY_BYTES = 20 * 2^30
 
 function random_positions(n_satellites::Int, n_times::Int, ::Type{T}) where T
     positions = Array{T}(undef, n_satellites, n_times, 3)
@@ -288,6 +283,87 @@ end
     return sqrt(cx^2 + cy^2 + cz^2) >= earth_radius
 end
 
+@inline function _isl_rtn_reference(ax, ay, az, vx, vy, vz, bx, by, bz)
+    radius_squared = ax^2 + ay^2 + az^2
+    if !(radius_squared > 0.0) || !isfinite(radius_squared)
+        return false, 0.0, 0.0, 0.0
+    end
+    radius = sqrt(radius_squared)
+    rx, ry, rz = ax / radius, ay / radius, az / radius
+
+    velocity_scale = max(abs(vx), abs(vy), abs(vz))
+    if !(velocity_scale > 0.0) || !isfinite(velocity_scale)
+        return false, 0.0, 0.0, 0.0
+    end
+    svx, svy, svz =
+        vx / velocity_scale, vy / velocity_scale, vz / velocity_scale
+    nx = ry * svz - rz * svy
+    ny = rz * svx - rx * svz
+    nz = rx * svy - ry * svx
+    normal_squared = nx^2 + ny^2 + nz^2
+    velocity_squared = svx^2 + svy^2 + svz^2
+    if !(normal_squared > (16 * eps(Float64))^2 * velocity_squared) ||
+       !isfinite(normal_squared)
+        return false, 0.0, 0.0, 0.0
+    end
+    normal = sqrt(normal_squared)
+    nx, ny, nz = nx / normal, ny / normal, nz / normal
+    tx = ny * rz - nz * ry
+    ty = nz * rx - nx * rz
+    tz = nx * ry - ny * rx
+
+    relx, rely, relz = bx - ax, by - ay, bz - az
+    r = relx * rx + rely * ry + relz * rz
+    t = relx * tx + rely * ty + relz * tz
+    n = relx * nx + rely * ny + relz * nz
+    return true, r, t, n
+end
+
+@inline function _isl_duration_reference(
+    ax, ay, az, vax, vay, vaz,
+    bx, by, bz, vbx, vby, vbz,
+    max_range, time_horizon,
+)
+    rpx, rpy, rpz = bx - ax, by - ay, bz - az
+    rvx, rvy, rvz = vbx - vax, vby - vay, vbz - vaz
+    position_scale = max(max_range, abs(rpx), abs(rpy), abs(rpz))
+    !isfinite(position_scale) && return 0.0
+    srpx, srpy, srpz =
+        rpx / position_scale, rpy / position_scale, rpz / position_scale
+    scaled_range = max_range / position_scale
+    scaled_distance = sqrt(srpx^2 + srpy^2 + srpz^2)
+    range_residual =
+        (scaled_distance - scaled_range) * (scaled_distance + scaled_range)
+    range_residual > 0.0 && return 0.0
+
+    velocity_scale = max(abs(rvx), abs(rvy), abs(rvz))
+    velocity_scale == 0.0 && return time_horizon
+    !isfinite(velocity_scale) && return 0.0
+    srvx, srvy, srvz =
+        rvx / velocity_scale, rvy / velocity_scale, rvz / velocity_scale
+    speed_squared = srvx^2 + srvy^2 + srvz^2
+    radial_rate = srpx * srvx + srpy * srvy + srpz * srvz
+    range_residual == 0.0 && radial_rate >= 0.0 && return 0.0
+
+    discriminant = max(
+        radial_rate^2 - speed_squared * range_residual,
+        0.0,
+    )
+    root = sqrt(discriminant)
+    crossing = if radial_rate >= 0.0
+        -range_residual / (radial_rate + root)
+    else
+        (-radial_rate + root) / speed_squared
+    end
+    time_scale = position_scale / velocity_scale
+    crossing = if isfinite(time_scale)
+        crossing * time_scale
+    else
+        (crossing * position_scale) / velocity_scale
+    end
+    return clamp(crossing, 0.0, time_horizon)
+end
+
 function isl_reference(
     positions::AbstractArray{T,3},
     pairs::AbstractVector{<:Tuple{Integer,Integer}};
@@ -333,48 +409,36 @@ function isl_reference(
                 vbx = Float64(velocities[j, time_index, 1])
                 vby = Float64(velocities[j, time_index, 2])
                 vbz = Float64(velocities[j, time_index, 3])
-                ra = sqrt(ax^2 + ay^2 + az^2)
-                rx, ry, rz = ax / ra, ay / ra, az / ra
-                rv = sqrt(vax^2 + vay^2 + vaz^2)
-                tx, ty, tz = vax / rv, vay / rv, vaz / rv
-                nx = ry * tz - rz * ty
-                ny = rz * tx - rx * tz
-                nz = rx * ty - ry * tx
-                rn = sqrt(nx^2 + ny^2 + nz^2)
-                nx, ny, nz = nx / rn, ny / rn, nz / rn
-                relx, rely, relz = bx - ax, by - ay, bz - az
-                r = relx * rx + rely * ry + relz * rz
-                tcoord = relx * tx + rely * ty + relz * tz
-                ncoord = relx * nx + rely * ny + relz * nz
-                dist_rtn = sqrt(r^2 + tcoord^2 + ncoord^2)
-                elevation = dist_rtn < 1e-10 ? 90.0 : rad2deg(asin(abs(r) / dist_rtn))
-                avail = avail && (elevation <= cone_deg)
-                if avail
-                    denom = sqrt(ncoord^2 + tcoord^2)
-                    cos_psi = denom < 1e-10 ? 1.0 : ncoord / denom
-                    azimuth_ok =
-                        terminal_id == 4 ? cos_psi >= cos_rho :
-                        terminal_id == 3 ? cos_psi <= -cos_rho :
-                        terminal_id == 1 ? cos_psi > 0 :
-                        terminal_id == 2 ? cos_psi < 0 : true
-                    avail = avail && azimuth_ok
+                rtn_valid, r, tcoord, ncoord = _isl_rtn_reference(
+                    ax, ay, az, vax, vay, vaz, bx, by, bz,
+                )
+                if rtn_valid
+                    horizontal = sqrt(tcoord^2 + ncoord^2)
+                    dist_rtn = sqrt(r^2 + horizontal^2)
+                    elevation =
+                        dist_rtn < 1e-10 ? 90.0 : rad2deg(atan(abs(r), horizontal))
+                    avail = avail && (elevation <= cone_deg)
                     if avail
-                        rpx, rpy, rpz = bx - ax, by - ay, bz - az
-                        rvx, rvy, rvz = vbx - vax, vby - vay, vbz - vaz
-                        duration = time_horizon
-                        tt = 1.0
-                        while tt <= time_horizon
-                            px = rpx + tt * rvx
-                            py = rpy + tt * rvy
-                            pz = rpz + tt * rvz
-                            if sqrt(px^2 + py^2 + pz^2) > max_range
-                                duration = tt
-                                break
-                            end
-                            tt += 1.0
+                        denom = sqrt(ncoord^2 + tcoord^2)
+                        cos_psi =
+                            denom < 1e-10 ? 1.0 : clamp(ncoord / denom, -1.0, 1.0)
+                        azimuth_ok =
+                            terminal_id == 4 ? cos_psi >= cos_rho :
+                            terminal_id == 3 ? cos_psi <= -cos_rho :
+                            terminal_id == 1 ? cos_psi > 0 :
+                            terminal_id == 2 ? cos_psi < 0 : true
+                        avail = avail && azimuth_ok
+                        if avail
+                            duration = _isl_duration_reference(
+                                ax, ay, az, vax, vay, vaz,
+                                bx, by, bz, vbx, vby, vbz,
+                                max_range, time_horizon,
+                            )
+                            avail = avail && (duration >= min_duration)
                         end
-                        avail = avail && (duration >= min_duration)
                     end
+                else
+                    avail = false
                 end
             end
 
@@ -415,17 +479,60 @@ end
 
 # Streaming max relative error over two arrays (no large temporaries).
 function max_rel_error(actual::AbstractArray, expected::AbstractArray)
+    axes(actual) == axes(expected) || return Inf
     m = 0.0
     @inbounds for index in eachindex(actual, expected)
         a = Float64(actual[index])
         b = Float64(expected[index])
+        (isfinite(a) && isfinite(b)) || return Inf
         d = abs(a - b) / max(abs(b), eps(Float64))
+        isfinite(d) || return Inf
         d > m && (m = d)
     end
     return m
 end
 
 count_mismatch(a::AbstractArray, b::AbstractArray) = count(!=(0), a .!= b)
+
+function assert_cuarray_contract(
+    label::AbstractString,
+    value,
+    expected_eltype::Type,
+    expected_size::Tuple,
+)
+    value isa CuArray ||
+        error("$label must be a CuArray, found $(typeof(value))")
+    eltype(value) == expected_eltype ||
+        error("$label eltype mismatch: expected $expected_eltype, found $(eltype(value))")
+    size(value) == expected_size ||
+        error("$label shape mismatch: expected $expected_size, found $(size(value))")
+    return value
+end
+
+function assert_isl_cuda_contract(
+    label::AbstractString,
+    output,
+    ::Type{T},
+    expected_size::Tuple,
+) where {T<:AbstractFloat}
+    for (field, expected_eltype) in (
+        (:available, Bool),
+        (:distance_km, T),
+        (:delay_ms, T),
+        (:line_of_sight, Bool),
+        (:elevation_deg, T),
+        (:cos_psi, T),
+        (:duration_s, T),
+    )
+        assert_cuarray_contract(
+            "$(label).$(field)",
+            getproperty(output, field),
+            expected_eltype,
+            expected_size,
+        )
+    end
+    return output
+end
 
 # ── correctness validations (GPU vs scalar reference) ────────────────────────
 
@@ -539,8 +646,12 @@ function validate_isl(::Type{T}) where T
         pairs;
         velocities=CuArray(velocities),
     )
-    actual_device.available isa CuArray ||
-        error("ISL outputs were not allocated on CUDA")
+    assert_isl_cuda_contract(
+        "ISL validation",
+        actual_device,
+        T,
+        (length(pairs), size(positions, 2)),
+    )
     actual = map(Array, values(actual_device))
     actual = (; zip(keys(actual_device), actual)...)
 
@@ -623,20 +734,25 @@ end
 
 function validate_cuda_pipeline_and_adjoint()
     T = Float64
+    epoch_jd_ut1 = 2461234.5
     elements = random_kepler_elements(12, T; seed=20260718)
     tspan = collect(T, 0:120:1200)
-    host_eci = propagate_kepler_gpu(elements..., tspan; model=:j2)
+    host_teme = propagate_kepler_gpu(elements..., tspan; model=:j2)
     device_elements = map(CuArray, elements)
     device_tspan = CuArray(tspan)
-    device_eci = propagate_kepler_gpu(device_elements..., device_tspan; model=:j2)
-    device_eci isa CuArray || error("propagation output was not allocated on CUDA")
-    isapprox(Array(device_eci), host_eci; rtol=1e-10, atol=1e-8) ||
+    device_teme = propagate_kepler_gpu(device_elements..., device_tspan; model=:j2)
+    device_teme isa CuArray || error("propagation output was not allocated on CUDA")
+    isapprox(Array(device_teme), host_teme; rtol=1e-10, atol=1e-8) ||
         error("CUDA propagation parity failed")
 
-    host_ecef = teme_to_pef_gpu(host_eci, tspan)
-    device_ecef = teme_to_pef_gpu(device_eci, device_tspan)
-    device_ecef isa CuArray || error("frame output was not allocated on CUDA")
-    isapprox(Array(device_ecef), host_ecef; rtol=1e-10, atol=1e-8) ||
+    host_pef = teme_to_pef_gpu(host_teme, tspan; epoch_jd_ut1=epoch_jd_ut1)
+    device_pef = teme_to_pef_gpu(
+        device_teme,
+        device_tspan;
+        epoch_jd_ut1=epoch_jd_ut1,
+    )
+    device_pef isa CuArray || error("frame output was not allocated on CUDA")
+    isapprox(Array(device_pef), host_pef; rtol=1e-10, atol=1e-8) ||
         error("CUDA TEME-to-PEF parity failed")
 
     Random.seed!(20260719)
@@ -756,9 +872,16 @@ function bench_coverage_case(n_satellites::Int, n_times::Int, n_ground::Int, ::T
     CUDA.synchronize()
     e2e_seconds = best_elapsed(e2e_call, GPU_SAMPLES; synchronize=true)
 
-    relative = abs(gpu_value - cpu_value) / max(abs(cpu_value), eps(Float64))
+    gpu_scalar = Float64(gpu_value)
+    cpu_scalar = Float64(cpu_value)
+    relative =
+        isfinite(gpu_scalar) && isfinite(cpu_scalar) ?
+        abs(gpu_scalar - cpu_scalar) / max(abs(cpu_scalar), eps(Float64)) :
+        Inf
     tolerance = T === Float64 ? 1e-8 : 2e-2
-    parity = relative <= tolerance ? "PASS" : "WARN"
+    parity = relative <= tolerance ? "PASS" : "FAIL"
+    parity == "PASS" ||
+        error("coverage benchmark parity failed for $T: relative_error=$relative")
     units = float(n_satellites) * n_times * n_ground
 
     println(
@@ -825,7 +948,16 @@ function bench_gsl_case(n_satellites::Int, n_stations::Int, n_times::Int, ::Type
     elevation_error = max_rel_error(gpu_host[3], cpu_result[3])
     delay_error = max_rel_error(gpu_host[4], cpu_result[4])
     tolerance = T === Float64 ? 1e-8 : 1e-3
-    parity = (distance_error <= tolerance && delay_error <= tolerance) ? "PASS" : "WARN"
+    parity = (
+        available_mismatch == 0 &&
+        distance_error <= tolerance &&
+        elevation_error <= tolerance &&
+        delay_error <= tolerance
+    ) ? "PASS" : "FAIL"
+    parity == "PASS" || error(
+        "GSL benchmark parity failed for $T: availability=$available_mismatch " *
+        "distance=$distance_error elevation=$elevation_error delay=$delay_error",
+    )
     units = float(n_satellites) * n_stations * n_times
 
     println(
@@ -885,12 +1017,35 @@ function bench_isl_case(n_satellites::Int, n_pairs::Int, n_times::Int, ::Type{T}
     device_result =
         evaluate_isl_batch_gpu(device_positions, pairs; velocities=device_velocities)
     CUDA.synchronize()
+    assert_isl_cuda_contract(
+        "ISL benchmark",
+        device_result,
+        T,
+        (actual_pairs, n_times),
+    )
     available_mismatch = count_mismatch(Array(device_result.available), cpu_result.available)
+    los_mismatch =
+        count_mismatch(Array(device_result.line_of_sight), cpu_result.line_of_sight)
     distance_error = max_rel_error(Array(device_result.distance_km), cpu_result.distance_km)
+    delay_error = max_rel_error(Array(device_result.delay_ms), cpu_result.delay_ms)
     elevation_error = max_rel_error(Array(device_result.elevation_deg), cpu_result.elevation_deg)
+    cos_psi_error = max_rel_error(Array(device_result.cos_psi), cpu_result.cos_psi)
     duration_error = max_rel_error(Array(device_result.duration_s), cpu_result.duration_s)
     tolerance = T === Float64 ? 1e-8 : 1e-3
-    parity = distance_error <= tolerance ? "PASS" : "WARN"
+    parity = (
+        available_mismatch == 0 &&
+        los_mismatch == 0 &&
+        distance_error <= tolerance &&
+        delay_error <= tolerance &&
+        elevation_error <= tolerance &&
+        cos_psi_error <= tolerance &&
+        duration_error <= tolerance
+    ) ? "PASS" : "FAIL"
+    parity == "PASS" || error(
+        "ISL benchmark parity failed for $T: availability=$available_mismatch " *
+        "los=$los_mismatch distance=$distance_error delay=$delay_error " *
+        "elevation=$elevation_error cos_psi=$cos_psi_error duration=$duration_error",
+    )
     units = float(actual_pairs) * n_times
 
     println(
@@ -899,8 +1054,10 @@ function bench_isl_case(n_satellites::Int, n_pairs::Int, n_times::Int, ::Type{T}
         "cpu_backend_s=$cpu_seconds gpu_compute_s=$gpu_seconds gpu_e2e_s=$e2e_seconds " *
         "speedup_compute=$(cpu_seconds / gpu_seconds) speedup_e2e=$(cpu_seconds / e2e_seconds) " *
         "gpu_throughput_eps=$(units / gpu_seconds) cpu_throughput_eps=$(units / cpu_seconds) " *
-        "parity=$parity avail_mismatch=$available_mismatch " *
-        "distance_rel_err=$distance_error elevation_rel_err=$elevation_error duration_rel_err=$duration_error " *
+        "parity=$parity avail_mismatch=$available_mismatch los_mismatch=$los_mismatch " *
+        "distance_rel_err=$distance_error delay_rel_err=$delay_error " *
+        "elevation_rel_err=$elevation_error cos_psi_rel_err=$cos_psi_error " *
+        "duration_rel_err=$duration_error " *
         "cpu_samples=$CPU_SAMPLES gpu_samples=$GPU_SAMPLES",
     )
 
@@ -932,12 +1089,23 @@ function bench_gsl_reduction_case(n_satellites::Int, n_stations::Int, n_times::I
         Int32.(dropdims(sum(host[1]; dims=1); dims=1))
     end
     # device-aggregate：设备端归约核 → 只下载 (M,NT) 计数
+    agg_kernel = (p, g, n) -> begin
+        counts = gsl_visible_counts_gpu(p, g, n)
+        assert_cuarray_contract(
+            "GSL reduction benchmark",
+            counts,
+            Int32,
+            (n_stations, n_times),
+        )
+        return counts
+    end
     agg_call() = device_pipeline(
-        (p, g, n) -> gsl_visible_counts_gpu(p, g, n),
+        agg_kernel,
         CUDA.CUDABackend(), positions, ground_ecef, ned_rotation,
     )
 
     parity = (full_reduce() == agg_call()) ? "PASS" : "FAIL"
+    parity == "PASS" || error("GSL reduction parity failed for $T N=$n_satellites")
     CUDA.synchronize()
     full_s = best_elapsed(full_reduce, GPU_SAMPLES; synchronize=true)
     agg_s = best_elapsed(agg_call, GPU_SAMPLES; synchronize=true)
@@ -952,7 +1120,6 @@ function bench_gsl_reduction_case(n_satellites::Int, n_stations::Int, n_times::I
         "transfer_reduction=$(bytes_full / bytes_agg) parity=$parity " *
         "gpu_samples=$GPU_SAMPLES",
     )
-    parity == "PASS" || error("GSL reduction parity failed for $T N=$n_satellites")
     GC.gc()
     CUDA.reclaim()
     return nothing
@@ -964,18 +1131,39 @@ function bench_isl_reduction_case(n_satellites::Int, n_pairs::Int, n_times::Int,
     actual_pairs = length(pairs)
 
     # full-download：设备算完整 (pairs,NT)×7 → 全部下载 → host 归约得 (NT,) 计数
+    full_kernel = (p, v) -> begin
+        output = evaluate_isl_batch_gpu(p, pairs; velocities=v)
+        assert_isl_cuda_contract(
+            "ISL reduction benchmark reference",
+            output,
+            T,
+            (actual_pairs, n_times),
+        )
+        return output
+    end
     full_call() = device_pipeline(
-        (p, v) -> evaluate_isl_batch_gpu(p, pairs; velocities=v),
+        full_kernel,
         CUDA.CUDABackend(), positions, velocities,
     )
     full_reduce() = Int32.(vec(sum(full_call().available; dims=1)))
     # device-aggregate：设备端归约核 → 只下载 (NT,) 计数
+    agg_kernel = (p, v) -> begin
+        counts = isl_available_counts_gpu(p, pairs; velocities=v)
+        assert_cuarray_contract(
+            "ISL reduction benchmark",
+            counts,
+            Int32,
+            (n_times,),
+        )
+        return counts
+    end
     agg_call() = device_pipeline(
-        (p, v) -> isl_available_counts_gpu(p, pairs; velocities=v),
+        agg_kernel,
         CUDA.CUDABackend(), positions, velocities,
     )
 
     parity = (full_reduce() == agg_call()) ? "PASS" : "FAIL"
+    parity == "PASS" || error("ISL reduction parity failed for $T N=$n_satellites")
     CUDA.synchronize()
     full_s = best_elapsed(full_reduce, GPU_SAMPLES; synchronize=true)
     agg_s = best_elapsed(agg_call, GPU_SAMPLES; synchronize=true)
@@ -990,7 +1178,6 @@ function bench_isl_reduction_case(n_satellites::Int, n_pairs::Int, n_times::Int,
         "transfer_reduction=$(bytes_full / bytes_agg) parity=$parity " *
         "gpu_samples=$GPU_SAMPLES",
     )
-    parity == "PASS" || error("ISL reduction parity failed for $T N=$n_satellites")
     GC.gc()
     CUDA.reclaim()
     return nothing
@@ -1082,27 +1269,37 @@ function validate_reductions(::Type{T}) where T
         gsl_min_elevation_deg=T(25),
         gsl_max_range_km=T(2000),
     )
-    counts = Array(
-        gsl_visible_counts_gpu(
-            CuArray(positions),
-            CuArray(ground_ecef),
-            CuArray(ned_rotation);
-            gsl_min_elevation_deg=T(25),
-            gsl_max_range_km=T(2000),
-        ),
+    counts_device = gsl_visible_counts_gpu(
+        CuArray(positions),
+        CuArray(ground_ecef),
+        CuArray(ned_rotation);
+        gsl_min_elevation_deg=T(25),
+        gsl_max_range_km=T(2000),
     )
-    ratio = Array(
-        gsl_station_visible_ratio_gpu(
-            CuArray(positions),
-            CuArray(ground_ecef),
-            CuArray(ned_rotation);
-            gsl_min_elevation_deg=T(25),
-            gsl_max_range_km=T(2000),
-        ),
+    ratio_device = gsl_station_visible_ratio_gpu(
+        CuArray(positions),
+        CuArray(ground_ecef),
+        CuArray(ned_rotation);
+        gsl_min_elevation_deg=T(25),
+        gsl_max_range_km=T(2000),
     )
-    available_host = Array(full[1])
     n_stations = size(ground_ecef, 1)
     n_times = size(positions, 2)
+    assert_cuarray_contract(
+        "GSL visible-count reduction",
+        counts_device,
+        Int32,
+        (n_stations, n_times),
+    )
+    assert_cuarray_contract(
+        "GSL station-ratio reduction",
+        ratio_device,
+        T,
+        (n_stations,),
+    )
+    counts = Array(counts_device)
+    ratio = Array(ratio_device)
+    available_host = Array(full[1])
     expected_counts = Int32.(dropdims(sum(available_host; dims=1); dims=1))
     expected_ratio =
         T.(dropdims(sum(expected_counts .> 0; dims=2); dims=2)) ./ T(n_times)
@@ -1118,29 +1315,50 @@ function validate_reductions(::Type{T}) where T
         pairs;
         velocities=CuArray(isl_velocities),
     )
-    isl_counts = Array(
-        isl_available_counts_gpu(
-            CuArray(isl_positions),
-            pairs;
-            velocities=CuArray(isl_velocities),
-        ),
+    n_isl_times = size(isl_positions, 2)
+    assert_isl_cuda_contract(
+        "ISL reduction reference",
+        full_isl,
+        T,
+        (length(pairs), n_isl_times),
     )
-    isl_ratio = Array(
-        isl_pair_available_ratio_gpu(
-            CuArray(isl_positions),
-            pairs;
-            velocities=CuArray(isl_velocities),
-        ),
+    isl_counts_device = isl_available_counts_gpu(
+        CuArray(isl_positions),
+        pairs;
+        velocities=CuArray(isl_velocities),
     )
-    isl_degree = Array(
-        isl_satellite_degree_gpu(
-            CuArray(isl_positions),
-            pairs;
-            velocities=CuArray(isl_velocities),
-        ),
+    isl_ratio_device = isl_pair_available_ratio_gpu(
+        CuArray(isl_positions),
+        pairs;
+        velocities=CuArray(isl_velocities),
     )
+    isl_degree_device = isl_satellite_degree_gpu(
+        CuArray(isl_positions),
+        pairs;
+        velocities=CuArray(isl_velocities),
+    )
+    assert_cuarray_contract(
+        "ISL available-count reduction",
+        isl_counts_device,
+        Int32,
+        (n_isl_times,),
+    )
+    assert_cuarray_contract(
+        "ISL pair-ratio reduction",
+        isl_ratio_device,
+        T,
+        (length(pairs),),
+    )
+    assert_cuarray_contract(
+        "ISL degree reduction",
+        isl_degree_device,
+        Int32,
+        (size(isl_positions, 1), n_isl_times),
+    )
+    isl_counts = Array(isl_counts_device)
+    isl_ratio = Array(isl_ratio_device)
+    isl_degree = Array(isl_degree_device)
     isl_available_host = Array(full_isl.available)
-    n_isl_times = size(isl_available_host, 2)
     expected_isl_counts = Int32.(vec(sum(isl_available_host; dims=1)))
     expected_isl_ratio = T.(vec(sum(isl_available_host; dims=2))) ./ T(n_isl_times)
     expected_degree = zeros(Int32, size(isl_positions, 1), n_isl_times)
@@ -1222,8 +1440,19 @@ function validate_sgp4_cuda()
         el_d = to_device(CUDA.CUDABackend(), el)
         tspan_d = CuArray(tspan)
         pos_d, vel_d = sgp4_propagate_gpu(el_d, tspan_d; velocities=true)
-        pos_d isa CuArray || error("SGP4 CUDA positions were not device-resident")
-        vel_d isa CuArray || error("SGP4 CUDA velocities were not device-resident")
+        expected_size = (length(n0), length(tspan), 3)
+        assert_cuarray_contract(
+            "SGP4 CUDA positions ($label)",
+            pos_d,
+            Float64,
+            expected_size,
+        )
+        assert_cuarray_contract(
+            "SGP4 CUDA velocities ($label)",
+            vel_d,
+            Float64,
+            expected_size,
+        )
         pos = Array(pos_d)
         vel = Array(vel_d)
         pos_err = maximum(abs.(pos .- gold_pos))
@@ -1255,7 +1484,27 @@ function validate_sgp4_cuda()
     host_isl = evaluate_isl_batch_gpu(host_pos, pairs; velocities=host_vel)
     out = device_pipeline(CUDA.CUDABackend(), el, tspan) do e, ts
         p, v = sgp4_propagate_gpu(e, ts; velocities=true)
-        evaluate_isl_batch_gpu(p, pairs; velocities=v)
+        expected_sgp4_size = (length(n0), length(tspan), 3)
+        assert_cuarray_contract(
+            "SGP4 pipeline positions",
+            p,
+            Float64,
+            expected_sgp4_size,
+        )
+        assert_cuarray_contract(
+            "SGP4 pipeline velocities",
+            v,
+            Float64,
+            expected_sgp4_size,
+        )
+        isl_output = evaluate_isl_batch_gpu(p, pairs; velocities=v)
+        assert_isl_cuda_contract(
+            "SGP4 pipeline ISL",
+            isl_output,
+            Float64,
+            (length(pairs), length(tspan)),
+        )
+        return isl_output
     end
     out.available == host_isl.available ||
         error("SGP4→ISL CUDA residency availability mismatch")
@@ -1265,28 +1514,59 @@ function validate_sgp4_cuda()
     return nothing
 end
 
-function print_gpu_info()
+function assert_harness_runtime(; require_cuda::Bool)
+    Threads.nthreads() == EXPECTED_JULIA_THREADS || error(
+        "expected $EXPECTED_JULIA_THREADS Julia threads, found $(Threads.nthreads())",
+    )
+    require_cuda || return nothing
+
     device = CUDA.device()
-    fields = ["GPU_INFO device=$(CUDA.name(device))"]
-    try
-        push!(fields, "total_mem_gib=$(round(CUDA.totalmem(device) / 2^30; digits=2))")
-    catch
-    end
-    try
-        capability = CUDA.capability(device)
-        push!(fields, "compute_capability=$(capability.major).$(capability.minor)")
-    catch
-    end
-    try
-        push!(fields, "driver=$(CUDA.driver_version())")
-    catch
-    end
-    try
-        push!(fields, "cuda_runtime=$(CUDA.runtime_version())")
-    catch
+    device_name = CUDA.name(device)
+    device_name in EXPECTED_GPU_NAMES ||
+        error("expected A10-family device $(EXPECTED_GPU_NAMES), found $device_name")
+
+    capability = CUDA.capability(device)
+    actual_capability = (capability.major, capability.minor)
+    actual_capability == EXPECTED_GPU_CAPABILITY || error(
+        "expected A10 compute capability $(EXPECTED_GPU_CAPABILITY), found $actual_capability",
+    )
+
+    total_memory = CUDA.totalmem(device)
+    total_memory >= MIN_GPU_MEMORY_BYTES || error(
+        "expected at least $(MIN_GPU_MEMORY_BYTES / 2^30) GiB GPU memory, " *
+        "found $(round(total_memory / 2^30; digits=2)) GiB",
+    )
+    return nothing
+end
+
+function print_gpu_info(; require_cuda::Bool=true)
+    fields = String[]
+    if CUDA.functional()
+        device = CUDA.device()
+        push!(fields, "GPU_INFO device=$(CUDA.name(device))")
+        try
+            push!(fields, "total_mem_gib=$(round(CUDA.totalmem(device) / 2^30; digits=2))")
+        catch
+        end
+        try
+            capability = CUDA.capability(device)
+            push!(fields, "compute_capability=$(capability.major).$(capability.minor)")
+        catch
+        end
+        try
+            push!(fields, "driver=$(CUDA.driver_version())")
+        catch
+        end
+        try
+            push!(fields, "cuda_runtime=$(CUDA.runtime_version())")
+        catch
+        end
+        push!(fields, "cuda_jl=$(pkgversion(CUDA))")
+    else
+        require_cuda && error("CUDA is not functional")
+        push!(fields, "GPU_INFO device=none")
     end
     push!(fields, "julia=$VERSION")
-    push!(fields, "cuda_jl=$(pkgversion(CUDA))")
     push!(fields, "kernel_abstractions=$(pkgversion(KernelAbstractions))")
     push!(fields, "julia_threads=$(Threads.nthreads())")
     push!(fields, "cpu_threads_visible=$(Sys.CPU_THREADS)")
@@ -1297,6 +1577,283 @@ function print_gpu_info()
     println(join(fields, " "))
     return nothing
 end
+
+# ── 1584 real Starlink-scale coverage forward (TLE → SGP4 → coverage_loss) ───
+
+const REAL1584_TLE_PATH = get(
+    ENV,
+    "SATSIM_TLE_PATH",
+    "/opt/data/tle/celestrak/starlink_gp_latest.tle",
+)
+const REAL1584_N = 1584
+const REAL1584_NTS = (20, 96)
+const REAL1584_GS = (800, 2000)
+const REAL1584_DT_MIN = 1.0  # SGP4 Δt between samples (minutes)
+const REAL1584_CPU_SAMPLES = 3
+const REAL1584_GPU_SAMPLES = 10
+
+"""Parse classic Celestrak 3-line TLE (name / L1 / L2) into SGP4 mean elements."""
+function _parse_tle_bstar(line1::AbstractString)
+    field = strip(line1[54:61])
+    isempty(field) && return 0.0
+    sign_char = field[1]
+    body = sign_char in ('+', '-') ? field[2:end] : field
+    length(body) >= 2 || return 0.0
+    mantissa = parse(Float64, body[1:(end - 2)]) * 1e-5
+    exponent = parse(Int, body[(end - 1):end])
+    value = mantissa * 10.0^exponent
+    return sign_char == '-' ? -value : value
+end
+
+function _tle_epoch_jd(line1::AbstractString)
+    # YYDDD.FFFFFFFF → approximate Julian date (UTC≈UT1 for GMST bench use).
+    epoch_field = strip(line1[19:32])
+    year2 = parse(Int, epoch_field[1:2])
+    day_of_year = parse(Float64, epoch_field[3:end])
+    year = year2 < 57 ? 2000 + year2 : 1900 + year2
+    # Algorithm: JD at Jan 0.0 of year + day_of_year (Vallado-style civil date).
+    y = year - 1
+    A = y ÷ 100
+    B = 2 - A + A ÷ 4
+    jd0 = floor(365.25 * y) + floor(30.6001 * 14) + B + 1720994.5
+    return jd0 + day_of_year
+end
+
+function load_starlink_sgp4_elements(tle_path::AbstractString, n_want::Int)
+    isfile(tle_path) || error("TLE file not found: $tle_path")
+    lines = readlines(tle_path)
+    n0 = Float64[]
+    e0 = Float64[]
+    i0 = Float64[]
+    raan = Float64[]
+    argp = Float64[]
+    M0 = Float64[]
+    bstar = Float64[]
+    names = String[]
+    epoch_jd = NaN
+
+    index = 1
+    while index + 2 <= length(lines) && length(n0) < n_want
+        name = strip(lines[index])
+        line1 = lines[index + 1]
+        line2 = lines[index + 2]
+        index += 3
+        startswith(line1, "1 ") && startswith(line2, "2 ") || continue
+        try
+            n_rev_day = parse(Float64, strip(line2[53:63]))
+            n_rad_min = n_rev_day * 2π / 1440
+            # Near-Earth only (period < 225 min); skip SDP4 / junk.
+            (2π / n_rad_min >= 225) && continue
+            ecc = parse(Float64, "0." * strip(line2[27:33]))
+            push!(n0, n_rad_min)
+            push!(e0, ecc)
+            push!(i0, deg2rad(parse(Float64, strip(line2[9:16]))))
+            push!(raan, deg2rad(parse(Float64, strip(line2[18:25]))))
+            push!(argp, deg2rad(parse(Float64, strip(line2[35:42]))))
+            push!(M0, deg2rad(parse(Float64, strip(line2[44:51]))))
+            push!(bstar, _parse_tle_bstar(line1))
+            push!(names, name)
+            if isnan(epoch_jd)
+                epoch_jd = _tle_epoch_jd(line1)
+            end
+        catch
+            continue
+        end
+    end
+    length(n0) == n_want || error(
+        "only parsed $(length(n0)) near-Earth TLEs from $tle_path; need $n_want",
+    )
+    return (; n0, e0, i0, raan, argp, M0, bstar, names, epoch_jd, tle_path)
+end
+
+"""Propagate real TLEs with host-init/KA SGP4, then rotate TEME positions to PEF."""
+function real1584_positions_pef(elements_host, n_times::Int, ::Type{T}; on_cuda::Bool) where T
+    tspan_min = T.(range(0; step=REAL1584_DT_MIN, length=n_times))
+    epoch_jd = elements_host.epoch_jd
+    elapsed_s = T(60) .* tspan_min
+
+    el = sgp4_init_host(
+        T.(elements_host.n0),
+        T.(elements_host.e0),
+        T.(elements_host.i0),
+        T.(elements_host.raan),
+        T.(elements_host.argp),
+        T.(elements_host.M0),
+        T.(elements_host.bstar),
+    )
+    if on_cuda
+        el_d = to_device(CUDA.CUDABackend(), el)
+        tspan_min_d = CuArray(tspan_min)
+        elapsed_s_d = CuArray(elapsed_s)
+        teme = sgp4_propagate_gpu(el_d, tspan_min_d)
+        assert_cuarray_contract(
+            "real1584 SGP4 positions",
+            teme,
+            T,
+            (length(elements_host.n0), n_times, 3),
+        )
+        CUDA.synchronize()
+        pef = teme_to_pef_gpu(teme, elapsed_s_d; epoch_jd_ut1=epoch_jd)
+        CUDA.synchronize()
+        host = Array(pef)
+        CUDA.unsafe_free!(teme)
+        CUDA.unsafe_free!(pef)
+        CUDA.unsafe_free!(tspan_min_d)
+        CUDA.unsafe_free!(elapsed_s_d)
+        return host, tspan_min, elapsed_s
+    else
+        teme = sgp4_propagate_gpu(el, tspan_min)
+        pef = teme_to_pef_gpu(teme, elapsed_s; epoch_jd_ut1=epoch_jd)
+        return pef, tspan_min, elapsed_s
+    end
+end
+
+function _trim_ground(n_ground::Int, ::Type{T}) where T
+    n_lat = max(1, floor(Int, sqrt(n_ground)))
+    n_lon = cld(n_ground, n_lat)
+    ground_points, weights = ground_grid(n_lat, n_lon, T)
+    return ground_points[1:n_ground, :], weights[1:n_ground]
+end
+
+function bench_real1584_coverage_case(
+    positions::AbstractArray{T,3},
+    n_ground::Int,
+    ::Type{T};
+    mode::Symbol,
+) where T
+    n_satellites, n_times, _ = size(positions)
+    ground_points, weights = _trim_ground(n_ground, T)
+    units = float(n_satellites) * n_times * n_ground
+
+    # CPU golden (KA CPU backend on host Array) — correctness anchor for GPU.
+    cpu_value = coverage_loss_gpu(positions, ground_points, weights)
+    cpu_samples = mode === :cpu ? REAL1584_CPU_SAMPLES : 1
+    cpu_seconds = best_elapsed(
+        () -> coverage_loss_gpu(positions, ground_points, weights),
+        cpu_samples,
+    )
+
+    if mode === :cpu
+        println(
+            "BENCH op=coverage_real1584 mode=cpu type=$T N=$n_satellites NT=$n_times G=$n_ground " *
+            "units=$(round(Int, units)) " *
+            "cpu_backend_s=$cpu_seconds " *
+            "cpu_throughput_eps=$(units / cpu_seconds) " *
+            "cpu_samples=$REAL1584_CPU_SAMPLES " *
+            "julia_threads=$(Threads.nthreads()) " *
+            "propagator=sgp4_gpu_host_init+ka_propagate+teme_to_pef " *
+            "loss=$cpu_value",
+        )
+        return nothing
+    end
+
+    mode === :gpu || error("unknown real1584 mode=$mode")
+    CUDA.functional() || error("CUDA required for bench_real1584_gpu")
+
+    device_positions = CuArray(positions)
+    device_ground_points = CuArray(ground_points)
+    device_weights = CuArray(weights)
+
+    # Correctness vs CPU golden before timing.
+    gpu_value = coverage_loss_gpu(device_positions, device_ground_points, device_weights)
+    CUDA.synchronize()
+    relative = abs(Float64(gpu_value) - Float64(cpu_value)) /
+        max(abs(Float64(cpu_value)), eps(Float64))
+    tolerance = T === Float64 ? 1e-8 : 2e-2
+    parity = relative <= tolerance ? "PASS" : "FAIL"
+    parity == "PASS" || error(
+        "real1584 GPU parity failed type=$T NT=$n_times G=$n_ground rel_err=$relative",
+    )
+
+    # Warmup already done; min-of-N compute-only (resident) and e2e (H2D+kernel+scalar D2H).
+    gpu_seconds = best_elapsed(
+        () -> coverage_loss_gpu(device_positions, device_ground_points, device_weights),
+        REAL1584_GPU_SAMPLES;
+        synchronize=true,
+    )
+    e2e_call() = device_pipeline(
+        (p, g, w) -> coverage_loss_gpu(p, g, w),
+        CUDA.CUDABackend(),
+        positions,
+        ground_points,
+        weights,
+    )
+    e2e_call()
+    CUDA.synchronize()
+    e2e_seconds = best_elapsed(e2e_call, REAL1584_GPU_SAMPLES; synchronize=true)
+
+    println(
+        "BENCH op=coverage_real1584 mode=gpu type=$T N=$n_satellites NT=$n_times G=$n_ground " *
+        "units=$(round(Int, units)) " *
+        "cpu_golden_s=$cpu_seconds gpu_compute_s=$gpu_seconds gpu_e2e_s=$e2e_seconds " *
+        "speedup_compute=$(cpu_seconds / gpu_seconds) speedup_e2e=$(cpu_seconds / e2e_seconds) " *
+        "gpu_throughput_eps=$(units / gpu_seconds) " *
+        "parity=$parity rel_err=$relative " *
+        "cpu_samples=$cpu_samples gpu_samples=$REAL1584_GPU_SAMPLES " *
+        "timing=warmup_then_min_excludes_compile " *
+        "gpu_compute_excludes_transfer=true " *
+        "propagator=sgp4_gpu_host_init+ka_propagate+teme_to_pef " *
+        "loss_cpu=$cpu_value loss_gpu=$gpu_value",
+    )
+
+    CUDA.unsafe_free!(device_positions)
+    CUDA.unsafe_free!(device_ground_points)
+    CUDA.unsafe_free!(device_weights)
+    GC.gc()
+    CUDA.reclaim()
+    return nothing
+end
+
+function run_bench_real1584(; mode::Symbol)
+    mode in (:cpu, :gpu) || error("mode must be :cpu or :gpu")
+    println("BENCH_SUITE_BEGIN op=coverage_real1584 mode=$mode")
+    println(
+        "REAL1584_CONFIG N=$REAL1584_N NTs=$(join(REAL1584_NTS, ",")) " *
+        "Gs=$(join(REAL1584_GS, ",")) dt_min=$REAL1584_DT_MIN " *
+        "tle=$REAL1584_TLE_PATH " *
+        "sgp4=sgp4_gpu.jl(host_init+device_or_ka_propagate)+teme_to_pef_gpu " *
+        "julia_threads=$(Threads.nthreads())",
+    )
+
+    t_load = @elapsed elements = load_starlink_sgp4_elements(REAL1584_TLE_PATH, REAL1584_N)
+    println(
+        "REAL1584_TLE loaded=$REAL1584_N epoch_jd=$(elements.epoch_jd) load_s=$t_load " *
+        "first=$(elements.names[1]) last=$(elements.names[end])",
+    )
+
+    # Precompute PEF ephemerides once per NT (Float64), cast per precision.
+    positions_by_nt = Dict{Int,Array{Float64,3}}()
+    for n_times in REAL1584_NTS
+        t_prop = @elapsed begin
+            pos64, _, _ = real1584_positions_pef(
+                elements,
+                n_times,
+                Float64;
+                on_cuda=(mode === :gpu && CUDA.functional()),
+            )
+            positions_by_nt[n_times] = pos64
+        end
+        println(
+            "REAL1584_PROPAGATE NT=$n_times propagate_s=$t_prop " *
+            "backend=$(mode === :gpu && CUDA.functional() ? "cuda" : "ka_cpu")",
+        )
+    end
+
+    for T in (Float32, Float64)
+        for n_times in REAL1584_NTS
+            positions = T === Float64 ? positions_by_nt[n_times] : T.(positions_by_nt[n_times])
+            for n_ground in REAL1584_GS
+                bench_real1584_coverage_case(positions, n_ground, T; mode=mode)
+            end
+        end
+    end
+
+    println("BENCH_SUITE_END op=coverage_real1584 mode=$mode")
+    return nothing
+end
+
+run_bench_real1584_cpu() = run_bench_real1584(; mode=:cpu)
+run_bench_real1584_gpu() = run_bench_real1584(; mode=:gpu)
 
 const SUITE_HANDLERS = Dict{String,Function}(
     "smoke_info" => () -> (print_gpu_info(); nothing),
@@ -1319,6 +1876,8 @@ const SUITE_HANDLERS = Dict{String,Function}(
     "bench_isl" => run_bench_isl,
     "bench_gsl_reduction" => run_bench_gsl_reduction,
     "bench_isl_reduction" => run_bench_isl_reduction,
+    "bench_real1584_cpu" => run_bench_real1584_cpu,
+    "bench_real1584_gpu" => run_bench_real1584_gpu,
     "bench_all" => run_benchmark_suite,
     "full" => function ()
         validate_coverage(Float64)
@@ -1340,21 +1899,31 @@ const SUITE_HANDLERS = Dict{String,Function}(
     end,
 )
 
+const CPU_ONLY_SUITES = Set([
+    "bench_real1584_cpu",
+])
+
 function main()
     VERSION >= v"1.12" || error("Julia 1.12 or newer is required, found $VERSION")
-    CUDA.functional() || error("CUDA is not functional")
-    pkgversion(CUDA) == EXPECTED_CUDA_JL_VERSION ||
-        error("expected CUDA.jl $EXPECTED_CUDA_JL_VERSION, found $(pkgversion(CUDA))")
-    CUDA.allowscalar(false)
-
     suite = length(ARGS) >= 1 ? String(ARGS[1]) : "full"
+    require_cuda = suite ∉ CPU_ONLY_SUITES
+    if require_cuda
+        CUDA.functional() || error("CUDA is not functional")
+        pkgversion(CUDA) == EXPECTED_CUDA_JL_VERSION ||
+            error("expected CUDA.jl $EXPECTED_CUDA_JL_VERSION, found $(pkgversion(CUDA))")
+        CUDA.allowscalar(false)
+    elseif CUDA.functional()
+        CUDA.allowscalar(false)
+    end
+    assert_harness_runtime(; require_cuda=require_cuda)
+
     handler = get(SUITE_HANDLERS, suite, nothing)
     handler === nothing && error(
         "unknown suite=$suite; known=$(join(sort!(collect(keys(SUITE_HANDLERS))), ","))",
     )
 
     println("SUITE_BEGIN name=$suite")
-    print_gpu_info()
+    print_gpu_info(; require_cuda=require_cuda)
     handler()
     println("SUITE_END name=$suite status=PASS")
     println("MODAL_GPU_VALIDATION status=PASS suite=$suite")
