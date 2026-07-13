@@ -140,6 +140,7 @@ function network_kpi_config(
     τ_reach > 0 || throw(ArgumentError("τ_reach must be positive"))
     penalty_km >= 0 || throw(ArgumentError("penalty_km must be non-negative"))
     fiedler_K >= 1 || throw(ArgumentError("fiedler_K must be ≥ 1"))
+    r_occ > 0 || throw(ArgumentError("r_occ must be positive"))
     τ_los > 0 || throw(ArgumentError("τ_los must be positive"))
     speed_kms > 0 || throw(ArgumentError("speed_kms must be positive"))
     big > 0 || throw(ArgumentError("big (unreachable soft-distance sentinel) must be positive"))
@@ -455,17 +456,14 @@ end
 right choice at small/moderate `N`. For large-`N` connectivity use
 [`soft_connectivity_loss_vjp`](@ref) (tape-free).
 
-Accepts any `AbstractArray{Float64,3}`. For a `SubArray`, the Enzyme shadow
-recursively mirrors the same view structure, so the primal view is not copied.
+Accepts any `AbstractArray{Float64,3}`. `Enzyme.make_zero` recursively preserves
+the primal's concrete array/view structure, so a `SubArray` is differentiated
+without copying the primal into a plain `Array`.
 """
-_enzyme_shadow(A::Array) = zero(A)
-_enzyme_shadow(A::SubArray) = view(_enzyme_shadow(parent(A)), parentindices(A)...)
-_enzyme_shadow(A::AbstractArray) = zero(A)
-
 function network_kpi_loss_grad_positions(P::AbstractArray{Float64,3}, cfg::NetworkKPIConfig)
     size(P) == (cfg.N, cfg.NT, 3) ||
         throw(ArgumentError("network_kpi_loss_grad_positions: positions size $(size(P)) ≠ (N=$(cfg.N), NT=$(cfg.NT), 3) from cfg"))
-    dP = _enzyme_shadow(P)
+    dP = Enzyme.make_zero(P)
     res = Enzyme.autodiff(
         Enzyme.set_runtime_activity(Enzyme.ReverseWithPrimal),
         Enzyme.Const(_network_kpi_loss),

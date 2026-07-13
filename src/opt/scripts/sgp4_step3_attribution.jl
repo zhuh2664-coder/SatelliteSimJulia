@@ -63,12 +63,13 @@ function class_sensitivities(params, grad, N)
     return [norm(params[c:7:(7N)] .* grad[c:7:(7N)]) for c in 1:7]
 end
 
-function composite_loss(p, epochs, ts_min, gmsts, jd_ref, gp, weights, od, dt, net_kw)
+function composite_loss(p, epochs, ts_min, gmsts, jd_ref, gp, weights, od, cov_kw, net_kw)
     T = eltype(p)
     P = sgp4_series_ecef(p, epochs, ts_min, T.(gmsts); jd_ref=jd_ref)
     loss_cov = coverage_loss(
         P, T.(gp), T.(weights);
-        min_el=T(10.0), τ_cov=T(5.0), dt=T(dt), τ_revisit=T(1.0), λ=T(0.1),
+        min_el=T(cov_kw.min_el), τ_cov=T(cov_kw.τ_cov), dt=T(cov_kw.dt),
+        τ_revisit=T(cov_kw.τ_revisit), λ=T(cov_kw.λ),
     )
     loss_net = network_kpi_loss(
         P; kind=:combined, od_pairs=od,
@@ -95,6 +96,7 @@ function main()
         d_thresh=1.15 * dmed, τ=400.0, τsp=60.0, bellman_K=N,
         fiedler_K=400, penalty_km=5.0e5,
     )
+    cov_kw = (min_el=10.0, τ_cov=5.0, dt=dt, τ_revisit=1.0, λ=0.1)
 
     println("="^78)
     @printf("Step 3 attribution | N=%d NT=%d dt=%.1f min threads=%d\n",
@@ -106,7 +108,7 @@ function main()
     elapsed = @elapsed begin
         loss_cov, grad_cov = sgp4_e2e_gradient(
             params, epochs, ts_min, gp, weights;
-            jd_ref=jd_ref, gmsts=gmsts, engine=:blockdiag, dt=dt,
+            jd_ref=jd_ref, gmsts=gmsts, engine=:blockdiag, cov_kw...,
         )
         loss_net, grad_net = sgp4_network_kpi_gradient(
             params, epochs, ts_min;
@@ -122,6 +124,15 @@ function main()
             loss_cov, loss_net, loss, norm(grad), string(finite), elapsed)
     finite || error("loss/gradient must be finite and nonzero")
 
+    loss_fn(p) = composite_loss(
+        p, epochs, ts_min, gmsts, jd_ref, gp, weights, od, cov_kw, net_kw,
+    )
+    loss_direct = loss_fn(params)
+    primal_err = abs(loss - loss_direct)
+    @printf("  composite primal check absdiff=%.3e\n", primal_err)
+    isapprox(loss, loss_direct; rtol=1e-12, atol=1e-12) ||
+        error("composite primal mismatch: gradient APIs=$loss direct=$loss_direct")
+
     scores = class_sensitivities(params, grad, N)
     ranking = sortperm(scores; rev=true)
     println("  scaled local sensitivity (non-causal), descending:")
@@ -130,9 +141,6 @@ function main()
     end
     println("  most sensitive class: ", CLASSES[first(ranking)])
 
-    loss_fn(p) = composite_loss(
-        p, epochs, ts_min, gmsts, jd_ref, gp, weights, od, dt, net_kw,
-    )
     gscale = maximum(abs, grad)
     bstar_scale = maximum(abs, params[7:7:end])
     fd_max = 0.0

@@ -30,10 +30,10 @@
 - **Step 2（正式 API）✅（2026-07-13）**：在 Opt 落 `sgp4_constellation_series(params, epochs, ts_min)`（AD 透明，(N,NT,3) TEME）与 `sgp4_series_ecef(...)`（含 GMST 旋转、epoch 对齐），export + 测试。
   **验收**：与 `src/orbit` 的 SGP4 非可微路径在 Float64 下位置一致（同 epoch 约定）；ForwardDiff 梯度 FD 对标。
 - **Step 3（接真网络 KPI）✅（2026-07-13）**：TLE 参数 → 序列 → 覆盖损失 + 通用软 ISL 邻接（N 星推广，非 3 星玩具）→ 软网络 KPI（软时延 / 软可达 / 软代数连通度 λ₂）→ 复合标量梯度；输出按参数类别（n₀/e/i/Ω/ω/M/B*）的尺度化敏感度。
-  **验收**：KPI 对 positions ForwardDiff vs 中心差分 <1e-6；端到端 θ→KPI（blockdiag/enzyme）vs 全量 ForwardDiff <1e-6；七类参数逐类 FD + 方向导数对标；每个软 KPI 给 hard 对照；最小归因演示打印 `STEP3_ATTRIBUTION_OK`。
-- **Step 4（反向模式与规模）**：Enzyme（或免 mutation 覆盖损失变体）打通反向；在更大 N（≥66）测时间/内存，与 ForwardDiff 对比，给出选型建议。
-  **验收**：反向 vs 前向梯度一致（<1e-6 相对）；规模基准表。
-- **Step 5（收口）**：测试并入 `src/opt` 测试套；`docs/`/`CURRENT.md` 如实更新；（可选）与 GPU 包的可微覆盖伴随衔接。
+  **验收**：KPI 对 positions ForwardDiff vs 中心差分 <1e-6；端到端 θ→KPI（blockdiag/enzyme）vs 全量 ForwardDiff <1e-6；七类参数逐类 FD + 方向导数对标；时延/可达给 hard 对照，λ₂ 给同一软拉普拉斯的精确数值对照；最小归因演示打印 `STEP3_ATTRIBUTION_OK`。
+- **Step 4（进一步扩规模）**：为时延/可达按时间片切 Enzyme tape 或补 Bellman 手写伴随，并以候选图稀疏化替代大 N 稠密 soft 尾。
+  **验收**：新路径 vs 当前稠密实现梯度一致（<1e-6 相对）；给出 N≫200 的时间/内存基准。
+- **Step 5（收口）**：保持测试并入 `src/opt` 测试套；`CURRENT.md` 如实更新；（可选）与 GPU 包的可微覆盖伴随衔接。
 
 ## 四、风险与护栏（诚实边界）
 
@@ -41,7 +41,7 @@
 - **B\* 梯度量级小**：相对误差用带地板的口径，B\* 单独报告，不混入整体断言。
 - **深空 SDP4 不做**（与 GPU 包口径一致）；TEME→ECEF 只做 GMST z 旋转（与 CPU 主链 `r_eci_to_ecef(TEME,PEF)` 同款近似，不含极移）。
 - **epoch 对齐近似**：以 `jd_ref = max(epochs)` 为公共参考；GMST 按公共墙钟时刻取，**对参数梯度是常数**（不进 AD）。
-- 每步先 `ForwardDiff`（对 mutation 鲁棒）；Zygote/Enzyme 只在标注免 mutation 的入口上启用。
+- 每步先用 `ForwardDiff` 对标；含 mutation 的反向路径用 Enzyme，Zygote 仅用于无 mutation 的入口。
 
 ## 五、进展记录
 
@@ -108,7 +108,7 @@ julia --project=src/opt --threads=4 src/opt/scripts/sgp4_step1_check.jl
 
 前向（series+loss）单独计时：NT=20 0.855 s、NT=96 4.22 s。梯度 11088/11088 全有限非零。
 
-**尺度化敏感度**（‖xⱼ·∂L/∂xⱼ‖₂，7 类参数按尺度归一后，NT=96）：n₀ 4.6e-5 ≫ M 5.4e-6 > i 3.5e-6 > argp 2.3e-6 > raan 1.9e-6 ≫ e 3.8e-10 ≈ B* 3.6e-10。注意这是"尺度化敏感度"（量纲无关的相对灵敏度指标），不作因果归因解释。
+**尺度化敏感度**（‖xⱼ·∂L/∂xⱼ‖₂，7 类参数按尺度归一后，NT=96）：n₀ 4.6e-5 ≫ M 5.4e-6 > i 3.5e-6 > argp 2.3e-6 > raan 1.9e-6 ≫ e 3.8e-10 ≈ B* 3.6e-10。注意这是对参数单位缩放不变的局部灵敏度指标，不作因果归因解释。
 
 **解读与瓶颈**：
 - 1584 星时 noisy-OR 覆盖饱和（mean_cov≈1），loss ≈ −1 + λ·τ·log G ≈ −0.33（LSE 下界项），梯度范数随饱和度变小——物理上合理（满覆盖星座的边际覆盖梯度趋零）。
@@ -132,16 +132,16 @@ julia --project=src/opt --threads=4 src/opt/scripts/sgp4_step1_check.jl
 | `src/opt/scripts/sgp4_step3_network_kpi.jl` | 真实规模实验脚本（独立入口，不 include test/）|
 | `src/opt/scripts/sgp4_step3_attribution.jl` | 最小“梯度即归因”演示：覆盖 + 加权软网络 KPI 复合标量、七类尺度化敏感度、逐类中心差分与方向导数 |
 
-**软 KPI 定义与 hard 对照**（均从 `(N,NT,3)` ECEF 序列按 NT 时间片聚合；AD 透明，纯 Julia 显式循环）
+**软 KPI 定义与参照**（均从 `(N,NT,3)` ECEF 序列按 NT 时间片聚合；AD 透明，纯 Julia 显式循环）
 
 1. **软期望时延（ms）**：在软边权 `W[i,j]=d_ij+penalty·(1−ã_ij)`（无 `Inf`）上做软 Bellman-Ford，硬 `min` 换温度 `τsp` 的 softmin `−τ·logΣexp(−·/τ)`（softmin≤min，τ→0 收敛硬最短路）。KPI = OD 对与时间上 `soft_dist/c` 均值。**hard 对照**：`dijkstra_latency` 最短路时延。
 2. **软可达比例**：`σ((dmax−soft_dist)/τ_reach)∈[0,1]` 的 OD/时间均值。**hard 对照**：Dijkstra 有限距离的 OD 占比。
-3. **软代数连通度 λ₂（Fiedler 值）**：`L=D−Ã` 第二小特征值，定 K 步去偏（⊥1）幂迭代 Rayleigh 商估计（谱位移 `c=2·max_deg+1` 取 Gershgorin 紧界以保收敛）。**hard 对照**：`eigvals` 精确 λ₂。
+3. **软代数连通度 λ₂（Fiedler 值）**：`L=D−Ã` 第二小特征值，定 K 步去偏（⊥1）幂迭代 Rayleigh 商估计（谱位移 `c=2·max_deg+1` 取 Gershgorin 紧界以保收敛）。**数值对照**：`eigvals` 对同一软拉普拉斯给出的精确 λ₂；这不是 {0,1} 硬邻接的 λ₂。
 
 **接链（两引擎）**：`sgp4_network_kpi_gradient(params, epochs, ts_min; jd_ref, gmsts, engine=:blockdiag|:enzyme, kind=:latency|:reachability|:connectivity|:combined, od_pairs, …) → (loss, grad::7N)`，时间契约同 `sgp4_series_ecef`（显式 `jd_ref`、UTC≈UT1、GMST z 旋转 TEME→PEF≈ECEF 无极移、SDP4 拒绝、域校验）。
 
 - `:blockdiag`（默认，可扩展）：先算 dL/dP，再每星 ForwardDiff SGP4 Jacobian（3NT×7，chunk=7，`Threads.@threads`）块对角收缩 `∇_{θ_i}L=J_iᵀ·vec(dP[i,:,:])`（复用 `sgp4_e2e.jl` 的 `_satellite_series_ecef`）。**dL/dP 两条路**：
-  - 连通度：免 tape 的**特征值扰动恒等式** `∂λ₂/∂Ã_ij=(v_i−v_j)²`（v 单位 Fiedler 向量，Hellmann–Feynman/包络定理，**收敛处精确**），`O(N²·NT)` 内存 → 可扩到全星座；
+  - 连通度：免 tape 的**特征值扰动恒等式** `∂λ₂/∂Ã_ij=(v_i−v_j)²`（v 单位 Fiedler 向量，Hellmann–Feynman/包络定理，**收敛处精确**），内存 `O(N²+N·NT)` → 可扩到全星座；
   - 时延/可达：一次 **Enzyme 反向**拿 dL/dP（tape 随 `K·N²·|src|·NT`，适中 N）。
 - `:enzyme`（小 N 交叉验证）：整链一次 Enzyme 反向。
 
@@ -150,9 +150,9 @@ julia --project=src/opt --threads=4 src/opt/scripts/sgp4_step1_check.jl
 - KPI 对 positions（ForwardDiff-on-P vs 中心差分，步长扫描 best-rel）：时延 / 可达均 **< 1e-6**。
 - 时延 dL/dP：Enzyme vs ForwardDiff-on-P 相对 L2 **≈ 1e-15**。
 - 端到端 θ→时延：`:blockdiag` 与 `:enzyme` vs 全量 ForwardDiff 相对 L2 **≈ 1e-16**（验收 <1e-6）；随机方向导数中心差分 <1e-5。
-- 连通度 λ₂ 扰动 VJP：端到端 `:blockdiag` vs 全量 ForwardDiff 相对 L2 **1.4e-9**；位置级（带谱隙的路径图）vs `eigvals` 精确 λ₂ 中心差分 < 1e-3；前向 `soft_algebraic_connectivity` vs `eigvals` < 1e-3。
+- 连通度 λ₂ 扰动 VJP：端到端 `:blockdiag` vs 全量 ForwardDiff 相对 L2 **1.4e-9**；位置级（带谱隙的路径图）vs 同一软拉普拉斯的 `eigvals` 精确 λ₂ 中心差分 < 1e-3；前向 `soft_algebraic_connectivity` vs `eigvals` < 1e-3。
 - LOS：Enzyme==ForwardDiff（**1e-16 一致**）；但近掠射几何刚性，中心差分在不连续处会失配 → **LOS 只断言 AD 一致，不断言中心差分**（诚实，见下）。
-- `Pkg.test` 全绿：aon_throughput 2 + SGP4 e2e 84 + **网络 KPI 188**。
+- `Pkg.test` 全绿：aon_throughput 2 + SGP4 e2e 84 + **网络 KPI 193**。
 
 **最小“梯度即归因”演示**（真实 Starlink TLE，默认 N=8、NT=4、真实 `dt=20 min`）：
 
@@ -160,7 +160,8 @@ julia --project=src/opt --threads=4 src/opt/scripts/sgp4_step1_check.jl
 julia --project=src/opt src/opt/scripts/sgp4_step3_attribution.jl
 ```
 
-复合目标为 `L = L_coverage + 1e-3·latency − 0.25·reachability − λ₂`。本机实测
+复合目标为 `L = L_coverage + 1e-3·latency − 0.25·reachability − λ₂`。脚本先核对
+覆盖/网络两条梯度 API 返回的 loss 之和与直接复合目标一致，再执行 FD。本机实测
 `L=5.811667`、`‖grad‖=2.815e2`，七类尺度化敏感度排序为
 `n₀ > M > Ω > ω > i > e > B*`，故该配置下最敏感类别为 **n₀**。七类代表分量中心差分
 最大 best-rel `2.20e-8`，随机方向导数相对误差 `9.23e-11`，末行
@@ -170,12 +171,12 @@ julia --project=src/opt src/opt/scripts/sgp4_step3_attribution.jl
 
 **真实规模实验**（本机 M2 Max 32GB、julia 1.12.6、`-t auto`=8 线程；真实 Starlink TLE；`jd_ref=max(epochs)`。数字实测非估算；脚本 `sgp4_step3_network_kpi.jl`）
 
-| KPI | 规模 | loss | ‖grad‖ | dL/dP 引擎·耗时 | 总梯度 | hard 对照 |
+| KPI | 规模 | loss | ‖grad‖ | dL/dP 引擎·耗时 | 总梯度 | 参照 |
 |---|---|---|---|---|---|---|
-| 软代数连通度 λ₂ | N=**1584**, NT=4, d_thresh=5500km, τ=200, K=1500 | −33.755（=−mean λ₂） | 647.5（11088/11088 有限） | 扰动 VJP · 2.58 s | **2.94 s** | 精确 λ₂(t=1)=33.007992，幂迭代=33.007992，**relerr 7.3e-12**，gap(λ₃−λ₂)=5.03 |
+| 软代数连通度 λ₂ | N=**1584**, NT=4, d_thresh=5500km, τ=200, K=1500 | −33.755（=−mean λ₂） | 647.5（11088/11088 有限） | 扰动 VJP · 2.58 s | **2.94 s** | 同一软拉普拉斯的精确 λ₂(t=1)=33.007992，幂迭代=33.007992，**relerr 7.3e-12**，gap(λ₃−λ₂)=5.03 |
 | 软期望时延 | N=200, NT=6, d_thresh≈10921km, τ=400, τsp=80, K=24, \|OD\|=16 | 24.80 ms | 3052（1400/1400 有限） | Enzyme 反向 · 2.07 s | **2.09 s** | Dijkstra 均值(t=1)=26.72 ms（16/16 可达），soft=25.54 ms（差 **4.4%**）|
 
-**尺度化敏感度**（‖xⱼ⊙∂L/∂xⱼ‖₂，量纲无关的相对灵敏度指标，**不作因果归因**）：
+**尺度化敏感度**（‖xⱼ⊙∂L/∂xⱼ‖₂，对参数单位缩放不变，**不作因果归因**）：
 
 - 连通度：n₀ 4.31e1 ≫ M 4.90 > Ω 3.16 > ω 2.31 ≫ i 8.78e-1 ≫ B* 1.53e-3 ≈ e 7.72e-4。
 - 时延：n₀ 2.06e2 ≫ M 2.79e1 > Ω 1.23e1 > ω 1.16e1 ≫ i 3.00 ≫ B* 2.92e-3 ≈ e 1.68e-3。
@@ -184,7 +185,7 @@ julia --project=src/opt src/opt/scripts/sgp4_step3_attribution.jl
 
 **解读与瓶颈**
 
-- 连通度 dL/dP 用扰动恒等式（免反向 tape），`O(N²·NT)`，本机 1584 一次端到端梯度 < 3 s；K=1500 时前向 λ₂ 与精确特征值机器精度一致（7e-12）。前提是幂迭代收敛且 λ₂ 有谱隙：稠密星座低谱拥挤时收敛需更多 K（谱位移已取 Gershgorin 紧界 `2·max_deg+1`，把先前 `2N` 过松导致的收敛停滞从 relerr 23% 修正到 7e-12）。
+- 连通度 dL/dP 用扰动恒等式（免反向 tape），内存 `O(N²+N·NT)`，本机 1584 一次端到端梯度 < 3 s；K=1500 时前向 λ₂ 与同一软拉普拉斯的精确特征值机器精度一致（7e-12）。前提是幂迭代收敛且 λ₂ 有谱隙：稠密星座低谱拥挤时收敛需更多 K（谱位移已取 Gershgorin 紧界 `2·max_deg+1`，把先前 `2N` 过松导致的收敛停滞从 relerr 23% 修正到 7e-12）。
 - 时延用 Enzyme 反向拿 dL/dP，tape 随 `K·N²·|src|·NT`，故本轮时延做到 N=200；扩到 1584 需按时间片切 tape 或手写 Bellman 伴随（后续可加）。软时延对硬 Dijkstra 的差距随 (τ,τsp)→0 单调收敛（实测 12.97%→4.77%→0.51%→0.14%→0.03%），本实验用适中温度换梯度光滑。
 
 **诚实边界**
