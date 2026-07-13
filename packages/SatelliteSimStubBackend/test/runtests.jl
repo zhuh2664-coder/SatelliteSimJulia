@@ -7,6 +7,11 @@ using SatelliteSimStubBackend
     configured = create_orbit_backend(:stub; satellite_spacing_km=25.0)
     @test configured isa StubOrbitBackend
     @test configured.satellite_spacing_km == 25.0
+    @test orbit_backend_cache_token(configured).satellite_spacing_km == 25.0
+    @test endswith(
+        only(orbit_backend_source_files(configured)),
+        "SatelliteSimStubBackend.jl",
+    )
 
     backend = StubOrbitBackend()
     result = propagate_orbit(backend, [:sat1, :sat2], [0.0, 10.0])

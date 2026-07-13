@@ -2,7 +2,9 @@ module SatelliteSimJuliaSpaceBackend
 
 using SatelliteSimBackends
 using SatelliteToolbox
-import SatelliteSimBackends: backend_capabilities, propagate_orbit, register_orbit_backend!
+import SatelliteSimBackends: backend_capabilities, orbit_backend_cache_token,
+                             orbit_backend_source_files, propagate_orbit,
+                             register_orbit_backend!
 
 export JuliaSpaceOrbitBackend
 
@@ -28,6 +30,10 @@ backend_capabilities(::JuliaSpaceOrbitBackend) = (
     propagators = _SUPPORTED_PROPAGATORS,
     implementation = :independent_secular_elements,
 )
+orbit_backend_cache_token(backend::JuliaSpaceOrbitBackend) = (
+    propagator=backend.propagator,
+)
+orbit_backend_source_files(::JuliaSpaceOrbitBackend) = [@__FILE__]
 
 function _true_to_mean_anomaly(e::Float64, f::Float64)::Float64
     eccentric_anomaly = 2 * atan(

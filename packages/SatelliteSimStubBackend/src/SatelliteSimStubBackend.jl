@@ -1,7 +1,9 @@
 module SatelliteSimStubBackend
 
 using SatelliteSimBackends
-import SatelliteSimBackends: backend_capabilities, propagate_orbit, register_orbit_backend!
+import SatelliteSimBackends: backend_capabilities, orbit_backend_cache_token,
+                             orbit_backend_source_files, propagate_orbit,
+                             register_orbit_backend!
 
 export StubOrbitBackend
 
@@ -13,6 +15,12 @@ Base.@kwdef struct StubOrbitBackend <: AbstractOrbitBackend
 end
 
 backend_capabilities(::StubOrbitBackend) = (frames = (:ecef,), deterministic = true)
+orbit_backend_cache_token(backend::StubOrbitBackend) = (
+    origin_ecef_km=backend.origin_ecef_km,
+    velocity_ecef_km_s=backend.velocity_ecef_km_s,
+    satellite_spacing_km=backend.satellite_spacing_km,
+)
+orbit_backend_source_files(::StubOrbitBackend) = [@__FILE__]
 
 function propagate_orbit(backend::StubOrbitBackend, elements, tspan; kwargs...)
     times = Float64.(collect(tspan))

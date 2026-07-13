@@ -4,7 +4,8 @@ using SatelliteSimCore
 using SatelliteSimNet
 using SatelliteSimTraffic: TrafficDemand
 import SatelliteSimOrbit
-using SatelliteSimBackends: OrbitBackendSpec, create_orbit_backend,
+using SatelliteSimBackends: OrbitBackendSpec, ResolvedOrbitBackend,
+                            resolve_orbit_backend, orbit_backend_spec,
                             available_orbit_backends, orbit_backend_registered,
                             ResolvedComputeBackend, ComputeBackendSpec, GSLSeriesResult,
                             resolve_compute_backend, compute_backend_spec,
@@ -15,7 +16,10 @@ using SatelliteSimBackends: OrbitBackendSpec, create_orbit_backend,
                             compute_backend_capabilities,
                             compute_backend_cache_token,
                             compute_backend_fingerprint,
-                            compute_backend_source_files
+                            compute_backend_source_files,
+                            orbit_backend_cache_token,
+                            orbit_backend_fingerprint,
+                            orbit_backend_source_files
 
 export OrbitBackendSpec, available_orbit_backends, orbit_backend_registered,
        ComputeBackendSpec, available_compute_backends, compute_backend_registered
