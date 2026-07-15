@@ -82,6 +82,7 @@ include(joinpath(@__DIR__, "test_helpers.jl"))
     end
 
     @testset "Integration" begin
+        include(joinpath(@__DIR__, "test_bare_array_contract.jl"))
         include(joinpath(@__DIR__, "integration", "test_e2e.jl"))
     end
 

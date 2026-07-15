@@ -1,0 +1,29 @@
+[deps]
+SatelliteSimBackends = "8f4bd5d1-6a1c-4d2e-9d7f-4e1c8b6a2101"
+SatelliteSimCore = "99f6b6c7-c40f-4eb3-8423-ddc96d839c0b"
+SatelliteSimFoundation = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+SatelliteSimJuliaSpaceBackend = "ab6df7f3-8c3e-4f40-bf91-603ead8c4303"
+SatelliteSimLab = "456db33b-f2e9-44a1-91e6-796f5949196b"
+SatelliteSimLink = "c3d4e5f6-a7b8-9012-cdef-345678901234"
+SatelliteSimMetrics = "d4e5f6a7-b8c9-0123-efab-456789012345"
+SatelliteSimNet = "e40ae7a9-b545-48ee-92d2-18cbe9a7d82b"
+SatelliteSimOrbit = "b2c3d4e5-f6a7-8901-bcde-f23456789012"
+SatelliteSimStubBackend = "9a5ce6e2-7b2d-4e3f-ae80-5f2d9c7b3202"
+SatelliteSimTraffic = "e5f6a7b8-c9d0-1234-5678-9abcdef01234"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[sources]
+SatelliteSimBackends = {path = "../../packages/SatelliteSimBackends"}
+SatelliteSimCore = {path = "../../src/core"}
+SatelliteSimFoundation = {path = "../../src/foundation"}
+SatelliteSimJuliaSpaceBackend = {path = "../../packages/SatelliteSimJuliaSpaceBackend"}
+SatelliteSimLab = {path = "../../src/lab"}
+SatelliteSimLink = {path = "../../src/link"}
+SatelliteSimMetrics = {path = "../../src/metrics"}
+SatelliteSimNet = {path = "../../src/net"}
+SatelliteSimOrbit = {path = "../../src/orbit"}
+SatelliteSimStubBackend = {path = "../../packages/SatelliteSimStubBackend"}
+SatelliteSimTraffic = {path = "../../src/traffic"}
+
+[compat]
+julia = "1.12"

@@ -10,6 +10,11 @@ JSON = "682c06a0-de6a-54ab-a142-c8b1cf79cde6"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 SatelliteToolbox = "6ac157d9-b43d-51bb-8fab-48bf53814f4a"
 SatelliteSimFoundation = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+SatelliteSimBackends = "8f4bd5d1-6a1c-4d2e-9d7f-4e1c8b6a2101"
+
+[sources]
+SatelliteSimFoundation = {path = "../foundation"}
+SatelliteSimBackends = {path = "../../packages/SatelliteSimBackends"}
 
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"

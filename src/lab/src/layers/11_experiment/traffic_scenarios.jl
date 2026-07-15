@@ -36,7 +36,7 @@ function _city_lat_lon_alt(city)
 end
 
 function city_to_city_pairs(
-    sat_positions::Matrix{Float64},
+    sat_positions::AbstractMatrix{<:Real},
     cities::Vector,
     constraints::PhysicalConstraints=LEO_DEFAULTS;
     top_k::Int=3,
@@ -85,7 +85,7 @@ function city_to_city_pairs(
 end
 
 function city_to_city_pairs_sampled(
-    sat_positions::Matrix{Float64},
+    sat_positions::AbstractMatrix{<:Real},
     cities::Vector,
     constraints::PhysicalConstraints=LEO_DEFAULTS;
     top_k::Int=3,

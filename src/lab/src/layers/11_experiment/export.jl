@@ -136,7 +136,7 @@ The exporter writes:
 """
 function export_ns3_trace(
     out_dir::AbstractString;
-    positions::Array{Float64,3},
+    positions::AbstractArray{<:Real,3},
     frames::AbstractVector,
     demands::Vector{TrafficDemand}=TrafficDemand[],
     ground_stations::Vector{GroundStation}=GroundStation[],

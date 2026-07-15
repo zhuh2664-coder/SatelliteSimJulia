@@ -25,6 +25,11 @@ const SERVER_PROJECT = joinpath(ROOT, "src", "server")
 # Security declares relative path sources (../link etc.); Pkg.test from ROOT
 # resolves them against ROOT's parent. Run from its own project like server.
 const SECURITY_PROJECT = joinpath(ROOT, "src", "security")
+const BACKEND_STUB_PROJECT = joinpath(ROOT, "envs", "backends-stub")
+const BACKEND_INTEGRATION_PROJECT = joinpath(ROOT, "envs", "backends-integration")
+const JULIASPACE_BACKEND_PROJECT = joinpath(ROOT, "packages", "SatelliteSimJuliaSpaceBackend")
+const BACKEND_STUB_TEST = joinpath(ROOT, "test", "backends", "test_stub_backend_pkg.jl")
+const BACKEND_INTEGRATION_TEST = joinpath(ROOT, "test", "backends", "test_backend_end_to_end.jl")
 const ROOT_TEST_ENTRY = joinpath(ROOT, "test", "runtests_current.jl")
 
 const RUN_SERVER = get(ENV, "SATSIM_RUN_SERVER", "0") == "1"
@@ -50,6 +55,7 @@ function build_targets()
     for (short, pkg) in [
         ("foundation", "SatelliteSimFoundation"),
         ("orbit", "SatelliteSimOrbit"),
+        ("backends", "SatelliteSimBackends"),
         ("metrics", "SatelliteSimMetrics"),
         ("link", "SatelliteSimLink"),
         ("gmat", "GMAT"),
@@ -65,6 +71,9 @@ function build_targets()
 
     push!(targets, target("viz", `julia --project=$ROOT -e "using Pkg; Pkg.test(\"SatelliteSimViz\")"`; enabled=!SKIP_VIZ, reason="SATSIM_SKIP_VIZ=1"))
     push!(targets, target("security", `julia --project=$SECURITY_PROJECT -e "using Pkg; Pkg.test()"`))
+    push!(targets, target("stub-backend", `julia --project=$BACKEND_STUB_PROJECT -e "using Pkg; Pkg.instantiate(); include(\"$BACKEND_STUB_TEST\")"`))
+    push!(targets, target("juliaspace-backend", `julia --project=$JULIASPACE_BACKEND_PROJECT -e "using Pkg; Pkg.test()"`))
+    push!(targets, target("backend-integration", `julia --project=$BACKEND_INTEGRATION_PROJECT -e "using Pkg; Pkg.instantiate(); include(\"$BACKEND_INTEGRATION_TEST\")"`))
     push!(targets, target("server", `julia --project=$SERVER_PROJECT -e "using Pkg; Pkg.test()"`; enabled=RUN_SERVER, reason="set SATSIM_RUN_SERVER=1"))
 
     # Build helper package; not a regular test target yet.

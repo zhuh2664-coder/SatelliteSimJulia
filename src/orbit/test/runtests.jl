@@ -6,7 +6,16 @@
 using SatelliteSimOrbit
 using SatelliteSimFoundation
 using Dates
+using SatelliteSimBackends
 using Test
+
+struct ContractBackend <: SatelliteSimBackends.AbstractOrbitBackend end
+
+SatelliteSimBackends.propagate_orbit(::ContractBackend, elements, times; kwargs...) =
+    SatelliteSimBackends.OrbitResult(
+        reshape(collect(1.0:(length(elements) * length(times) * 3)), length(elements), length(times), 3),
+        Dict{String,Any}("backend" => "contract-test"),
+    )
 
 @testset "SatelliteSimOrbit" begin
 
@@ -65,4 +74,16 @@ using Test
         @test size(positions_at_last(pos)) == (6, 3)
         @test size(position_at_instant(pos, 1)) == (6, 3)
     end
+end
+
+@testset "Optional backend dispatch preserves the ECEF array contract" begin
+    elements = [:one, :two]
+    times = 0:10:20
+    result = propagate_with_backend(ContractBackend(), elements, times)
+    positions = propagate_to_ecef(ContractBackend(), elements, times)
+
+    @test size(result.positions_ecef_km) == (2, 3, 3)
+    @test positions == result.positions_ecef_km
+    @test n_satellites(positions) == 2
+    @test n_timesteps(positions) == 3
 end

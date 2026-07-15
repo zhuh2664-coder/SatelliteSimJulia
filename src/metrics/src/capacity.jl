@@ -206,7 +206,7 @@ end
 """
 function compute_network_capacity_for_cities(
     g::Graphs.SimpleGraph,
-    sat_positions::Matrix{Float64},
+    sat_positions::AbstractMatrix{<:Real},
     cities::Vector,
     constraints;
     top_k::Int=3,

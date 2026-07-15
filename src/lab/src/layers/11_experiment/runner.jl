@@ -2,9 +2,8 @@
 
 export run_experiment, run_multiframe_experiment
 
-function _last_position_matrix(positions::Array{Float64,3})::Matrix{Float64}
-    last_step = size(positions, 2)
-    return Matrix(positions[:, last_step, :])
+function _last_position_matrix(positions::AbstractArray{<:Real,3})::AbstractMatrix{<:Real}
+    return positions_at_last(positions)
 end
 
 function _user_position_tuples(users::Vector{GroundUser})::Vector{NTuple{3,Float64}}
@@ -28,12 +27,8 @@ function run_multiframe_experiment(config::ExperimentConfig)
     constellation = config.constellation
     T = constellation.T
     P = constellation.P
-    F = constellation.F
-    alt_km = constellation.alt_km
-    inc_deg = constellation.inc_deg
 
-    elems = generate_walker_delta(T=T, P=P, F=F, alt_km=alt_km, inc_deg=inc_deg)
-    positions = propagate_to_ecef(elems, config.tspan; propagator=config.propagator)
+    _, positions = propagate_constellation_positions(config)
 
     n_sat = T
     n_time = size(positions, 2)
@@ -43,7 +38,7 @@ function run_multiframe_experiment(config::ExperimentConfig)
 
     gsl_series = Array{Bool,3}(undef, n_sat, n_time, length(user_tuples))
     for t in 1:n_time
-        pos_t = Matrix(positions[:, t, :])
+        pos_t = position_at_instant(positions, t)
         gsl_series[:, t, :] = evaluate_gsl_batch(pos_t, user_tuples; constraints=config.constraints)[1]
     end
 
