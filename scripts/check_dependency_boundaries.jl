@@ -8,25 +8,29 @@ const LOCAL_PACKAGES = Set([
     "SatelliteSimMetrics", "SatelliteSimNet", "SatelliteSimTraffic",
     "SatelliteSimCore", "SatelliteSimLab", "SatelliteSimSecurity",
     "SatelliteSimOpt", "GMAT",
+    "SatelliteSimBackends", "SatelliteSimStubBackend", "SatelliteSimJuliaSpaceBackend",
 ])
 
-const PACKAGE_DIRS = Dict(
-    "SatelliteSimFoundation" => "foundation",
-    "SatelliteSimOrbit" => "orbit",
-    "SatelliteSimLink" => "link",
-    "SatelliteSimMetrics" => "metrics",
-    "SatelliteSimNet" => "net",
-    "SatelliteSimTraffic" => "traffic",
-    "SatelliteSimCore" => "core",
-    "SatelliteSimLab" => "lab",
-    "SatelliteSimSecurity" => "security",
-    "SatelliteSimOpt" => "opt",
-    "GMAT" => "gmat",
+const PACKAGE_PROJECTS = Dict(
+    "SatelliteSimFoundation" => "src/foundation",
+    "SatelliteSimOrbit" => "src/orbit",
+    "SatelliteSimLink" => "src/link",
+    "SatelliteSimMetrics" => "src/metrics",
+    "SatelliteSimNet" => "src/net",
+    "SatelliteSimTraffic" => "src/traffic",
+    "SatelliteSimCore" => "src/core",
+    "SatelliteSimLab" => "src/lab",
+    "SatelliteSimSecurity" => "src/security",
+    "SatelliteSimOpt" => "src/opt",
+    "GMAT" => "src/gmat",
+    "SatelliteSimBackends" => "packages/SatelliteSimBackends",
+    "SatelliteSimStubBackend" => "packages/SatelliteSimStubBackend",
+    "SatelliteSimJuliaSpaceBackend" => "packages/SatelliteSimJuliaSpaceBackend",
 )
 
 const ALLOWED_LOCAL_DEPS = Dict(
     "SatelliteSimFoundation" => Set{String}(),
-    "SatelliteSimOrbit" => Set(["SatelliteSimFoundation"]),
+    "SatelliteSimOrbit" => Set(["SatelliteSimFoundation", "SatelliteSimBackends"]),
     "SatelliteSimLink" => Set(["SatelliteSimFoundation", "SatelliteSimOrbit"]),
     "SatelliteSimMetrics" => Set(["SatelliteSimFoundation"]),
     "SatelliteSimNet" => Set(["SatelliteSimFoundation", "SatelliteSimLink"]),
@@ -35,6 +39,7 @@ const ALLOWED_LOCAL_DEPS = Dict(
     "SatelliteSimLab" => Set([
         "SatelliteSimFoundation", "SatelliteSimOrbit", "SatelliteSimLink",
         "SatelliteSimMetrics", "SatelliteSimNet", "SatelliteSimTraffic", "SatelliteSimCore",
+        "SatelliteSimBackends",
     ]),
     "SatelliteSimSecurity" => Set([
         "SatelliteSimFoundation", "SatelliteSimLink", "SatelliteSimMetrics",
@@ -44,11 +49,14 @@ const ALLOWED_LOCAL_DEPS = Dict(
         "SatelliteSimFoundation", "SatelliteSimOrbit", "SatelliteSimLink", "SatelliteSimNet",
     ]),
     "GMAT" => Set(["SatelliteSimFoundation"]),
+    "SatelliteSimBackends" => Set{String}(),
+    "SatelliteSimStubBackend" => Set(["SatelliteSimBackends"]),
+    "SatelliteSimJuliaSpaceBackend" => Set(["SatelliteSimBackends", "SatelliteSimOrbit"]),
 )
 
 failures = String[]
-for (package, dir) in sort(collect(PACKAGE_DIRS); by=first)
-    project_path = joinpath(ROOT, "src", dir, "Project.toml")
+for (package, project_dir) in sort(collect(PACKAGE_PROJECTS); by=first)
+    project_path = joinpath(ROOT, project_dir, "Project.toml")
     project = TOML.parsefile(project_path)
     deps = Set(String.(keys(get(project, "deps", Dict{String,Any}()))))
     local_deps = intersect(deps, LOCAL_PACKAGES)
@@ -68,12 +76,12 @@ for (package, dir) in sort(collect(PACKAGE_DIRS); by=first)
 end
 
 for (package, dir) in [
-    "SatelliteSimNet" => "net",
-    "SatelliteSimTraffic" => "traffic",
-    "SatelliteSimSecurity" => "security",
-    "SatelliteSimOpt" => "opt",
+    "SatelliteSimNet" => "src/net",
+    "SatelliteSimTraffic" => "src/traffic",
+    "SatelliteSimSecurity" => "src/security",
+    "SatelliteSimOpt" => "src/opt",
 ]
-    deps = get(TOML.parsefile(joinpath(ROOT, "src", dir, "Project.toml")), "deps", Dict{String,Any}())
+    deps = get(TOML.parsefile(joinpath(ROOT, dir, "Project.toml")), "deps", Dict{String,Any}())
     haskey(deps, "SatelliteSimCore") && push!(failures, "$package must not depend on SatelliteSimCore")
 end
 

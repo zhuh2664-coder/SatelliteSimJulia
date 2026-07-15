@@ -28,6 +28,8 @@ function config_hash(config::ExperimentConfig)::String
         length(config.tspan),
         config.tspan[end],
         typeof(config.propagator),
+        config.orbit_backend === nothing ? :native :
+            (config.orbit_backend.name, config.orbit_backend.options),
         typeof(config.topology_strategy),
         typeof(config.routing_algorithm),
         typeof(config.constraints),

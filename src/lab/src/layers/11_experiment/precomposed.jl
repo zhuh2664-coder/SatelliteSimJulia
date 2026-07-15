@@ -43,7 +43,12 @@ function propagate_constellation_positions(config)
         T = constellation.T, P = constellation.P, F = constellation.F,
         alt_km = constellation.alt_km, inc_deg = constellation.inc_deg,
     )
-    positions = propagate_to_ecef(elems, config.tspan; propagator = config.propagator)
+    positions = if config.orbit_backend === nothing
+        propagate_to_ecef(elems, config.tspan; propagator = config.propagator)
+    else
+        backend = create_orbit_backend(config.orbit_backend)
+        propagate_to_ecef(backend, elems, config.tspan)
+    end
     return elems, positions
 end
 
@@ -638,6 +643,7 @@ function full_constellation_assessment(config)
     network = compute_network_metrics(D)
 
     # 路由结果：通过 RoutingGraph + config.routing_algorithm 逐对执行
+    route_label = string(typeof(config.routing_algorithm).name.name)
     isl_weights = isempty(available_isl) ? Float64[] :
         Float64[r.latency_ms for r in isl_results if r.available]
     routing_graph = isempty(available_isl) ? nothing :

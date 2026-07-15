@@ -3,6 +3,10 @@ module SatelliteSimLab
 using SatelliteSimCore
 using SatelliteSimNet
 using SatelliteSimTraffic: TrafficDemand
+using SatelliteSimBackends: OrbitBackendSpec, create_orbit_backend,
+                            available_orbit_backends, orbit_backend_registered
+
+export OrbitBackendSpec, available_orbit_backends, orbit_backend_registered
 
 # 信任 Core/Net 的 export 列表，不逐符号 import（Julia 规范）。
 # 第一层工具齐全且已 export，第二层直接组合调用。

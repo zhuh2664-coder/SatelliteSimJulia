@@ -18,9 +18,19 @@ function ExperimentRecord(config::ExperimentConfig, result::ExperimentResult; no
     ts = Dates.format(now(), "yyyy-mm-dd_HH:MM:SS")
     id  = "exp_$(ts)"
     c = config.constellation
+    orbit_backend_name, orbit_backend_options = if config.orbit_backend === nothing
+        "native", Dict{String,Any}()
+    else
+        backend = config.orbit_backend
+        String(backend.name), Dict(
+            String(key) => value for (key, value) in pairs(backend.options)
+        )
+    end
     return ExperimentRecord(id, ts,
         Dict{Symbol,Any}(:name => config.name, :T => c.T, :P => c.P,
-                         :alt_km => c.alt_km, :inc_deg => c.inc_deg),
+                         :alt_km => c.alt_km, :inc_deg => c.inc_deg,
+                         :orbit_backend => orbit_backend_name,
+                         :orbit_backend_options => orbit_backend_options),
         Dict{Symbol,Any}(:coverage     => result.coverage.coverage_ratio,
                          :avg_lat_ms   => result.latency.avg_latency_ms,
                          :max_lat_ms   => result.latency.max_latency_ms,

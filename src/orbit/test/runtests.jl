@@ -6,7 +6,16 @@
 using SatelliteSimOrbit
 using SatelliteSimFoundation
 using Dates
+using SatelliteSimBackends
 using Test
+
+struct ContractBackend <: SatelliteSimBackends.AbstractOrbitBackend end
+
+SatelliteSimBackends.propagate_orbit(::ContractBackend, elements, times; kwargs...) =
+    SatelliteSimBackends.OrbitResult(
+        reshape(collect(1.0:(length(elements) * length(times) * 3)), length(elements), length(times), 3),
+        Dict{String,Any}("backend" => "contract-test"),
+    )
 
 @testset "SatelliteSimOrbit" begin
 
@@ -42,11 +51,7 @@ using Test
             "2 00005  34.2682 331.5174 1859667 331.7664  19.3264 10.82419157413667",
         )
         grid = SimulationTimeGrid(SimulationEpoch(DateTime(2000, 6, 27, 18, 50, 19)), 120, 60)
-        pos = propagate_to_ecef(
-            [tle],
-            grid;
-            propagator=Sgp4PropagatorAdapter(; verify_checksum=false),
-        )
+        pos = propagate_to_ecef([tle], grid; verify_checksum=false)
         @test size(pos) == (1, 3, 3)
         @test all(isfinite, pos)
     end
@@ -65,4 +70,16 @@ using Test
         @test size(positions_at_last(pos)) == (6, 3)
         @test size(position_at_instant(pos, 1)) == (6, 3)
     end
+end
+
+@testset "Optional backend dispatch preserves the ECEF array contract" begin
+    elements = [:one, :two]
+    times = 0:10:20
+    result = propagate_with_backend(ContractBackend(), elements, times)
+    positions = propagate_to_ecef(ContractBackend(), elements, times)
+
+    @test size(result.positions_ecef_km) == (2, 3, 3)
+    @test positions == result.positions_ecef_km
+    @test n_satellites(positions) == 2
+    @test n_timesteps(positions) == 3
 end

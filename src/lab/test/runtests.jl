@@ -3,11 +3,27 @@ using SatelliteSimLab
 using SatelliteSimNet
 using SatelliteSimTraffic
 using SatelliteSimFoundation
+using SatelliteSimBackends
 using JSON
 using HTTP
 using Test
 
-function _small_config(; name="lab-smoke")
+struct LabOffsetOrbitBackend <: AbstractOrbitBackend
+    x_offset_km::Float64
+end
+
+function SatelliteSimBackends.propagate_orbit(
+    backend::LabOffsetOrbitBackend, elements, times; kwargs...
+)
+    positions = propagate_to_ecef(elements, Float64.(collect(times)); propagator=:two_body)
+    positions[:, :, 1] .+= backend.x_offset_km
+    return OrbitResult(
+        positions,
+        Dict{String,Any}("backend" => "lab_offset", "frame" => "ecef"),
+    )
+end
+
+function _small_config(; name="lab-smoke", propagator=DefaultPropagator)
     return ExperimentConfig(
         name = name,
         constellation_params = Dict(
@@ -18,6 +34,7 @@ function _small_config(; name="lab-smoke")
             :inc_deg => 53.0,
         ),
         tspan = [0.0, 60.0],
+        propagator = propagator,
         topology_strategy = GridPlusStrategy(),
         routing_algorithm = DijkstraRouting(),
         users = [
@@ -44,6 +61,50 @@ end
         cfg = ExperimentConfig(name = "include-order-smoke", tspan = [0.0, 60.0])
         @test cfg.name == "include-order-smoke"
         @test cfg.tspan == [0.0, 60.0]
+    end
+
+    @testset "registered orbit backend selection" begin
+        @test ExperimentConfig().orbit_backend === nothing
+        @test ExperimentConfig(orbit_backend=:deferred).orbit_backend == OrbitBackendSpec(:deferred)
+        @test_throws ArgumentError ExperimentConfig(orbit_backend=LabOffsetOrbitBackend(1.0))
+
+        unregister_orbit_backend!(:lab_offset)
+        register_orbit_backend!(
+            :lab_offset,
+            options -> LabOffsetOrbitBackend(Float64(get(options, :x_offset_km, 0.0))),
+        )
+        try
+            native_config = _small_config(;
+                name="native-backend-control",
+                propagator=:two_body,
+            )
+            backend_config = ExperimentConfig(
+                name = "registered-backend",
+                constellation_params = Dict(
+                    :T => 6.0, :P => 3.0, :F => 1.0,
+                    :alt_km => 550.0, :inc_deg => 53.0,
+                ),
+                tspan = [0.0, 60.0],
+                propagator = :two_body,
+                topology_strategy = GridPlusStrategy(),
+                routing_algorithm = DijkstraRouting(),
+                users = native_config.users,
+                ground_pairs = native_config.ground_pairs,
+                orbit_backend = OrbitBackendSpec(:lab_offset; x_offset_km=1.25),
+            )
+
+            _, native_positions = propagate_constellation_positions(native_config)
+            _, backend_positions = propagate_constellation_positions(backend_config)
+            @test backend_positions[:, :, 1] ≈ native_positions[:, :, 1] .+ 1.25
+            @test backend_positions[:, :, 2:3] ≈ native_positions[:, :, 2:3]
+            @test SatelliteSimLab.config_hash(native_config) != SatelliteSimLab.config_hash(backend_config)
+
+            result = run_experiment(backend_config)
+            @test result isa ExperimentResult
+            @test result.config.orbit_backend.name == :lab_offset
+        finally
+            unregister_orbit_backend!(:lab_offset)
+        end
     end
 
     @testset "traffic time grid alignment" begin
@@ -84,15 +145,21 @@ end
         ensure_default_ai_tools!()
         @test "run_simulation" in registered_ai_tools()
 
+        tle_record = join([
+            "VANGUARD 1",
+            "1 00005U 58002B   00179.78495062  .00000023  00000-0  28098-4 0  4753",
+            "2 00005  34.2682 331.5174 1859667 331.7664  19.3264 10.82419157413667",
+        ], "\n")
         result_json = execute_tool(
             "run_simulation",
             Dict(
-                "constellation" => "starlink_tle",
+                "constellation" => "inline_tle",
                 "topology" => "balanced",
                 "propagator" => "tle_based",
                 "duration_s" => 60,
                 "steps" => 3,
                 "max_sats" => 8,
+                "tle" => join(fill(tle_record, 8), "\n"),
             ),
         )
         result = JSON.parse(result_json)
