@@ -43,6 +43,8 @@ import ForwardDiff
 export NetworkKPIConfig, network_kpi_config, default_od_pairs,
        soft_expected_latency_ms, soft_reachability_ratio, soft_algebraic_connectivity,
        network_kpi_loss, network_kpi_loss_grad_positions,
+       ISLEdgeList, full_isl_edge_list, edge_count,
+       network_kpi_loss_edges, network_kpi_loss_grad_positions_edges,
        soft_connectivity_loss_vjp, sgp4_network_kpi_gradient
 
 # ── Configuration (immutable, Enzyme-Const friendly) ─────────────────────────
@@ -210,6 +212,114 @@ function network_kpi_config(
     )
 end
 
+# ── Undirected edge-list topology ─────────────────────────────────────────────
+
+"""
+    ISLEdgeList
+
+Canonical undirected ISL edge list. Every edge is stored once as `(src[e], dst[e])`
+with `src[e] < dst[e]`; pairs are sorted and unique. The CSR incidence arrays
+store each undirected edge at both endpoints with neighbours in ascending node
+order. This makes a full edge list visit Bellman predecessors in exactly the
+same order as the dense reference kernel without allocating an `N×N` matrix.
+"""
+struct ISLEdgeList
+    N::Int
+    src::Vector{Int}
+    dst::Vector{Int}
+    nbr_off::Vector{Int}
+    nbr_node::Vector{Int}
+    nbr_edge::Vector{Int}
+end
+
+edge_count(edges::ISLEdgeList) = length(edges.src)
+Base.length(edges::ISLEdgeList) = edge_count(edges)
+
+function _isl_edge_list(N::Int, pairs::Vector{Tuple{Int,Int}})
+    N >= 1 || throw(ArgumentError("ISLEdgeList requires N ≥ 1"))
+
+    normalized = Vector{Tuple{Int,Int}}(undef, length(pairs))
+    @inbounds for q in eachindex(pairs)
+        a, b = pairs[q]
+        (1 <= a <= N && 1 <= b <= N) ||
+            throw(ArgumentError("edge ($a,$b) is outside 1:$N"))
+        a != b || throw(ArgumentError("self edge ($a,$b) is not allowed"))
+        normalized[q] = a < b ? (a, b) : (b, a)
+    end
+    sort!(normalized)
+    unique!(normalized)
+
+    E = length(normalized)
+    src = Vector{Int}(undef, E)
+    dst = Vector{Int}(undef, E)
+    degree = zeros(Int, N)
+    @inbounds for e in 1:E
+        i, j = normalized[e]
+        src[e] = i
+        dst[e] = j
+        degree[i] += 1
+        degree[j] += 1
+    end
+
+    nbr_off = Vector{Int}(undef, N + 1)
+    nbr_off[1] = 1
+    @inbounds for i in 1:N
+        nbr_off[i + 1] = nbr_off[i] + degree[i]
+    end
+    nbr_node = Vector{Int}(undef, 2E)
+    nbr_edge = Vector{Int}(undef, 2E)
+    next = copy(@view nbr_off[1:N])
+    @inbounds for e in 1:E
+        i = src[e]
+        j = dst[e]
+        qi = next[i]
+        qj = next[j]
+        nbr_node[qi] = j
+        nbr_edge[qi] = e
+        nbr_node[qj] = i
+        nbr_edge[qj] = e
+        next[i] = qi + 1
+        next[j] = qj + 1
+    end
+
+    # Construction above is already ordered for canonical lexicographic pairs,
+    # but sort each incidence segment explicitly so custom/frozen builders keep
+    # the same predecessor-order contract.
+    @inbounds for i in 1:N
+        lo = nbr_off[i]
+        hi = nbr_off[i + 1] - 1
+        lo >= hi && continue
+        perm = sortperm(@view nbr_node[lo:hi])
+        nodes = copy(@view nbr_node[lo:hi])
+        edge_ids = copy(@view nbr_edge[lo:hi])
+        for (k, p) in enumerate(perm)
+            nbr_node[lo + k - 1] = nodes[p]
+            nbr_edge[lo + k - 1] = edge_ids[p]
+        end
+    end
+
+    return ISLEdgeList(N, src, dst, nbr_off, nbr_node, nbr_edge)
+end
+
+"""
+    full_isl_edge_list(N) -> ISLEdgeList
+
+Build the canonical list of all `N(N-1)/2` undirected edges. This is the exact
+edge-list reference used before introducing a sparse candidate graph.
+"""
+function full_isl_edge_list(N::Int)
+    N >= 1 || throw(ArgumentError("full_isl_edge_list: N must be ≥ 1"))
+    pairs = Vector{Tuple{Int,Int}}(undef, N * (N - 1) ÷ 2)
+    q = 1
+    @inbounds for i in 1:N
+        for j in (i + 1):N
+            pairs[q] = (i, j)
+            q += 1
+        end
+    end
+    return _isl_edge_list(N, pairs)
+end
+
 # ── Per-slice kernels (type-generic, AD transparent) ─────────────────────────
 
 # Soft edge weights W (N×N) at time slice t, read directly from the 3D series.
@@ -219,8 +329,7 @@ function _build_W(P::AbstractArray{T,3}, t::Int, cfg::NetworkKPIConfig) where {T
     dth = T(cfg.d_thresh); iτ = one(T) / T(cfg.τ); pen = T(cfg.penalty_km)
     ro = T(cfg.r_occ); τl = T(cfg.τ_los)
     @inbounds for i in 1:N
-        for j in 1:N
-            i == j && continue
+        for j in (i+1):N
             dx = P[i,t,1]-P[j,t,1]; dy = P[i,t,2]-P[j,t,2]; dz = P[i,t,3]-P[j,t,3]
             d = sqrt(dx*dx + dy*dy + dz*dz)
             a = _sigmoid((dth - d) * iτ)
@@ -229,7 +338,9 @@ function _build_W(P::AbstractArray{T,3}, t::Int, cfg::NetworkKPIConfig) where {T
                                      P[j,t,1], P[j,t,2], P[j,t,3];
                                      r_occ=ro, τ_los=τl)
             end
-            W[i, j] = d + pen * (one(T) - a)
+            w = d + pen * (one(T) - a)
+            W[i, j] = w
+            W[j, i] = w
         end
     end
     return W
@@ -285,6 +396,74 @@ function _soft_bellman(W::AbstractMatrix{T}, s::Int, K::Int, τsp::T, big::T) wh
             for l in 1:N
                 l == j && continue
                 acc += exp(-(dist[l] + W[l, j] - mn) * iτ)
+            end
+            nd[j] = mn - τsp * log(acc)
+        end
+        dist = nd
+    end
+    return dist
+end
+
+# Edge costs for one time slice, one value per canonical undirected edge.
+function _build_edge_costs(
+    P::AbstractArray{T,3}, t::Int, cfg::NetworkKPIConfig, edges::ISLEdgeList,
+) where {T<:Number}
+    E = edge_count(edges)
+    costs = Vector{T}(undef, E)
+    dth = T(cfg.d_thresh)
+    iτ = one(T) / T(cfg.τ)
+    pen = T(cfg.penalty_km)
+    ro = T(cfg.r_occ)
+    τl = T(cfg.τ_los)
+    @inbounds for e in 1:E
+        i = edges.src[e]
+        j = edges.dst[e]
+        dx = P[i,t,1] - P[j,t,1]
+        dy = P[i,t,2] - P[j,t,2]
+        dz = P[i,t,3] - P[j,t,3]
+        d = sqrt(dx*dx + dy*dy + dz*dz)
+        a = _sigmoid((dth - d) * iτ)
+        if cfg.los
+            a *= soft_los_factor(
+                P[i,t,1], P[i,t,2], P[i,t,3],
+                P[j,t,1], P[j,t,2], P[j,t,3];
+                r_occ=ro, τ_los=τl,
+            )
+        end
+        costs[e] = d + pen * (one(T) - a)
+    end
+    return costs
+end
+
+# Soft ≤K-hop free energy over an incidence-list graph. A full edge list has
+# exactly the dense kernel's predecessor set and ordering.
+function _soft_bellman_edges(
+    costs::AbstractVector{T}, edges::ISLEdgeList,
+    s::Int, K::Int, τsp::T, big::T,
+) where {T<:Number}
+    N = edges.N
+    dist = fill(big, N)
+    dist[s] = zero(T)
+    iτ = one(T) / τsp
+    @inbounds for _ in 1:K
+        nd = fill(big, N)
+        nd[s] = zero(T)
+        for j in 1:N
+            j == s && continue
+            lo = edges.nbr_off[j]
+            hi = edges.nbr_off[j + 1] - 1
+            lo > hi && continue
+            mn = T(Inf)
+            for q in lo:hi
+                l = edges.nbr_node[q]
+                v = dist[l] + costs[edges.nbr_edge[q]]
+                mn = ifelse(v < mn, v, mn)
+            end
+            isfinite(mn) || continue
+            acc = zero(T)
+            for q in lo:hi
+                l = edges.nbr_node[q]
+                acc += exp(-(dist[l] + costs[edges.nbr_edge[q]] - mn) * iτ)
             end
             nd[j] = mn - τsp * log(acc)
         end
@@ -373,6 +552,41 @@ function _latency_and_reach(P::AbstractArray{T,3}, cfg::NetworkKPIConfig) where 
     return lat / n, reach / n
 end
 
+# Full/sparse edge-list counterpart. The accumulation order over time, source
+# groups, and destinations intentionally matches `_latency_and_reach`.
+function _latency_and_reach_edges(
+    P::AbstractArray{T,3}, cfg::NetworkKPIConfig, edges::ISLEdgeList,
+) where {T<:Number}
+    lat = zero(T)
+    reach = zero(T)
+    τsp = T(cfg.τsp)
+    big = T(cfg.big)
+    inv_c_ms = T(1000) / T(cfg.speed_kms)
+    dmax = T(cfg.reach_dmax_km)
+    iτr = one(T) / T(cfg.τ_reach)
+    @inbounds for t in 1:cfg.NT
+        costs = _build_edge_costs(P, t, cfg, edges)
+        for k in 1:length(cfg.usrc)
+            s = cfg.usrc[k]
+            dist = _soft_bellman_edges(costs, edges, s, cfg.bellman_K, τsp, big)
+            for m in cfg.group_off[k]:(cfg.group_off[k + 1] - 1)
+                d = cfg.group_dst[m]
+                lat += dist[d] * inv_c_ms
+                reach += _sigmoid((dmax - dist[d]) * iτr)
+            end
+        end
+    end
+    n = T(cfg.n_od * cfg.NT)
+    return lat / n, reach / n
+end
+
+function _network_kpi_loss_edges(
+    P::AbstractArray{T,3}, cfg::NetworkKPIConfig, edges::ISLEdgeList,
+) where {T<:Number}
+    lat, reach = _latency_and_reach_edges(P, cfg, edges)
+    return T(cfg.w_lat) * lat - T(cfg.w_reach) * reach
+end
+
 # Mean algebraic connectivity λ₂ over time.
 function _connectivity(P::AbstractArray{T,3}, cfg::NetworkKPIConfig) where {T<:Number}
     conn = zero(T)
@@ -446,6 +660,32 @@ function network_kpi_loss(P::AbstractArray{T,3}; kind::Symbol = :latency,
     return _network_kpi_loss(P, cfg)
 end
 
+function _validate_edge_kpi_inputs(P, cfg::NetworkKPIConfig, edges::ISLEdgeList)
+    size(P) == (cfg.N, cfg.NT, 3) ||
+        throw(ArgumentError("positions size $(size(P)) ≠ (N=$(cfg.N), NT=$(cfg.NT), 3) from cfg"))
+    edges.N == cfg.N ||
+        throw(ArgumentError("edge-list N=$(edges.N) ≠ cfg.N=$(cfg.N)"))
+    cfg.w_conn == 0 ||
+        throw(ArgumentError("edge-list Step-4 kernel supports latency/reachability only"))
+    (cfg.w_lat != 0 || cfg.w_reach != 0) ||
+        throw(ArgumentError("edge-list Step-4 kernel needs a nonzero latency or reachability weight"))
+    return nothing
+end
+
+"""
+    network_kpi_loss_edges(P, cfg, edges) -> scalar
+
+Latency/reachability loss evaluated directly on an undirected edge list. With
+`edges == full_isl_edge_list(cfg.N)` this is the exact edge-list counterpart of
+the dense [`network_kpi_loss`](@ref) kernel.
+"""
+function network_kpi_loss_edges(
+    P::AbstractArray{T,3}, cfg::NetworkKPIConfig, edges::ISLEdgeList,
+) where {T<:Number}
+    _validate_edge_kpi_inputs(P, cfg, edges)
+    return _network_kpi_loss_edges(P, cfg, edges)
+end
+
 # ── dL/dP adjoints ───────────────────────────────────────────────────────────
 
 """
@@ -470,6 +710,29 @@ function network_kpi_loss_grad_positions(P::AbstractArray{Float64,3}, cfg::Netwo
         Enzyme.Active,
         Enzyme.Duplicated(P, dP),
         Enzyme.Const(cfg),
+    )
+    return res[2], dP
+end
+
+"""
+    network_kpi_loss_grad_positions_edges(P, cfg, edges) -> (loss, dP)
+
+Monolithic Enzyme VJP of the edge-list latency/reachability loss. The primal
+`P` is passed to Enzyme in its original concrete `AbstractArray` form; views are
+not materialized.
+"""
+function network_kpi_loss_grad_positions_edges(
+    P::AbstractArray{Float64,3}, cfg::NetworkKPIConfig, edges::ISLEdgeList,
+)
+    _validate_edge_kpi_inputs(P, cfg, edges)
+    dP = Enzyme.make_zero(P)
+    res = Enzyme.autodiff(
+        Enzyme.set_runtime_activity(Enzyme.ReverseWithPrimal),
+        Enzyme.Const(_network_kpi_loss_edges),
+        Enzyme.Active,
+        Enzyme.Duplicated(P, dP),
+        Enzyme.Const(cfg),
+        Enzyme.Const(edges),
     )
     return res[2], dP
 end
@@ -623,6 +886,7 @@ function sgp4_network_kpi_gradient(
     jd_ref, gmsts = nothing, engine::Symbol = :blockdiag,
     kind::Symbol = :latency,
     od_pairs = default_od_pairs(length(epochs)),
+    edge_list::Union{Nothing,ISLEdgeList} = nothing,
     kpi_kwargs...,
 )
     _validate_sgp4_params(params)
@@ -656,11 +920,19 @@ function sgp4_network_kpi_gradient(
                                           collect(Float64, ts_min), Float64(jd_ref),
                                           gmsts_v, dP)
         return loss, grad
+    elseif engine === :edge_monolithic
+        positions = sgp4_series_ecef(params, epochs, ts_min, gmsts_v; jd_ref=jd_ref)
+        edges = edge_list === nothing ? full_isl_edge_list(N) : edge_list
+        loss, dP = network_kpi_loss_grad_positions_edges(positions, cfg, edges)
+        grad = _blockdiag_contract_params(params, collect(Float64, epochs),
+                                          collect(Float64, ts_min), Float64(jd_ref),
+                                          gmsts_v, dP)
+        return loss, grad
     elseif engine === :enzyme
         ctx = _E2ENetworkContext(N, NT, collect(Float64, epochs), Float64(jd_ref),
                                  collect(Float64, ts_min), gmsts_v, cfg)
         return _enzyme_network_gradient(params, ctx)
     else
-        throw(ArgumentError("unknown engine $engine (use :blockdiag or :enzyme)"))
+        throw(ArgumentError("unknown engine $engine (use :blockdiag, :edge_monolithic, or :enzyme)"))
     end
 end

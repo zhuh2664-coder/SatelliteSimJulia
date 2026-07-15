@@ -14,6 +14,14 @@ const EXPECTED_JULIA_THREADS = 2
 const EXPECTED_GPU_NAMES = ("NVIDIA A10", "NVIDIA A10G")
 const EXPECTED_GPU_CAPABILITY = (8, 6)
 const MIN_GPU_MEMORY_BYTES = 20 * 2^30
+const F64_RTOL = 1e-12
+const F64_ATOL = 1e-10
+const F32_RTOL = 1e-4
+const F32_SCALAR_ATOL = 5e-5
+const F32_DISTANCE_ELEVATION_ATOL = 2e-3
+const F32_DELAY_ATOL = 2e-5
+const GSL_TRANSFER_REDUCTION_F32_MIN = 1787.5
+const ISL_TRANSFER_REDUCTION_F32_MIN = 6050.0
 
 function random_positions(n_satellites::Int, n_times::Int, ::Type{T}) where T
     positions = Array{T}(undef, n_satellites, n_times, 3)
@@ -469,6 +477,21 @@ function relative_error(actual, expected)
     return maximum(abs.(actual .- expected) ./ max.(abs.(expected), eps(eltype(expected))))
 end
 
+function gate_tolerance(::Type{Float64}, ::Symbol)
+    return (rtol=F64_RTOL, atol=F64_ATOL)
+end
+
+function gate_tolerance(::Type{Float32}, metric::Symbol)
+    atol = if metric === :distance || metric === :elevation
+        F32_DISTANCE_ELEVATION_ATOL
+    elseif metric === :delay
+        F32_DELAY_ATOL
+    else
+        F32_SCALAR_ATOL
+    end
+    return (rtol=F32_RTOL, atol=atol)
+end
+
 function elementwise_isapprox(actual, expected; rtol, atol)
     size(actual) == size(expected) || return false
     return all(
@@ -553,9 +576,12 @@ function validate_coverage(::Type{T}) where T
         device_ground_points,
         device_weights,
     )
-    tolerance = T === Float64 ? (rtol=1e-9, atol=1e-10) : (rtol=5e-4, atol=5e-5)
+    tolerance = gate_tolerance(T, :scalar)
     isapprox(actual, expected; tolerance...) ||
-        error("coverage parity failed for $T: actual=$actual expected=$expected")
+        error(
+            "coverage parity failed for $T: actual=$actual expected=$expected " *
+            "rtol=$(tolerance.rtol) atol=$(tolerance.atol)",
+        )
     error_value = abs(actual - expected) / max(abs(expected), eps(T))
     println(
         "COVERAGE_PARITY type=$T status=PASS relative_error=$error_value backend=$(typeof(backend))",
@@ -588,15 +614,17 @@ function validate_canonical_gsl(::Type{T}) where T
     expected_elevations = reshape(T[90, 0, 45, -90], 4, 1, 1)
     expected_delays =
         expected_distances ./ T(SPEED_OF_LIGHT_KM_S) .* T(1000)
-    tolerance = T === Float64 ? (rtol=1e-12, atol=1e-12) : (rtol=1e-5, atol=1e-4)
+    distance_tolerance = gate_tolerance(T, :distance)
+    elevation_tolerance = gate_tolerance(T, :elevation)
+    delay_tolerance = gate_tolerance(T, :delay)
 
     actual[1] == expected_available ||
         error("canonical GSL availability failed for $T")
-    elementwise_isapprox(actual[2], expected_distances; tolerance...) ||
+    elementwise_isapprox(actual[2], expected_distances; distance_tolerance...) ||
         error("canonical GSL distance failed for $T")
-    elementwise_isapprox(actual[3], expected_elevations; tolerance...) ||
+    elementwise_isapprox(actual[3], expected_elevations; elevation_tolerance...) ||
         error("canonical GSL elevation failed for $T")
-    elementwise_isapprox(actual[4], expected_delays; tolerance...) ||
+    elementwise_isapprox(actual[4], expected_delays; delay_tolerance...) ||
         error("canonical GSL delay failed for $T")
     println("GSL_CANONICAL type=$T status=PASS")
 end
@@ -615,12 +643,9 @@ function validate_gsl(::Type{T}) where T
         error("GSL outputs were not allocated on CUDA")
     actual = map(Array, actual_device)
 
-    distance_tolerance =
-        T === Float64 ? (rtol=1e-9, atol=1e-9) : (rtol=2e-5, atol=2e-3)
-    elevation_tolerance =
-        T === Float64 ? (rtol=1e-9, atol=1e-9) : (rtol=2e-5, atol=2e-3)
-    delay_tolerance =
-        T === Float64 ? (rtol=1e-9, atol=1e-10) : (rtol=2e-5, atol=2e-5)
+    distance_tolerance = gate_tolerance(T, :distance)
+    elevation_tolerance = gate_tolerance(T, :elevation)
+    delay_tolerance = gate_tolerance(T, :delay)
     actual[1] == expected[1] || error("GSL availability parity failed for $T")
     elementwise_isapprox(actual[2], expected[2]; distance_tolerance...) ||
         error("GSL distance parity failed for $T")
@@ -663,24 +688,23 @@ function validate_isl(::Type{T}) where T
     available_mismatch = count_mismatch(actual.available, expected.available)
     los_mismatch = count_mismatch(actual.line_of_sight, expected.line_of_sight)
     total = length(expected.available)
+    distance_tolerance = gate_tolerance(T, :distance)
+    elevation_tolerance = gate_tolerance(T, :elevation)
+    delay_tolerance = gate_tolerance(T, :delay)
+    generic_tolerance = gate_tolerance(T, :scalar)
 
-    if T === Float64
-        (available_mismatch == 0 && los_mismatch == 0) ||
-            error("ISL Float64 boolean parity failed: available=$available_mismatch los=$los_mismatch")
-        distance_error <= 1e-9 || error("ISL Float64 distance parity failed: $distance_error")
-        delay_error <= 1e-9 || error("ISL Float64 delay parity failed: $delay_error")
-        elevation_error <= 1e-8 || error("ISL Float64 elevation parity failed: $elevation_error")
-        cos_psi_error <= 1e-8 || error("ISL Float64 azimuth parity failed: $cos_psi_error")
-        duration_error <= 1e-6 || error("ISL Float64 duration parity failed: $duration_error")
-    else
-        (available_mismatch == 0 && los_mismatch == 0) ||
-            error("ISL Float32 boolean parity failed: available=$available_mismatch los=$los_mismatch")
-        distance_error <= 2e-4 || error("ISL Float32 distance parity failed: $distance_error")
-        delay_error <= 2e-4 || error("ISL Float32 delay parity failed: $delay_error")
-        elevation_error <= 2e-4 || error("ISL Float32 elevation parity failed: $elevation_error")
-        cos_psi_error <= 2e-4 || error("ISL Float32 azimuth parity failed: $cos_psi_error")
-        duration_error <= 2e-4 || error("ISL Float32 duration parity failed: $duration_error")
-    end
+    (available_mismatch == 0 && los_mismatch == 0) ||
+        error("ISL $T boolean parity failed: available=$available_mismatch los=$los_mismatch")
+    elementwise_isapprox(actual.distance_km, expected.distance_km; distance_tolerance...) ||
+        error("ISL $T distance parity failed")
+    elementwise_isapprox(actual.delay_ms, expected.delay_ms; delay_tolerance...) ||
+        error("ISL $T delay parity failed")
+    elementwise_isapprox(actual.elevation_deg, expected.elevation_deg; elevation_tolerance...) ||
+        error("ISL $T elevation parity failed")
+    elementwise_isapprox(actual.cos_psi, expected.cos_psi; generic_tolerance...) ||
+        error("ISL $T azimuth parity failed")
+    elementwise_isapprox(actual.duration_s, expected.duration_s; generic_tolerance...) ||
+        error("ISL $T duration parity failed")
 
     println(
         "ISL_PARITY type=$T status=PASS " *
@@ -718,14 +742,16 @@ function validate_registered_compute_backend(::Type{T}) where T
         gsl_min_elevation_deg=25.0,
         gsl_max_range_km=2000.0,
     )
-    tolerance = T === Float64 ? (rtol=1e-9, atol=1e-9) : (rtol=2e-5, atol=2e-3)
+    distance_tolerance = gate_tolerance(T, :distance)
+    elevation_tolerance = gate_tolerance(T, :elevation)
+    delay_tolerance = gate_tolerance(T, :delay)
     actual.available == expected[1] ||
         error("registered backend availability parity failed for $T")
-    elementwise_isapprox(actual.distance_km, expected[2]; tolerance...) ||
+    elementwise_isapprox(actual.distance_km, expected[2]; distance_tolerance...) ||
         error("registered backend distance parity failed for $T")
-    elementwise_isapprox(actual.elevation_deg, expected[3]; tolerance...) ||
+    elementwise_isapprox(actual.elevation_deg, expected[3]; elevation_tolerance...) ||
         error("registered backend elevation parity failed for $T")
-    elementwise_isapprox(actual.delay_ms, expected[4]; tolerance...) ||
+    elementwise_isapprox(actual.delay_ms, expected[4]; delay_tolerance...) ||
         error("registered backend delay parity failed for $T")
     println(
         "REGISTERED_COMPUTE_BACKEND type=$T status=PASS backend=$(compute_backend_name(selected))",
@@ -878,10 +904,13 @@ function bench_coverage_case(n_satellites::Int, n_times::Int, n_ground::Int, ::T
         isfinite(gpu_scalar) && isfinite(cpu_scalar) ?
         abs(gpu_scalar - cpu_scalar) / max(abs(cpu_scalar), eps(Float64)) :
         Inf
-    tolerance = T === Float64 ? 1e-8 : 2e-2
-    parity = relative <= tolerance ? "PASS" : "FAIL"
+    tolerance = gate_tolerance(T, :scalar)
+    parity = isapprox(gpu_scalar, cpu_scalar; tolerance...) ? "PASS" : "FAIL"
     parity == "PASS" ||
-        error("coverage benchmark parity failed for $T: relative_error=$relative")
+        error(
+            "coverage benchmark parity failed for $T: relative_error=$relative " *
+            "rtol=$(tolerance.rtol) atol=$(tolerance.atol)",
+        )
     units = float(n_satellites) * n_times * n_ground
 
     println(
@@ -947,12 +976,14 @@ function bench_gsl_case(n_satellites::Int, n_stations::Int, n_times::Int, ::Type
     distance_error = max_rel_error(gpu_host[2], cpu_result[2])
     elevation_error = max_rel_error(gpu_host[3], cpu_result[3])
     delay_error = max_rel_error(gpu_host[4], cpu_result[4])
-    tolerance = T === Float64 ? 1e-8 : 1e-3
+    distance_tolerance = gate_tolerance(T, :distance)
+    elevation_tolerance = gate_tolerance(T, :elevation)
+    delay_tolerance = gate_tolerance(T, :delay)
     parity = (
         available_mismatch == 0 &&
-        distance_error <= tolerance &&
-        elevation_error <= tolerance &&
-        delay_error <= tolerance
+        elementwise_isapprox(gpu_host[2], cpu_result[2]; distance_tolerance...) &&
+        elementwise_isapprox(gpu_host[3], cpu_result[3]; elevation_tolerance...) &&
+        elementwise_isapprox(gpu_host[4], cpu_result[4]; delay_tolerance...)
     ) ? "PASS" : "FAIL"
     parity == "PASS" || error(
         "GSL benchmark parity failed for $T: availability=$available_mismatch " *
@@ -1031,15 +1062,43 @@ function bench_isl_case(n_satellites::Int, n_pairs::Int, n_times::Int, ::Type{T}
     elevation_error = max_rel_error(Array(device_result.elevation_deg), cpu_result.elevation_deg)
     cos_psi_error = max_rel_error(Array(device_result.cos_psi), cpu_result.cos_psi)
     duration_error = max_rel_error(Array(device_result.duration_s), cpu_result.duration_s)
-    tolerance = T === Float64 ? 1e-8 : 1e-3
+    distance_tolerance = gate_tolerance(T, :distance)
+    elevation_tolerance = gate_tolerance(T, :elevation)
+    delay_tolerance = gate_tolerance(T, :delay)
+    generic_tolerance = gate_tolerance(T, :scalar)
+    distance_match = elementwise_isapprox(
+        Array(device_result.distance_km),
+        cpu_result.distance_km;
+        distance_tolerance...,
+    )
+    delay_match = elementwise_isapprox(
+        Array(device_result.delay_ms),
+        cpu_result.delay_ms;
+        delay_tolerance...,
+    )
+    elevation_match = elementwise_isapprox(
+        Array(device_result.elevation_deg),
+        cpu_result.elevation_deg;
+        elevation_tolerance...,
+    )
+    cos_psi_match = elementwise_isapprox(
+        Array(device_result.cos_psi),
+        cpu_result.cos_psi;
+        generic_tolerance...,
+    )
+    duration_match = elementwise_isapprox(
+        Array(device_result.duration_s),
+        cpu_result.duration_s;
+        generic_tolerance...,
+    )
     parity = (
         available_mismatch == 0 &&
         los_mismatch == 0 &&
-        distance_error <= tolerance &&
-        delay_error <= tolerance &&
-        elevation_error <= tolerance &&
-        cos_psi_error <= tolerance &&
-        duration_error <= tolerance
+        distance_match &&
+        delay_match &&
+        elevation_match &&
+        cos_psi_match &&
+        duration_match
     ) ? "PASS" : "FAIL"
     parity == "PASS" || error(
         "ISL benchmark parity failed for $T: availability=$available_mismatch " *
@@ -1112,12 +1171,22 @@ function bench_gsl_reduction_case(n_satellites::Int, n_stations::Int, n_times::I
 
     bytes_full = n_satellites * n_stations * n_times * (sizeof(Bool) + 3 * sizeof(T))
     bytes_agg = n_stations * n_times * sizeof(Int32)
+    transfer_reduction = bytes_full / bytes_agg
+    expected_transfer = n_satellites * (1 + 3 * sizeof(T)) / 4
+    transfer_reduction == expected_transfer || error(
+        "GSL transfer-reduction formula mismatch type=$T expected=$expected_transfer got=$transfer_reduction",
+    )
+    if T === Float32
+        transfer_reduction >= GSL_TRANSFER_REDUCTION_F32_MIN || error(
+            "GSL Float32 transfer-reduction floor failed: $transfer_reduction < $(GSL_TRANSFER_REDUCTION_F32_MIN)",
+        )
+    end
 
     println(
         "BENCH op=gsl_reduction type=$T N=$n_satellites M=$n_stations NT=$n_times " *
         "full_e2e_s=$full_s agg_e2e_s=$agg_s speedup=$(full_s / agg_s) " *
         "download_bytes_full=$bytes_full download_bytes_agg=$bytes_agg " *
-        "transfer_reduction=$(bytes_full / bytes_agg) parity=$parity " *
+        "transfer_reduction=$transfer_reduction transfer_formula=$expected_transfer parity=$parity " *
         "gpu_samples=$GPU_SAMPLES",
     )
     GC.gc()
@@ -1170,12 +1239,22 @@ function bench_isl_reduction_case(n_satellites::Int, n_pairs::Int, n_times::Int,
 
     bytes_full = actual_pairs * n_times * (2 * sizeof(Bool) + 5 * sizeof(T))
     bytes_agg = n_times * sizeof(Int32)
+    transfer_reduction = bytes_full / bytes_agg
+    expected_transfer = actual_pairs * (2 + 5 * sizeof(T)) / 4
+    transfer_reduction == expected_transfer || error(
+        "ISL transfer-reduction formula mismatch type=$T expected=$expected_transfer got=$transfer_reduction",
+    )
+    if T === Float32
+        transfer_reduction >= ISL_TRANSFER_REDUCTION_F32_MIN || error(
+            "ISL Float32 transfer-reduction floor failed: $transfer_reduction < $(ISL_TRANSFER_REDUCTION_F32_MIN)",
+        )
+    end
 
     println(
         "BENCH op=isl_reduction type=$T N=$n_satellites P=$actual_pairs NT=$n_times " *
         "full_e2e_s=$full_s agg_e2e_s=$agg_s speedup=$(full_s / agg_s) " *
         "download_bytes_full=$bytes_full download_bytes_agg=$bytes_agg " *
-        "transfer_reduction=$(bytes_full / bytes_agg) parity=$parity " *
+        "transfer_reduction=$transfer_reduction transfer_formula=$expected_transfer parity=$parity " *
         "gpu_samples=$GPU_SAMPLES",
     )
     GC.gc()
@@ -1303,10 +1382,12 @@ function validate_reductions(::Type{T}) where T
     expected_counts = Int32.(dropdims(sum(available_host; dims=1); dims=1))
     expected_ratio =
         T.(dropdims(sum(expected_counts .> 0; dims=2); dims=2)) ./ T(n_times)
+    ratio_tolerance = gate_tolerance(T, :scalar)
     size(counts) == (n_stations, n_times) ||
         error("GSL visible-count shape mismatch for $T")
     counts == expected_counts || error("GSL visible-count reduction parity failed for $T")
-    ratio == expected_ratio || error("GSL station-ratio reduction parity failed for $T")
+    elementwise_isapprox(ratio, expected_ratio; ratio_tolerance...) ||
+        error("GSL station-ratio reduction parity failed for $T")
 
     isl_positions, isl_velocities = isl_scenario(36, 10, T; seed=77)
     pairs = make_pairs(36, 72)
@@ -1370,7 +1451,7 @@ function validate_reductions(::Type{T}) where T
     end
     isl_counts == expected_isl_counts ||
         error("ISL available-count reduction parity failed for $T")
-    isl_ratio == expected_isl_ratio ||
+    elementwise_isapprox(isl_ratio, expected_isl_ratio; ratio_tolerance...) ||
         error("ISL pair-ratio reduction parity failed for $T")
     isl_degree == expected_degree ||
         error("ISL degree reduction parity failed for $T")
@@ -1759,10 +1840,11 @@ function bench_real1584_coverage_case(
     CUDA.synchronize()
     relative = abs(Float64(gpu_value) - Float64(cpu_value)) /
         max(abs(Float64(cpu_value)), eps(Float64))
-    tolerance = T === Float64 ? 1e-8 : 2e-2
-    parity = relative <= tolerance ? "PASS" : "FAIL"
+    tolerance = gate_tolerance(T, :scalar)
+    parity = isapprox(Float64(gpu_value), Float64(cpu_value); tolerance...) ? "PASS" : "FAIL"
     parity == "PASS" || error(
-        "real1584 GPU parity failed type=$T NT=$n_times G=$n_ground rel_err=$relative",
+        "real1584 GPU parity failed type=$T NT=$n_times G=$n_ground rel_err=$relative " *
+        "rtol=$(tolerance.rtol) atol=$(tolerance.atol)",
     )
 
     # Warmup already done; min-of-N compute-only (resident) and e2e (H2D+kernel+scalar D2H).
@@ -1855,6 +1937,24 @@ end
 run_bench_real1584_cpu() = run_bench_real1584(; mode=:cpu)
 run_bench_real1584_gpu() = run_bench_real1584(; mode=:gpu)
 
+"""Headline A10G stable check: kernel parity + one GSL/ISL reduction e2e each."""
+function run_stable_gpu()
+    println("STABLE_GPU_BEGIN")
+    validate_coverage(Float64)
+    validate_coverage(Float32)
+    validate_gsl(Float64)
+    validate_gsl(Float32)
+    validate_isl(Float64)
+    validate_isl(Float32)
+    validate_reductions(Float64)
+    validate_reductions(Float32)
+    # Representative reduction e2e (parity+timing already inside each case).
+    bench_gsl_reduction_case(1584, 64, 90, Float32)
+    bench_isl_reduction_case(1584, 3168, 90, Float32)
+    println("STABLE_GPU_END status=PASS")
+    return nothing
+end
+
 const SUITE_HANDLERS = Dict{String,Function}(
     "smoke_info" => () -> (print_gpu_info(); nothing),
     "coverage_f64" => () -> validate_coverage(Float64),
@@ -1878,6 +1978,7 @@ const SUITE_HANDLERS = Dict{String,Function}(
     "bench_isl_reduction" => run_bench_isl_reduction,
     "bench_real1584_cpu" => run_bench_real1584_cpu,
     "bench_real1584_gpu" => run_bench_real1584_gpu,
+    "stable_gpu" => run_stable_gpu,
     "bench_all" => run_benchmark_suite,
     "full" => function ()
         validate_coverage(Float64)

@@ -133,10 +133,39 @@ class StaticHarnessContractTests(unittest.TestCase):
             "bench_isl_reduction",
         ]
         self.assertEqual(_assigned_literal("DEFAULT_PARALLEL_SUITES"), expected)
+        self.assertEqual(len(expected), 20)
+        self.assertEqual(len(set(expected)), 20)
+
+    def test_default_matrix_has_strict_set_guard(self) -> None:
+        for fragment in (
+            "EXPECTED_PARALLEL_SUITE_SET",
+            "len(DEFAULT_PARALLEL_SUITES) != 20",
+            "DEFAULT_PARALLEL_SUITES contains duplicate names",
+            "DEFAULT_PARALLEL_SUITES no longer matches the required strict suite set",
+            "_assert_default_suite_contract()",
+        ):
+            self.assertIn(fragment, LAUNCHER_SOURCE)
 
     def test_runner_has_no_runtime_package_mutation(self) -> None:
         self.assertNotIn("Pkg.instantiate", RUNNER_SOURCE)
         self.assertNotIn("Pkg.add", RUNNER_SOURCE)
+
+    def test_runner_uses_round2_tolerance_contract(self) -> None:
+        for fragment in (
+            "const F64_RTOL = 1e-12",
+            "const F64_ATOL = 1e-10",
+            "const F32_RTOL = 1e-4",
+            "const F32_SCALAR_ATOL = 5e-5",
+            "const F32_DISTANCE_ELEVATION_ATOL = 2e-3",
+            "const F32_DELAY_ATOL = 2e-5",
+            "function gate_tolerance(::Type{Float64}, ::Symbol)",
+            "function gate_tolerance(::Type{Float32}, metric::Symbol)",
+            "tolerance = gate_tolerance(T, :scalar)",
+            "distance_tolerance = gate_tolerance(T, :distance)",
+            "elevation_tolerance = gate_tolerance(T, :elevation)",
+            "delay_tolerance = gate_tolerance(T, :delay)",
+        ):
+            self.assertIn(fragment, RUNNER_SOURCE)
 
     def test_runtime_hardware_contract_is_fail_closed(self) -> None:
         for fragment in (
@@ -173,6 +202,40 @@ class StaticHarnessContractTests(unittest.TestCase):
                     RUNNER_SOURCE.index(guard),
                     RUNNER_SOURCE.index(output),
                 )
+
+    def test_reduction_transfer_gate_is_formula_exact(self) -> None:
+        for fragment in (
+            "const GSL_TRANSFER_REDUCTION_F32_MIN = 1787.5",
+            "const ISL_TRANSFER_REDUCTION_F32_MIN = 6050.0",
+            "expected_transfer = n_satellites * (1 + 3 * sizeof(T)) / 4",
+            "expected_transfer = actual_pairs * (2 + 5 * sizeof(T)) / 4",
+            "transfer_reduction == expected_transfer",
+            "transfer_reduction >= GSL_TRANSFER_REDUCTION_F32_MIN",
+            "transfer_reduction >= ISL_TRANSFER_REDUCTION_F32_MIN",
+        ):
+            self.assertIn(fragment, RUNNER_SOURCE)
+
+    def test_speedup_is_observation_not_gate(self) -> None:
+        self.assertNotIn("speedup >=", RUNNER_SOURCE)
+        self.assertNotRegex(RUNNER_SOURCE, r"error\([^\n]*speedup")
+
+    def test_modal_preflight_requires_clean_image_sources(self) -> None:
+        for fragment in (
+            'ALLOW_DIRTY_ENV = "SATSIM_ALLOW_DIRTY_MODAL_SOURCE"',
+            "dirty preflight failed for Modal image sources",
+            "git archive mirror",
+            "_require_clean_modal_sources()",
+            '["git", "-C", str(REPO_ROOT), "status", "--porcelain", "--", *IMAGE_SOURCE_PATHS]',
+        ):
+            self.assertIn(fragment, LAUNCHER_SOURCE)
+
+    def test_remote_calls_use_keyword_arguments(self) -> None:
+        for fragment in (
+            "stable_cpu_validate.spawn(commit=commit)",
+            'e2e_grad_cpu16.remote(engines="all")',
+            'e2e_grad_cpu32.remote(engines="blockdiag")',
+        ):
+            self.assertIn(fragment, LAUNCHER_SOURCE)
 
     def test_cuda_contract_checks_type_and_shape(self) -> None:
         for fragment in (

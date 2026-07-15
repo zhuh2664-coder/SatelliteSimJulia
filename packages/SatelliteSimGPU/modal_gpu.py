@@ -11,6 +11,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import subprocess
 from typing import Any
@@ -51,6 +52,72 @@ DEFAULT_PARALLEL_SUITES = [
     "bench_gsl_reduction",
     "bench_isl_reduction",
 ]
+EXPECTED_PARALLEL_SUITE_SET = {
+    "smoke_info",
+    "coverage_f64",
+    "coverage_f32",
+    "gsl_canonical_f64",
+    "gsl_canonical_f32",
+    "gsl_f64",
+    "gsl_f32",
+    "isl_f64",
+    "isl_f32",
+    "registered_f64",
+    "registered_f32",
+    "pipeline_adjoint",
+    "reductions_f64",
+    "reductions_f32",
+    "sgp4_cuda",
+    "bench_coverage",
+    "bench_gsl",
+    "bench_isl",
+    "bench_gsl_reduction",
+    "bench_isl_reduction",
+}
+IMAGE_SOURCE_PATHS = [
+    "packages/SatelliteSimGPU",
+    "packages/SatelliteSimBackends",
+    "src/foundation",
+    "src/orbit",
+    "src/link",
+    "src/net",
+    "src/opt",
+    "data/tle/celestrak/starlink_gp_latest.tle",
+]
+ALLOW_DIRTY_ENV = "SATSIM_ALLOW_DIRTY_MODAL_SOURCE"
+
+
+def _assert_default_suite_contract() -> None:
+    if len(DEFAULT_PARALLEL_SUITES) != 20:
+        raise RuntimeError(
+            f"DEFAULT_PARALLEL_SUITES must contain 20 suites, found {len(DEFAULT_PARALLEL_SUITES)}"
+        )
+    if len(set(DEFAULT_PARALLEL_SUITES)) != len(DEFAULT_PARALLEL_SUITES):
+        raise RuntimeError("DEFAULT_PARALLEL_SUITES contains duplicate names")
+    if set(DEFAULT_PARALLEL_SUITES) != EXPECTED_PARALLEL_SUITE_SET:
+        raise RuntimeError(
+            "DEFAULT_PARALLEL_SUITES no longer matches the required strict suite set"
+        )
+
+
+def _require_clean_modal_sources() -> None:
+    if os.environ.get(ALLOW_DIRTY_ENV) == "1":
+        return
+    status = subprocess.check_output(
+        ["git", "-C", str(REPO_ROOT), "status", "--porcelain", "--", *IMAGE_SOURCE_PATHS],
+        text=True,
+    )
+    dirty = [line for line in status.splitlines() if line.strip()]
+    if dirty:
+        preview = "; ".join(dirty[:6])
+        raise SystemExit(
+            "dirty preflight failed for Modal image sources: "
+            f"{preview}. Build from a clean commit (or git archive mirror); "
+            f"set {ALLOW_DIRTY_ENV}=1 only for explicit debugging."
+        )
+
+
+_assert_default_suite_contract()
 
 image_builder = (
     modal.Image.from_registry(
@@ -282,6 +349,81 @@ def e2e_grad_cpu32(engines: str = "all") -> dict[str, Any]:
 
 @app.function(
     image=image,
+    cpu=16.0,
+    memory=20480,
+    timeout=60 * 60,
+)
+def stable_cpu_validate(commit: str = "UNKNOWN") -> dict[str, Any]:
+    """Stable headline CPU validation of Opt gradients at a pinned commit."""
+    import os
+
+    env = os.environ.copy()
+    env["JULIA_NUM_THREADS"] = "16"
+    env["SATSIM_TLE_PATH"] = TLE_REMOTE
+    env["SATSIM_OPT_PROJECT"] = f"{SRC_REMOTE}/opt"
+    env["SATSIM_GIT_COMMIT"] = commit
+    prep = subprocess.run(
+        [
+            "julia",
+            f"--project={SRC_REMOTE}/opt",
+            "-e",
+            "using Pkg; Pkg.instantiate(); println(\"STABLE_CPU_INSTANTIATE status=PASS\")",
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+    )
+    prep_out = prep.stdout or ""
+    print(f"===== STABLE_CPU_INSTANTIATE exit={prep.returncode} =====")
+    print(prep_out, end="" if prep_out.endswith("\n") else "\n")
+    if prep.returncode != 0:
+        return {
+            "suite": "stable_cpu",
+            "exit_code": prep.returncode,
+            "stdout": prep_out,
+            "pass": False,
+        }
+    result = subprocess.run(
+        [
+            "julia",
+            "--threads=16",
+            f"--project={SRC_REMOTE}/opt",
+            f"{REMOTE_PACKAGE_DIR}/modal_stable_cpu.jl",
+        ],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+    )
+    result_out = result.stdout or ""
+    stdout = prep_out + result_out
+    print(f"===== STABLE_CPU exit={result.returncode} =====")
+    print(result_out, end="" if result_out.endswith("\n") else "\n")
+    return {
+        "suite": "stable_cpu",
+        "exit_code": result.returncode,
+        "stdout": stdout,
+        "pass": result.returncode == 0 and "MODAL_STABLE_CPU status=PASS" in stdout,
+    }
+
+
+@app.function(
+    image=image,
+    gpu="A10G",
+    cpu=2.0,
+    memory=8192,
+    timeout=40 * 60,
+)
+def stable_gpu_validate() -> dict[str, Any]:
+    """Stable headline A10G parity + one reduction e2e each."""
+    return _run_julia_suite("stable_gpu")
+
+
+@app.function(
+    image=image,
     cpu=2.0,
     memory=8192,
     timeout=30 * 60,
@@ -406,6 +548,7 @@ def _print_summary(results: list[dict[str, Any]], label: str) -> None:
 
 @app.local_entrypoint()
 def main(suites: str = "parallel") -> None:
+    _require_clean_modal_sources()
     key = suites.strip().lower()
     if key == "real1584":
         # Stage 1: ≤1 GPU + ≤2 CPU containers, run then release (no idle hold).
@@ -416,6 +559,28 @@ def main(suites: str = "parallel") -> None:
         results = [gpu_h.get(), cpu_h.get(), opt_h.get()]
         _print_summary(results, "REAL1584 STAGE-1 SUMMARY")
         return
+    if key == "stable":
+        # One Modal app: ≤1×A10G + 1×CPU-16. Opt/GPU package under test = git HEAD.
+        commit = (
+            subprocess.check_output(
+                ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"],
+                text=True,
+            ).strip()
+        )
+        print(
+            f"Submitting STABLE validation (commit={commit}): "
+            "1×CPU-16 + 1×A10G in one app"
+        )
+        cpu_h = stable_cpu_validate.spawn(commit=commit)
+        gpu_h = stable_gpu_validate.spawn()
+        results = [cpu_h.get(), gpu_h.get()]
+        _print_summary(results, "STABLE VALIDATION SUMMARY")
+        return
+    if key == "stable_gpu":
+        print("Submitting STABLE GPU-only validation (1×A10G):")
+        results = [stable_gpu_validate.remote()]
+        _print_summary(results, "STABLE GPU SUMMARY")
+        return
     if key == "opt_load":
         print("Submitting opt_load_check (1×CPU container):")
         results = [opt_load_check.remote()]
@@ -424,13 +589,13 @@ def main(suites: str = "parallel") -> None:
     if key == "e2e_grad":
         # Stage 2: single 16-vCPU container, both engines × NT ∈ {20, 96}.
         print("Submitting e2e_grad_cpu16 (1×CPU-16 container, engines=all):")
-        results = [e2e_grad_cpu16.remote("all")]
+        results = [e2e_grad_cpu16.remote(engines="all")]
         _print_summary(results, "E2E_GRAD SUMMARY")
         return
     if key == "e2e_grad32":
         # Optional thread-scaling comparison point.
         print("Submitting e2e_grad_cpu32 (1×CPU-32 container, engines=blockdiag):")
-        results = [e2e_grad_cpu32.remote("blockdiag")]
+        results = [e2e_grad_cpu32.remote(engines="blockdiag")]
         _print_summary(results, "E2E_GRAD32 SUMMARY")
         return
     if key == "sgp4_step1":

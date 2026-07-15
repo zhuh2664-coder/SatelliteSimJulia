@@ -15,7 +15,11 @@ export AbstractOrbitBackend, OrbitResult, OrbitBackendSpec,
        register_compute_backend!, unregister_compute_backend!,
        compute_backend_registered, available_compute_backends, create_compute_backend,
        BackendOptionSpec, BackendOptionsSchema,
-       validate_backend_options, migrate_backend_options
+       validate_backend_options, migrate_backend_options,
+       NO_DEFAULT, UNSET_OPTIONS_VERSION,
+       NormalizedBackendSpec, normalize_orbit_spec, normalize_compute_spec,
+       compute_backend_normalized_spec,
+       orbit_backend_options_schema, compute_backend_options_schema
 
 """Stable boundary implemented by optional orbit propagation backends."""
 abstract type AbstractOrbitBackend end
@@ -26,6 +30,57 @@ struct OrbitResult{T<:Real}
     metadata::Dict{String,Any}
 end
 
+# ── Sentinels ────────────────────────────────────────────────────────────────
+# Dedicated sentinels avoid overloading `nothing`, which is itself a legal option
+# value and a legal option default.
+
+"""Marker for `BackendOptionSpec.default` meaning "this option has no default"."""
+struct NoDefault end
+const NO_DEFAULT = NoDefault()
+
+"""
+Marker for a spec whose `options_version` was never written. A spec carrying
+`UNSET_OPTIONS_VERSION` is treated as already being at the schema's current
+version (no migration), so callers never have to restate the current version.
+"""
+struct UnsetOptionsVersion end
+const UNSET_OPTIONS_VERSION = UnsetOptionsVersion()
+
+"""Explicit integer version (`>= 1`) or `UNSET_OPTIONS_VERSION` for "not written"."""
+const OptionsVersion = Union{Int,UnsetOptionsVersion}
+
+_check_options_version(::UnsetOptionsVersion) = nothing
+function _check_options_version(version::Int)
+    version >= 1 ||
+        throw(ArgumentError("options_version must be >= 1 when set explicitly, got $version"))
+    return nothing
+end
+
+"""
+    NormalizedBackendSpec(kind, backend, options, options_version, schema_present)
+
+Stable, backend-neutral view of a spec after the fixed
+`migrate → validate → fill defaults/normalize` pipeline has run against the
+registered schema (if any). Downstream consumers (e.g. Lab cache keys and
+provenance) can depend on these public fields:
+
+- `kind`: `:orbit` or `:compute`.
+- `backend`: the backend name.
+- `options`: normalized options (migrated, validated, defaults filled, in schema
+  declaration order). When no schema governs the backend, these are the raw
+  options passed through unchanged.
+- `options_version`: the schema version the options are now expressed in, or the
+  spec's own `options_version` when no schema is present.
+- `schema_present`: whether a registered schema governed normalization.
+"""
+struct NormalizedBackendSpec
+    kind::Symbol
+    backend::Symbol
+    options::NamedTuple
+    options_version::OptionsVersion
+    schema_present::Bool
+end
+
 """
     OrbitBackendSpec(name; kwargs...)
 
@@ -33,21 +88,32 @@ Serializable, backend-neutral selection and configuration for an orbit backend.
 The concrete backend package remains an explicit dependency: load it first so it
 can register `name`, then pass the spec to `create_orbit_backend` or a higher-level
 experiment configuration.
+
+`options_version` records which schema version `options` are expressed in. Leave
+it unset (the default) for new code: an unset version is treated as the schema's
+current version. Set it to an explicit integer only when reconstructing options
+that were serialized under an older schema so migration can run.
 """
 struct OrbitBackendSpec
     name::Symbol
     options::NamedTuple
+    options_version::OptionsVersion
 
-    function OrbitBackendSpec(name::Symbol, options::NamedTuple=NamedTuple())
+    function OrbitBackendSpec(
+        name::Symbol,
+        options::NamedTuple=NamedTuple();
+        options_version::OptionsVersion=UNSET_OPTIONS_VERSION,
+    )
         isempty(String(name)) && throw(ArgumentError("orbit backend name must not be empty"))
-        return new(name, options)
+        _check_options_version(options_version)
+        return new(name, options, options_version)
     end
 end
 
-OrbitBackendSpec(name::Union{Symbol,AbstractString}; kwargs...) =
-    OrbitBackendSpec(Symbol(name), (; kwargs...))
-OrbitBackendSpec(name::AbstractString, options::NamedTuple) =
-    OrbitBackendSpec(Symbol(name), options)
+OrbitBackendSpec(name::Union{Symbol,AbstractString}; options_version::OptionsVersion=UNSET_OPTIONS_VERSION, kwargs...) =
+    OrbitBackendSpec(Symbol(name), (; kwargs...); options_version=options_version)
+OrbitBackendSpec(name::AbstractString, options::NamedTuple; options_version::OptionsVersion=UNSET_OPTIONS_VERSION) =
+    OrbitBackendSpec(Symbol(name), options; options_version=options_version)
 
 backend_name(backend::AbstractOrbitBackend)::String = string(nameof(typeof(backend)))
 backend_capabilities(::AbstractOrbitBackend) = (frames = (:ecef,), deterministic = false)
@@ -75,28 +141,45 @@ end
 # Optional packages register lightweight factories during `__init__`. The
 # registry lives in the contract package so callers can discover and configure
 # backends without importing concrete implementation types into Lab/Core APIs.
+#
+# A registration binds a factory and its (optional) options schema together, so
+# the schema and factory are always installed and removed atomically: a caller
+# can never observe a factory without its schema or vice versa.
+struct _OrbitBackendRegistration
+    factory::Function
+    schema::Any  # `nothing` or a `BackendOptionsSchema`; untyped to avoid a forward reference.
+end
+
 const _ORBIT_BACKEND_REGISTRY_LOCK = ReentrantLock()
-const _ORBIT_BACKEND_FACTORIES = Dict{Symbol,Function}()
+const _ORBIT_BACKEND_REGISTRY = Dict{Symbol,_OrbitBackendRegistration}()
 
 """
-    register_orbit_backend!(name, factory; replace=false)
+    register_orbit_backend!(name, factory; schema=nothing, replace=false)
 
 Register a factory with signature `factory(options::NamedTuple) -> AbstractOrbitBackend`.
 Optional backend packages should call this from `__init__`; `replace=true` makes
 re-initialization idempotent during development.
+
+Pass `schema::BackendOptionsSchema` to install it atomically with the factory.
+When a schema is present, `create_orbit_backend` runs the fixed
+`migrate → validate → fill defaults/normalize → factory` pipeline before the
+factory is ever invoked. Backends registered without a schema keep the legacy
+behavior: their raw options pass straight through to the factory.
 """
 function register_orbit_backend!(
     name::Union{Symbol,AbstractString},
     factory::Function;
+    schema=nothing,
     replace::Bool=false,
 )::Symbol
     key = Symbol(name)
     isempty(String(key)) && throw(ArgumentError("orbit backend name must not be empty"))
+    schema = _check_registered_schema(schema, key)
     lock(_ORBIT_BACKEND_REGISTRY_LOCK) do
-        if haskey(_ORBIT_BACKEND_FACTORIES, key) && !replace
+        if haskey(_ORBIT_BACKEND_REGISTRY, key) && !replace
             throw(ArgumentError("orbit backend :$key is already registered"))
         end
-        _ORBIT_BACKEND_FACTORIES[key] = factory
+        _ORBIT_BACKEND_REGISTRY[key] = _OrbitBackendRegistration(factory, schema)
     end
     return key
 end
@@ -105,7 +188,7 @@ end
 function unregister_orbit_backend!(name::Union{Symbol,AbstractString})::Bool
     key = Symbol(name)
     return lock(_ORBIT_BACKEND_REGISTRY_LOCK) do
-        pop!(_ORBIT_BACKEND_FACTORIES, key, nothing) !== nothing
+        pop!(_ORBIT_BACKEND_REGISTRY, key, nothing) !== nothing
     end
 end
 
@@ -113,16 +196,31 @@ end
 function orbit_backend_registered(name::Union{Symbol,AbstractString})::Bool
     key = Symbol(name)
     return lock(_ORBIT_BACKEND_REGISTRY_LOCK) do
-        haskey(_ORBIT_BACKEND_FACTORIES, key)
+        haskey(_ORBIT_BACKEND_REGISTRY, key)
     end
 end
 
 """Return registered backend names in deterministic sorted order."""
 function available_orbit_backends()::Vector{Symbol}
     return lock(_ORBIT_BACKEND_REGISTRY_LOCK) do
-        sort!(collect(keys(_ORBIT_BACKEND_FACTORIES)); by=String)
+        sort!(collect(keys(_ORBIT_BACKEND_REGISTRY)); by=String)
     end
 end
+
+function _orbit_backend_registration(name::Symbol)
+    return lock(_ORBIT_BACKEND_REGISTRY_LOCK) do
+        get(_ORBIT_BACKEND_REGISTRY, name, nothing)
+    end
+end
+
+"""
+    orbit_backend_options_schema(name) -> Union{Nothing,BackendOptionsSchema}
+
+Return the options schema registered for `name`, or `nothing` when the backend is
+unregistered or was registered without a schema.
+"""
+orbit_backend_options_schema(name::Union{Symbol,AbstractString}) =
+    (reg = _orbit_backend_registration(Symbol(name)); reg === nothing ? nothing : reg.schema)
 
 """
     create_orbit_backend(spec) -> AbstractOrbitBackend
@@ -131,12 +229,14 @@ end
 Construct a registered backend without exposing its concrete type to callers.
 Registration is explicit and session-local: users must first load the optional
 package that owns the selected backend.
+
+When the backend was registered with a schema, options are migrated, validated,
+and normalized before the factory runs; an invalid spec therefore fails without
+ever calling the factory.
 """
 function create_orbit_backend(spec::OrbitBackendSpec)::AbstractOrbitBackend
-    factory = lock(_ORBIT_BACKEND_REGISTRY_LOCK) do
-        get(_ORBIT_BACKEND_FACTORIES, spec.name, nothing)
-    end
-    if factory === nothing
+    registration = _orbit_backend_registration(spec.name)
+    if registration === nothing
         available = available_orbit_backends()
         suffix = isempty(available) ? "none are registered" :
                  "available: $(join(":" .* String.(available), ", "))"
@@ -145,7 +245,8 @@ function create_orbit_backend(spec::OrbitBackendSpec)::AbstractOrbitBackend
             "load the optional backend package before running the experiment",
         ))
     end
-    backend = factory(spec.options)
+    options, _, _ = _normalize_against_schema(registration.schema, spec)
+    backend = registration.factory(options)
     backend isa AbstractOrbitBackend || throw(ArgumentError(
         "factory for orbit backend :$(spec.name) returned $(typeof(backend)); " *
         "expected AbstractOrbitBackend",
@@ -169,21 +270,31 @@ Serializable selection for an operation-level compute backend. This is
 deliberately separate from `OrbitBackendSpec`: an orbit backend selects a
 propagation implementation, while a compute backend selects where supported
 batched kernels execute.
+
+`options_version` behaves exactly as in [`OrbitBackendSpec`](@ref): leave it
+unset for new code (treated as the current schema version) and set it explicitly
+only when replaying options serialized under an older schema.
 """
 struct ComputeBackendSpec
     name::Symbol
     options::NamedTuple
+    options_version::OptionsVersion
 
-    function ComputeBackendSpec(name::Symbol, options::NamedTuple=NamedTuple())
+    function ComputeBackendSpec(
+        name::Symbol,
+        options::NamedTuple=NamedTuple();
+        options_version::OptionsVersion=UNSET_OPTIONS_VERSION,
+    )
         isempty(String(name)) && throw(ArgumentError("compute backend name must not be empty"))
-        return new(name, options)
+        _check_options_version(options_version)
+        return new(name, options, options_version)
     end
 end
 
-ComputeBackendSpec(name::Union{Symbol,AbstractString}; kwargs...) =
-    ComputeBackendSpec(Symbol(name), (; kwargs...))
-ComputeBackendSpec(name::AbstractString, options::NamedTuple) =
-    ComputeBackendSpec(Symbol(name), options)
+ComputeBackendSpec(name::Union{Symbol,AbstractString}; options_version::OptionsVersion=UNSET_OPTIONS_VERSION, kwargs...) =
+    ComputeBackendSpec(Symbol(name), (; kwargs...); options_version=options_version)
+ComputeBackendSpec(name::AbstractString, options::NamedTuple; options_version::OptionsVersion=UNSET_OPTIONS_VERSION) =
+    ComputeBackendSpec(Symbol(name), options; options_version=options_version)
 
 mutable struct _ResolvedComputeBackendToken end
 const _RESOLVED_COMPUTE_BACKEND_TOKEN = _ResolvedComputeBackendToken()
@@ -206,6 +317,9 @@ struct ResolvedComputeBackend <: AbstractComputeBackend
     _capabilities::NamedTuple
     _registration_generation::UInt64
     _resolution_id::UInt64
+    _normalized_options::NamedTuple
+    _options_version::OptionsVersion
+    _schema_present::Bool
     _execution_state::_ComputeBackendExecutionState
 
     function ResolvedComputeBackend(
@@ -216,6 +330,9 @@ struct ResolvedComputeBackend <: AbstractComputeBackend
         capabilities::NamedTuple,
         registration_generation::UInt64,
         resolution_id::UInt64,
+        normalized_options::NamedTuple,
+        options_version::OptionsVersion,
+        schema_present::Bool,
     )
         token === _RESOLVED_COMPUTE_BACKEND_TOKEN ||
             throw(ArgumentError("compute backend resolutions must be created by resolve_compute_backend"))
@@ -226,6 +343,9 @@ struct ResolvedComputeBackend <: AbstractComputeBackend
             capabilities,
             registration_generation,
             resolution_id,
+            normalized_options,
+            options_version,
+            schema_present,
             _ComputeBackendExecutionState(ReentrantLock(), 0),
         )
     end
@@ -278,6 +398,23 @@ end
 compute_backend_source_files(::AbstractComputeBackend) = String[]
 
 compute_backend_spec(resolution::ResolvedComputeBackend) = resolution._spec
+
+"""
+    compute_backend_normalized_spec(resolution) -> NormalizedBackendSpec
+
+Return the normalized options and resolved schema version bound at resolution
+time. This is the stable value Lab should hash for cache keys and record for
+provenance instead of the raw requested options.
+"""
+compute_backend_normalized_spec(resolution::ResolvedComputeBackend) =
+    NormalizedBackendSpec(
+        :compute,
+        resolution._spec.name,
+        resolution._normalized_options,
+        resolution._options_version,
+        resolution._schema_present,
+    )
+
 compute_backend_name(resolution::ResolvedComputeBackend) =
     resolution._implementation.name
 compute_backend_capabilities(resolution::ResolvedComputeBackend) =
@@ -305,7 +442,11 @@ function compute_backend_provenance(resolution::ResolvedComputeBackend)
         requested_spec=(
             name=resolution._spec.name,
             options=resolution._spec.options,
+            options_version=resolution._spec.options_version,
         ),
+        normalized_options=resolution._normalized_options,
+        options_version=resolution._options_version,
+        schema_present=resolution._schema_present,
         implementation=resolution._implementation,
         capabilities=resolution._capabilities,
         registration_generation=resolution._registration_generation,
@@ -476,32 +617,48 @@ function validate_isl_series_result(
     return result
 end
 
+# Like the orbit registry, a compute registration binds its factory and optional
+# schema so they install/remove atomically. Generations are tracked separately
+# because they must survive unregister/re-register to keep monotonically
+# increasing across a backend's lifecycle.
+struct _ComputeBackendRegistration
+    factory::Function
+    schema::Any  # `nothing` or a `BackendOptionsSchema`; untyped to avoid a forward reference.
+end
+
 const _COMPUTE_BACKEND_REGISTRY_LOCK = ReentrantLock()
-const _COMPUTE_BACKEND_FACTORIES = Dict{Symbol,Function}()
+const _COMPUTE_BACKEND_REGISTRATIONS = Dict{Symbol,_ComputeBackendRegistration}()
 const _COMPUTE_BACKEND_GENERATIONS = Dict{Symbol,UInt64}()
 const _NEXT_COMPUTE_BACKEND_RESOLUTION_ID = Ref{UInt64}(0)
 
 """
-    register_compute_backend!(name, factory; replace=false)
+    register_compute_backend!(name, factory; schema=nothing, replace=false)
 
 Register an optional compute backend factory with signature
 `factory(options::NamedTuple) -> AbstractComputeBackend`. The built-in `:cpu`
 backend is always available and cannot be replaced.
+
+As with [`register_orbit_backend!`](@ref), an optional `schema` is installed
+atomically with the factory and drives the fixed
+`migrate → validate → fill defaults/normalize → factory` pipeline in
+`resolve_compute_backend`/`create_compute_backend`.
 """
 function register_compute_backend!(
     name::Union{Symbol,AbstractString},
     factory::Function;
+    schema=nothing,
     replace::Bool=false,
 )::Symbol
     key = Symbol(name)
     isempty(String(key)) && throw(ArgumentError("compute backend name must not be empty"))
     key == :cpu && throw(ArgumentError("the built-in :cpu compute backend cannot be replaced"))
+    schema = _check_registered_schema(schema, key)
     lock(_COMPUTE_BACKEND_REGISTRY_LOCK) do
-        if haskey(_COMPUTE_BACKEND_FACTORIES, key) && !replace
+        if haskey(_COMPUTE_BACKEND_REGISTRATIONS, key) && !replace
             throw(ArgumentError("compute backend :$key is already registered"))
         end
         generation = get(_COMPUTE_BACKEND_GENERATIONS, key, UInt64(0)) + UInt64(1)
-        _COMPUTE_BACKEND_FACTORIES[key] = factory
+        _COMPUTE_BACKEND_REGISTRATIONS[key] = _ComputeBackendRegistration(factory, schema)
         _COMPUTE_BACKEND_GENERATIONS[key] = generation
     end
     return key
@@ -511,7 +668,7 @@ function unregister_compute_backend!(name::Union{Symbol,AbstractString})::Bool
     key = Symbol(name)
     key == :cpu && return false
     return lock(_COMPUTE_BACKEND_REGISTRY_LOCK) do
-        pop!(_COMPUTE_BACKEND_FACTORIES, key, nothing) !== nothing
+        pop!(_COMPUTE_BACKEND_REGISTRATIONS, key, nothing) !== nothing
     end
 end
 
@@ -519,31 +676,52 @@ function compute_backend_registered(name::Union{Symbol,AbstractString})::Bool
     key = Symbol(name)
     key == :cpu && return true
     return lock(_COMPUTE_BACKEND_REGISTRY_LOCK) do
-        haskey(_COMPUTE_BACKEND_FACTORIES, key)
+        haskey(_COMPUTE_BACKEND_REGISTRATIONS, key)
     end
 end
 
 function available_compute_backends()::Vector{Symbol}
     registered = lock(_COMPUTE_BACKEND_REGISTRY_LOCK) do
-        collect(keys(_COMPUTE_BACKEND_FACTORIES))
+        collect(keys(_COMPUTE_BACKEND_REGISTRATIONS))
     end
     return sort!(push!(registered, :cpu); by=String)
 end
 
-function _compute_backend_factory_snapshot(spec::ComputeBackendSpec)
+function _compute_backend_registration(name::Symbol)
+    return lock(_COMPUTE_BACKEND_REGISTRY_LOCK) do
+        get(_COMPUTE_BACKEND_REGISTRATIONS, name, nothing)
+    end
+end
+
+"""
+    compute_backend_options_schema(name) -> Union{Nothing,BackendOptionsSchema}
+
+Return the options schema registered for `name`, or `nothing` for `:cpu`, an
+unregistered backend, or one registered without a schema.
+"""
+function compute_backend_options_schema(name::Union{Symbol,AbstractString})
+    key = Symbol(name)
+    key == :cpu && return nothing
+    reg = _compute_backend_registration(key)
+    return reg === nothing ? nothing : reg.schema
+end
+
+# Returns (factory_or_nothing, schema_or_nothing, generation). `:cpu` resolves to
+# a `nothing` factory (built-in) that accepts no options.
+function _compute_backend_registration_snapshot(spec::ComputeBackendSpec)
     if spec.name == :cpu
         isempty(spec.options) ||
             throw(ArgumentError("the built-in :cpu compute backend accepts no options"))
-        return nothing, UInt64(1)
+        return nothing, nothing, UInt64(1)
     end
 
-    factory, generation = lock(_COMPUTE_BACKEND_REGISTRY_LOCK) do
+    registration, generation = lock(_COMPUTE_BACKEND_REGISTRY_LOCK) do
         (
-            get(_COMPUTE_BACKEND_FACTORIES, spec.name, nothing),
+            get(_COMPUTE_BACKEND_REGISTRATIONS, spec.name, nothing),
             get(_COMPUTE_BACKEND_GENERATIONS, spec.name, UInt64(0)),
         )
     end
-    if factory === nothing
+    if registration === nothing
         available = available_compute_backends()
         throw(ArgumentError(
             "compute backend :$(spec.name) is not registered " *
@@ -551,12 +729,15 @@ function _compute_backend_factory_snapshot(spec::ComputeBackendSpec)
             "load its optional package and register the device backend first",
         ))
     end
-    return factory, generation
+    return registration.factory, registration.schema, generation
 end
 
 function _instantiate_compute_backend(spec::ComputeBackendSpec)
-    factory, generation = _compute_backend_factory_snapshot(spec)
-    backend = factory === nothing ? CPUComputeBackend() : factory(spec.options)
+    factory, schema, generation = _compute_backend_registration_snapshot(spec)
+    # migrate → validate → fill defaults/normalize runs before the factory, so an
+    # invalid spec throws without the factory ever being called.
+    normalized_options, version, present = _normalize_against_schema(schema, spec)
+    backend = factory === nothing ? CPUComputeBackend() : factory(normalized_options)
     backend isa AbstractComputeBackend || throw(ArgumentError(
         "factory for compute backend :$(spec.name) returned $(typeof(backend)); " *
         "expected AbstractComputeBackend",
@@ -579,7 +760,7 @@ function _instantiate_compute_backend(spec::ComputeBackendSpec)
             ))
         end
     end
-    return backend, capabilities, generation
+    return backend, capabilities, generation, normalized_options, version, present
 end
 
 function _immutable_backend_snapshot(value::NamedTuple)
