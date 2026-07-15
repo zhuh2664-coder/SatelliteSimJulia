@@ -15,17 +15,22 @@ abstract type AbstractLLMProvider end
 """
     LLMProvider
 
-LLM 提供者配置。兼容 OpenAI 格式的 API（DeepSeek/GPT/任何 OpenAI 兼容端点）。
+LLM 提供者配置。兼容 OpenAI 格式的 API（DeepSeek/GPT/任何 OpenAI 兼容端点）
+以及 Anthropic / Claude 的 Messages API。
 """
 struct LLMProvider <: AbstractLLMProvider
     api_key::String
     model::String
     base_url::String
     readtimeout_s::Int
+    provider_kind::Symbol
 end
 
 LLMProvider(api_key::String, model::String, base_url::String) =
-    LLMProvider(api_key, model, base_url, 120)
+    LLMProvider(api_key, model, base_url, 120, :openai)
+
+LLMProvider(api_key::String, model::String, base_url::String, readtimeout_s::Int) =
+    LLMProvider(api_key, model, base_url, readtimeout_s, :openai)
 
 """
     LLMProvider(; key, model, url, readtimeout_s)
@@ -42,10 +47,11 @@ function LLMProvider(;
     model::String = "deepseek-chat",
     url::String = "https://api.deepseek.com/v1",
     readtimeout_s::Int = 120,
+    provider_kind::Symbol = :openai,
 )
     isempty(key) && @warn "LLM API key 为空，设置 DEEPSEEK_API_KEY 或传 key= 参数"
     readtimeout_s > 0 || error("readtimeout_s must be positive")
-    return LLMProvider(key, model, url, readtimeout_s)
+    return LLMProvider(key, model, url, readtimeout_s, provider_kind)
 end
 
 """
@@ -85,6 +91,57 @@ msg = chat(provider, [
 ```
 """
 function chat(provider::LLMProvider, messages::Vector, tools::Vector = Dict[])
+    body = _build_request_body(provider, messages, tools)
+    headers = _request_headers(provider)
+    endpoint = _request_endpoint(provider)
+
+    resp = HTTP.post(
+        endpoint,
+        headers,
+        JSON.json(body);
+        read_idle_timeout = provider.readtimeout_s,
+    )
+
+    data = JSON.parse(String(resp.body))
+    return _parse_response(provider, data)
+end
+
+function _request_endpoint(provider::LLMProvider)
+    base = rstrip(provider.base_url, '/')
+    if provider.provider_kind === :anthropic
+        return endswith(lowercase(base), "/v1") ? "$base/messages" : "$base/v1/messages"
+    end
+    return "$base/chat/completions"
+end
+
+function _request_headers(provider::LLMProvider)
+    if provider.provider_kind === :anthropic
+        return [
+            "x-api-key" => provider.api_key,
+            "anthropic-version" => "2023-06-01",
+            "Content-Type" => "application/json",
+        ]
+    end
+    return [
+        "Authorization" => "Bearer $(provider.api_key)",
+        "Content-Type" => "application/json",
+    ]
+end
+
+function _build_request_body(provider::LLMProvider, messages::Vector, tools::Vector)
+    if provider.provider_kind === :anthropic
+        body = Dict(
+            "model" => provider.model,
+            "messages" => _anthropic_messages(messages),
+            "max_tokens" => 4096,
+        )
+        if !isempty(tools)
+            body["tools"] = [_anthropic_tool(t) for t in tools]
+            body["tool_choice"] = Dict("type" => "auto")
+        end
+        return body
+    end
+
     body = Dict(
         "model" => provider.model,
         "messages" => messages,
@@ -93,16 +150,52 @@ function chat(provider::LLMProvider, messages::Vector, tools::Vector = Dict[])
         body["tools"] = [_openai_tool(t) for t in tools]
         body["tool_choice"] = "auto"
     end
+    return body
+end
 
-    resp = HTTP.post(
-        "$(provider.base_url)/chat/completions",
-        ["Authorization" => "Bearer $(provider.api_key)",
-         "Content-Type" => "application/json"],
-        JSON.json(body);
-        read_idle_timeout = provider.readtimeout_s,
-    )
+function _anthropic_messages(messages::Vector)
+    out = Vector{Dict{String,Any}}()
+    for msg in messages
+        role = lowercase(get(msg, "role", "user"))
+        role = role == "system" ? "user" : role
+        content = get(msg, "content", "")
+        content = content === nothing ? "" : string(content)
+        push!(out, Dict("role" => role, "content" => content))
+    end
+    return out
+end
 
-    data = JSON.parse(String(resp.body))
+function _parse_response(provider::LLMProvider, data)
+    if provider.provider_kind === :anthropic
+        content_blocks = get(data, "content", [])
+        content = ""
+        tool_calls = ToolCall[]
+
+        if content_blocks isa Vector
+            for block in content_blocks
+                if block isa AbstractDict
+                    typ = get(block, "type", "")
+                    if typ == "text"
+                        text = get(block, "text", "")
+                        content *= text === nothing ? "" : string(text)
+                    elseif typ == "tool_use"
+                        push!(tool_calls, ToolCall(
+                            string(get(block, "id", "")),
+                            string(get(block, "name", "")),
+                            Dict{String,Any}(string(k) => v for (k, v) in get(block, "input", Dict())),
+                        ))
+                    end
+                elseif block isa String
+                    content *= block
+                end
+            end
+        elseif content_blocks isa String
+            content = string(content_blocks)
+        end
+
+        return AssistantMessage(content, tool_calls)
+    end
+
     choice = data["choices"][1]["message"]
     content = get(choice, "content", "")
     content = content === nothing ? "" : string(content)
@@ -128,6 +221,15 @@ function _openai_tool(tool::Dict)
             "description" => get(tool, "description", ""),
             "parameters" => get(tool, "input_schema", Dict()),
         ),
+    )
+end
+
+# Anthropic 工具格式转换
+function _anthropic_tool(tool::Dict)
+    return Dict(
+        "name" => tool["name"],
+        "description" => get(tool, "description", ""),
+        "input_schema" => get(tool, "input_schema", Dict()),
     )
 end
 

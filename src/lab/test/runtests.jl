@@ -250,6 +250,82 @@ end
         end
     end
 
+    @testset "AI LLMProvider Anthropic bridge" begin
+        captured = Dict{String,Any}()
+
+        server = HTTP.serve!("127.0.0.1", 0; listenany = true) do request::HTTP.Request
+            captured["method"] = request.method
+            captured["target"] = String(request.target)
+            captured["x-api-key"] = HTTP.header(request, "x-api-key")
+            captured["anthropic-version"] = HTTP.header(request, "anthropic-version")
+            captured["body"] = JSON.parse(String(request.body))
+
+            response = Dict(
+                "id" => "msg_claude_1",
+                "role" => "assistant",
+                "model" => "claude-3-5-sonnet",
+                "content" => [
+                    Dict("type" => "text", "text" => "claude-ok"),
+                    Dict(
+                        "type" => "tool_use",
+                        "id" => "tool_1",
+                        "name" => "run_simulation",
+                        "input" => Dict("duration_s" => 60),
+                    ),
+                ],
+                "stop_reason" => "tool_use",
+                "usage" => Dict("input_tokens" => 10, "output_tokens" => 20),
+            )
+            return HTTP.Response(200, ["Content-Type" => "application/json"], JSON.json(response))
+        end
+
+        try
+            port = HTTP.port(server)
+            provider = LLMProvider(
+                key = "anthropic-key",
+                model = "claude-3-5-sonnet",
+                url = "http://127.0.0.1:$port",
+                readtimeout_s = 5,
+                provider_kind = :anthropic,
+            )
+
+            message = chat(
+                provider,
+                [Dict("role" => "user", "content" => "hello claude")],
+                [
+                    Dict(
+                        "name" => "run_simulation",
+                        "description" => "fake tool",
+                        "input_schema" => Dict(
+                            "type" => "object",
+                            "properties" => Dict("duration_s" => Dict("type" => "integer")),
+                            "required" => ["duration_s"],
+                        ),
+                    ),
+                ],
+            )
+
+            @test message.content == "claude-ok"
+            @test length(message.tool_calls) == 1
+            @test message.tool_calls[1].name == "run_simulation"
+            @test message.tool_calls[1].args["duration_s"] == 60
+
+            @test captured["method"] == "POST"
+            @test captured["target"] == "/v1/messages"
+            @test captured["x-api-key"] == "anthropic-key"
+            @test captured["anthropic-version"] == "2023-06-01"
+
+            body = captured["body"]
+            @test body["model"] == "claude-3-5-sonnet"
+            @test body["messages"][1]["role"] == "user"
+            @test body["messages"][1]["content"] == "hello claude"
+            @test body["tools"][1]["name"] == "run_simulation"
+            @test body["tool_choice"]["type"] == "auto"
+        finally
+            close(server)
+        end
+    end
+
     @testset "AI SimAgent tool loop fake HTTP bridge" begin
         # 复现 probe 的两轮工具循环：第 1 轮 fake server 返回 tool_call(list_available)，
         # SimAgent 真实执行该工具，把结果作为 tool 消息回传；第 2 轮返回最终文本答案。
