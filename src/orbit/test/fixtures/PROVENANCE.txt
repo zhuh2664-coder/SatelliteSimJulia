@@ -1,0 +1,15 @@
+SatelliteSimJulia orbit test fixture
+=====================================
+File:     starlink_sample.tle
+Purpose:  deterministic 2-satellite TLE fixture for the "OMM/GP JSON 9位目录号与
+          SGP4 裸数组桥接" testset in src/orbit/test/runtests.jl, so that a clean
+          `git clone` can run `Pkg.test()` without the gitignored data/ directory.
+Source:   CelesTrak GP, group=starlink, FORMAT=tle
+          https://celestrak.org/NORAD/elements/gp.php?GROUP=starlink&FORMAT=tle
+Objects:  STARLINK-1008 (NORAD 44714), STARLINK-1012 (NORAD 44718)
+Retrieved: epoch 2026-196 (day-of-year), from the project data snapshot 2026-07-16.
+License:  CelesTrak general perturbation (GP) data are published for public use;
+          see https://celestrak.org/ terms. Redistributed here only as a tiny
+          2-object test sample.
+Live data: the full/live Starlink catalog stays an external dataset under data/
+          (gitignored). Run the test against it by exporting SATSIM_ORBIT_LIVE_TLE=1.
