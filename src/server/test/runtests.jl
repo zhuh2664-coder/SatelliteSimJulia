@@ -1,5 +1,4 @@
 using SatelliteSimServer
-using SatelliteSimCore
 using SatelliteSimLab
 using JSON3
 using Test

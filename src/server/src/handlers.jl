@@ -12,7 +12,6 @@
 
 using JSON3
 using WebSockets
-using SatelliteSimCore
 using SatelliteSimLab
 using Base.Threads
 
@@ -20,53 +19,24 @@ using Base.Threads
 
 """处理 list_constellations：返回 catalog 全部星座名。"""
 function handle_list_constellations()
-    names = String.(string.(list_constellations()))
-    return ListConstellationsResp(names = names)
+    return ListConstellationsResp(names = streaming_constellation_names())
 end
 
 """处理 describe_constellation：返回单星座参数。"""
 function handle_describe_constellation(req::DescribeConstellationReq)
-    sym = Symbol(req.name)
-    config = resolve_constellation(sym)
-    config isa WalkerConstellationConfig ||
-        throw(ArgumentError("constellation '$(req.name)' is not a Walker config (TLE unsupported yet)"))
+    metadata = streaming_constellation_metadata(req.name)
     return DescribeConstellationResp(
         name = req.name,
-        T = config.T, P = config.P, F = config.F,
-        alt_km = config.alt_km, inc_deg = config.inc_deg,
+        T = metadata["T"], P = metadata["P"], F = metadata["F"],
+        alt_km = metadata["alt_km"], inc_deg = metadata["inc_deg"],
     )
 end
 
-"""
-处理 start_simulation：启动会话并返回响应。
-推流由 ws_handler 负责（拿到响应后开始推 frame）。
-"""
-function _constellation_metadata(name::AbstractString, config::WalkerConstellationConfig)
-    return Dict{String,Any}(
-        "name" => String(name),
-        "T" => config.T,
-        "P" => config.P,
-        "F" => config.F,
-        "alt_km" => config.alt_km,
-        "inc_deg" => config.inc_deg,
-    )
-end
-
-function _shell_metadata(name::AbstractString, config::WalkerConstellationConfig)
-    shell = _constellation_metadata(name, config)
-    shell["id"] = 1
-    return [shell]
-end
-
-function _walker_config(spec::WalkerSpec)
-    return WalkerConstellationConfig(
-        T = spec.T,
-        P = spec.P,
-        F = spec.F,
-        alt_km = spec.alt_km,
-        inc_deg = spec.inc_deg,
-    )
-end
+"""将 Server 协议中的 Walker DTO 转为 Lab streaming adapter 的配置。"""
+_walker_config(spec::WalkerSpec) = streaming_walker_config(
+    T = spec.T, P = spec.P, F = spec.F,
+    alt_km = spec.alt_km, inc_deg = spec.inc_deg,
+)
 
 function handle_start_simulation(req::StartSimulationReq)
     config = req.walker === nothing ? nothing : _walker_config(req.walker)
@@ -91,8 +61,8 @@ function handle_start_simulation(req::StartSimulationReq)
         n_ground_stations = length(session.ground_stations),
         gsl_enabled = session.include_gsl && !isempty(session.ground_stations),
         coverage_enabled = session.include_coverage && !isempty(session.ground_stations),
-        constellation = _constellation_metadata(session.name, session.constellation),
-        shells = _shell_metadata(session.name, session.constellation),
+        constellation = streaming_constellation_metadata(session.simulation),
+        shells = streaming_shell_metadata(session.simulation),
     )
 end
 

@@ -1,100 +1,63 @@
 # ============================================================
-# 会话管理：session_id → 预算位置数组 + 预生成 ISL 边集
-# ============================================================
-#
-# 设计：
-#   start_simulation 一次性算完整个 tspan 的 N×T×3 位置数组，
-#   同时调 generate_topology 拿候选 ISL 边。
-#   推流时只做单帧切片 + evaluate_isl_batch（轻量）。
-#
-# 数据流：
-#   generate_walker_delta → propagate_to_ecef → positions[N,T,3]
-#                                                + isl_candidate_edges
-#   推流：positions[:, t, :] + evaluate_isl_batch → frame
-#
-# 全程裸数组路径，不碰 ConstellationEphemeris 强类型。
+# Simulation sessions: transport lifecycle around Lab streaming state
 # ============================================================
 
 using Random
-using SatelliteSimCore
-using SatelliteSimNet
-
-# ── 会话状态 ────────────────────────────────────────────────
+using SatelliteSimLab
 
 """
-会话：持有一个仿真会话的全部预算状态。
+A Server-owned session wrapper.
 
-字段：
-- `id::String`               会话唯一 ID
-- `name::String`             星座显示名（catalog 名或 custom_walker）
-- `constellation::WalkerConstellationConfig` 本次实际使用的 Walker 参数
-- `positions::Array{Float64,3}` ECEF km，形状 (N, T, 3)
-- `isl_edges::Vector{Tuple{Int,Int}}`  候选 ISL 边（1-based 卫星索引对）
-- `step_s::Float64`          每帧间隔秒
-- `tspan::Vector{Float64}`   仿真时间区间
-- `constraints`              ISL/GSL 物理约束（LEO_DEFAULTS）
-- `ground_stations`          Godot 请求传入的地面站元数据
-- `ground_station_tuples`    GSL 评估使用的 (lat_deg, lon_deg, alt_km)
-- `include_gsl`              是否在 frame 中输出 GSL
-- `include_coverage`         是否在 frame 中输出覆盖摘要
-- `active::Ref{Bool}`        是否仍活跃（推流循环检查）
-- `frame_index::Ref{Int}`    下一个要推的帧序号（1-based）
-- `fps::Float64`             目标推流帧率
+The server owns only lifecycle and frame scheduling.  `simulation` is prepared
+and evaluated by SatelliteSimLab's transport-neutral streaming adapter.
 """
 mutable struct SimulationSession
     id::String
-    name::String
-    constellation::WalkerConstellationConfig
-    positions::Array{Float64,3}
-    isl_edges::Vector{Tuple{Int,Int}}
-    step_s::Float64
-    tspan::Vector{Float64}
-    constraints
-    ground_stations::Vector{GroundStationSpec}
-    ground_station_tuples::Vector{NTuple{3,Float64}}
-    include_gsl::Bool
-    include_coverage::Bool
+    simulation::StreamingSimulation
     active::Base.RefValue{Bool}
     frame_index::Base.RefValue{Int}
     fps::Float64
 end
 
-# 全局会话表（沙盒场景：单服务实例，少量并发会话）
+# Keep the prior session field surface available to local callers while keeping
+# the underlying physical state in the Lab adapter.
+const _SIMULATION_FORWARD_FIELDS = (
+    :name, :constellation, :positions, :isl_edges, :step_s, :tspan,
+    :constraints, :ground_stations, :include_gsl, :include_coverage,
+)
+
+function Base.getproperty(session::SimulationSession, name::Symbol)
+    name in _SIMULATION_FORWARD_FIELDS &&
+        return getproperty(getfield(session, :simulation), name)
+    return getfield(session, name)
+end
+
+function Base.propertynames(::SimulationSession, private::Bool = false)
+    return private ? (fieldnames(SimulationSession)..., _SIMULATION_FORWARD_FIELDS...) :
+                     (fieldnames(SimulationSession)..., _SIMULATION_FORWARD_FIELDS...)
+end
+
+# 单服务实例、少量并发会话的内存会话表。
 const SESSIONS = Dict{String,SimulationSession}()
 
-# ── 生成时间网格 ────────────────────────────────────────────
-
-"""
-根据 tspan 和 step_s 生成时间向量（秒）。
-返回 [tspan[1], tspan[1]+step, ..., ≤ tspan[2]]。
-"""
+"""Validate and expand a frame time range for Server compatibility."""
 function make_tspan(tspan::AbstractVector{<:Real}, step_s::Real)
+    length(tspan) >= 2 || throw(ArgumentError("tspan must contain [start, stop]"))
     t0, t1 = Float64(tspan[1]), Float64(tspan[2])
     t0 < t1 || throw(ArgumentError("tspan[1] must be < tspan[2], got $tspan"))
     step_s > 0 || throw(ArgumentError("step_s must be > 0, got $step_s"))
-    return collect(t0:step_s:t1)
+    return collect(t0:Float64(step_s):t1)
 end
 
-# ── 启动会话：预算位置 + ISL 边集 ───────────────────────────
-
 """
-    start_session(name; config, tspan, step_s, propagator, fps) -> SimulationSession
+    start_session(; name, config=nothing, ...) -> SimulationSession
 
-预算一个星座的完整仿真状态并存入 SESSIONS。
-
-参数：
-- `name`     catalog 星座符号字符串或 custom 显示名
-- `config`   可选 Walker 参数；为空时从 catalog 解析 name
-- `tspan`    时间区间 [t0, t1] 秒
-- `step_s`   帧间隔秒
-- `propagator`  传播器名 "two_body"/"j2"/"j4"
-- `fps`      目标推流帧率
-
-返回新建的 SimulationSession。
+Prepare a streaming simulation through SatelliteSimLab and retain only the
+transport/session lifecycle in SatelliteSimServer.
 """
 function start_session(;
     name::AbstractString,
-    config::Union{Nothing,WalkerConstellationConfig} = nothing,
+    config = nothing,
     tspan::AbstractVector{<:Real} = [0.0, 600.0],
     step_s::Real = 10.0,
     propagator::AbstractString = "j2",
@@ -103,54 +66,23 @@ function start_session(;
     include_gsl::Bool = true,
     include_coverage::Bool = true,
 )
-    # 1. 解析星座配置（catalog 或 custom Walker）
-    if config === nothing
-        resolved = resolve_constellation(Symbol(name))  # WalkerConstellationConfig 或 TLE
-        resolved isa WalkerConstellationConfig ||
-            throw(ArgumentError("only Walker constellations supported for now; got $(typeof(resolved))"))
-        config = resolved
-    end
-
-    T, P, F = config.T, config.P, config.F
-    alt_km, inc_deg = config.alt_km, config.inc_deg
-
-    # 2. 生成轨道根数
-    elems = generate_walker_delta(; T = T, P = P, F = F, alt_km = alt_km, inc_deg = inc_deg)
-
-    # 3. 预算位置数组（一次性算完整个 tspan）
-    ts = make_tspan(tspan, step_s)
-    # propagate_to_ecef 接受 Symbol: :two_body | :j2 | :j4（内部 resolve_keplerian_propagator）
-    positions = propagate_to_ecef(elems, ts; propagator = Symbol(propagator))
-
-    # 4. 预生成 ISL 候选边（GridPlus 拓扑，固定）
-    topo = generate_topology(GridPlusStrategy(), T, P)
-    isl_edges = vcat(topo.static_links, topo.dynamic_candidates)
-
-    # 5. 建会话
-    session_id = randstring(8)
-    gs_tuples = [(gs.lat_deg, gs.lon_deg, gs.alt_km) for gs in ground_stations]
-    session = SimulationSession(
-        session_id,
-        String(name),
-        config,
-        positions,
-        isl_edges,
-        Float64(step_s),
-        Float64.(tspan),
-        LEO_DEFAULTS,
-        ground_stations,
-        gs_tuples,
-        include_gsl,
-        include_coverage,
-        Ref(true),
-        Ref(1),
-        Float64(fps),
+    station_inputs = [
+        (id = station.id, name = station.name, lat_deg = station.lat_deg,
+         lon_deg = station.lon_deg, alt_km = station.alt_km)
+        for station in ground_stations
+    ]
+    simulation = prepare_streaming_simulation(
+        name = name, config = config, tspan = tspan, step_s = step_s,
+        propagator = propagator, ground_stations = station_inputs,
+        include_gsl = include_gsl, include_coverage = include_coverage,
     )
-    SESSIONS[session_id] = session
+
+    session = SimulationSession(randstring(8), simulation, Ref(true), Ref(1), Float64(fps))
+    SESSIONS[session.id] = session
     return session
 end
 
-"""停止会话（标记为不活跃，推流循环会自行退出；从 SESSIONS 移除）。"""
+"""Stop a session and remove its transport lifecycle state."""
 function stop_session!(session_id::AbstractString)
     session = get(SESSIONS, session_id, nothing)
     session === nothing && return false
@@ -160,6 +92,5 @@ function stop_session!(session_id::AbstractString)
 end
 
 get_session(session_id::AbstractString) = get(SESSIONS, session_id, nothing)
-
-n_satellites(s::SimulationSession) = size(s.positions, 1)
-n_timesteps(s::SimulationSession) = size(s.positions, 2)
+n_satellites(session::SimulationSession) = size(session.positions, 1)
+n_timesteps(session::SimulationSession) = size(session.positions, 2)
