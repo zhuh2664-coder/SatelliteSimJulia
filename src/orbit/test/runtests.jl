@@ -152,7 +152,11 @@ end
 end
 
 @testset "OMM/GP JSON 9位目录号与 SGP4 裸数组桥接" begin
-    tle_path = joinpath(@__DIR__, "..", "..", "..", "data", "tle", "celestrak", "starlink_gp_latest.tle")
+    tle_path = if get(ENV, "SATSIM_ORBIT_LIVE_TLE", "0") == "1"
+        joinpath(@__DIR__, "..", "..", "..", "data", "tle", "celestrak", "starlink_gp_latest.tle")
+    else
+        joinpath(@__DIR__, "fixtures", "starlink_sample.tle")
+    end
     lines = readlines(tle_path)
     tle_specs = TLEOrbitElementSet[]
     tle_objects = SatelliteToolbox.TLE[]
