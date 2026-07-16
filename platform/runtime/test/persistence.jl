@@ -120,6 +120,37 @@
         SatelliteSimPlatformRuntime.close!(reopened)
     end
 
+    @testset "a future-schema database is refused, never silently downgraded" begin
+        dir = mktempdir()
+        path = joinpath(dir, "runtime-future.db")
+        db = SatelliteSimPlatformRuntime.SQLite.DB(path)
+        SatelliteSimPlatformRuntime.DBInterface.execute(db,
+            "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);")
+        SatelliteSimPlatformRuntime.DBInterface.execute(db,
+            "INSERT INTO schema_migrations(version, applied_at) VALUES(?, '2026-01-01T00:00:00.000')",
+            (SCHEMA_VERSION + 1,))
+        SatelliteSimPlatformRuntime.DBInterface.close!(db)
+
+        err = try
+            RuntimeJobStore(path)
+            nothing
+        catch e
+            e
+        end
+        @test err isa RuntimeError && err.code == "INTERNAL_ERROR"
+        @test occursin("schema version $(SCHEMA_VERSION + 1)", err.message)
+
+        # the refused database is untouched: still exactly one migration row
+        db2 = SatelliteSimPlatformRuntime.SQLite.DB(path)
+        versions = Int[]
+        for row in SatelliteSimPlatformRuntime.DBInterface.execute(db2,
+                "SELECT version FROM schema_migrations")
+            push!(versions, Int(row.version))
+        end
+        @test versions == [SCHEMA_VERSION + 1]
+        SatelliteSimPlatformRuntime.DBInterface.close!(db2)
+    end
+
     @testset "jobs survive a store reopen" begin
         dir = mktempdir()
         path = joinpath(dir, "runtime.db")

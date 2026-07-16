@@ -137,6 +137,9 @@ function migrate!(store::RuntimeJobStore)
     """)
     applied = _row(store, "SELECT max(version) AS v FROM schema_migrations")
     current = (applied === nothing || applied["v"] === missing) ? 0 : Int(applied["v"])
+    current > SCHEMA_VERSION && throw(RuntimeError("INTERNAL_ERROR",
+        "database schema version $(current) is newer than this runtime's " *
+        "supported version $(SCHEMA_VERSION); refusing to open it"))
     for version in (current + 1):SCHEMA_VERSION
         transaction(store) do
             version == 1 && _apply_migration_v1(store)
