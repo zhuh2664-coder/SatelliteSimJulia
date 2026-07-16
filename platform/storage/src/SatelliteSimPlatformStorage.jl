@@ -9,7 +9,7 @@ export AbstractExperimentStorage,
        StoredObject,
        StorageKeyError,
        put_bytes!, put_json!, get_bytes, get_json,
-       has_object, object_metadata, list_objects,
+       has_object, object_metadata, list_objects, delete_object!,
        upload_directory!, materialize_prefix!
 
 """Storage keys are invalid, unsafe, or outside the configured object namespace."""
@@ -129,6 +129,18 @@ function object_metadata(storage::LocalFilesystemStorage, key::AbstractString)::
     path = _object_path(storage, normalized)
     isfile(path) || throw(KeyError(normalized))
     return _metadata(normalized, path)
+end
+
+"""Delete an object; returns `true` if it existed, `false` otherwise."""
+function delete_object!(storage::AbstractExperimentStorage, key::AbstractString)::Bool
+    throw(MethodError(delete_object!, (storage, key)))
+end
+
+function delete_object!(storage::LocalFilesystemStorage, key::AbstractString)::Bool
+    path = _object_path(storage, key)
+    isfile(path) || return false
+    rm(path)
+    return true
 end
 
 """List object metadata below an optional slash-delimited prefix in lexical order."""
