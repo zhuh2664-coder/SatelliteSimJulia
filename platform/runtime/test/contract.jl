@@ -24,6 +24,7 @@
         @test result["valid"] == true
         @test length(result["config_sha256"]) == 64
         @test result["admission"]["steps"] == 3
+        @test result["admission"]["satellites"] == 8
         @test result["resource_profile"] == "small"
 
         @test_throws RuntimeError validate_experiment(service, submitter(), raw_config();
@@ -38,6 +39,48 @@
             e
         end
         @test err isa RuntimeError && err.code == "RUNTIME_POLICY_REJECTED"
+    end
+
+    @testset "named constellation resolution at admission" begin
+        service = make_service()
+
+        # a known catalog name resolves to its real satellite count
+        named = raw_config()
+        named["constellation"] = "walker24"
+        result = validate_experiment(service, submitter(), named)
+        @test result["valid"] == true
+        @test result["admission"]["satellites"] == 24
+
+        # a catalog name over the satellite limit is rejected on its real T
+        toolarge = raw_config()
+        toolarge["constellation"] = "kuiper"  # T = 1156 <= 2048, use steps to trip T*steps
+        toolarge["steps"] = 2_000              # 1156 * 2000 > 2_000_000
+        err = try
+            validate_experiment(service, submitter(), toolarge)
+            nothing
+        catch e
+            e
+        end
+        @test err isa RuntimeError && err.code == "RUNTIME_POLICY_REJECTED"
+
+        # an unknown name is rejected outright, at validate and at submit
+        unknown = raw_config()
+        unknown["constellation"] = "not-a-constellation"
+        err2 = try
+            validate_experiment(service, submitter(), unknown)
+            nothing
+        catch e
+            e
+        end
+        @test err2 isa RuntimeError && err2.code == "RUNTIME_POLICY_REJECTED"
+        err3 = try
+            submit_experiment(service, submitter(), unknown; idempotency_key="named-unknown")
+            nothing
+        catch e
+            e
+        end
+        @test err3 isa RuntimeError && err3.code == "RUNTIME_POLICY_REJECTED"
+        @test isempty(list_jobs_view(service, submitter())["jobs"])
     end
 
     @testset "submit idempotency and conflict" begin
@@ -168,7 +211,9 @@
         timeout_service = make_service(clock=stepping)
         slow = submit_experiment(timeout_service, submitter(), raw_config(); idempotency_key="slow")
         timeout_service.backend.behaviors[slow["job_id"]] = :timeout
-        toutcome = process_next_job!(timeout_service)
+        # the stepping clock advances one hour per call, so keep the lease alive
+        # long enough that the run dies on the profile timeout, not the lease
+        toutcome = process_next_job!(timeout_service; lease_seconds=30 * 24 * 3600)
         @test toutcome.status == :failed
         @test get_job_view(timeout_service, submitter(), slow["job_id"])["error"]["code"] == "EXECUTION_TIMEOUT"
     end
@@ -181,5 +226,25 @@
         @test child["parent_job_id"] == source["job_id"]
         @test child["state"] == "queued"
         @test child["config_sha256"] == source["config_sha256"]
+    end
+
+    @testset "reproduce_job may not lower the source profile" begin
+        service = make_service()
+        source = submit_experiment(service, submitter(), raw_config();
+            idempotency_key="repro-std", resource_profile="standard")
+        process_next_job!(service)
+        err = try
+            reproduce_job(service, submitter(), source["job_id"];
+                idempotency_key="repro-down", resource_profile="small")
+            nothing
+        catch e
+            e
+        end
+        @test err isa RuntimeError && err.code == "RUNTIME_POLICY_REJECTED"
+
+        # equal or higher profiles remain allowed
+        same = reproduce_job(service, submitter(), source["job_id"];
+            idempotency_key="repro-same", resource_profile="standard")
+        @test same["state"] == "queued"
     end
 end

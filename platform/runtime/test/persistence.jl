@@ -78,6 +78,99 @@
         @test err isa RuntimeError && err.code == "QUOTA_EXCEEDED"
     end
 
+    @testset "concurrent submit/claim/cancel never nest transactions" begin
+        store = RuntimeJobStore()
+        errors = Base.Channel{Any}(64)
+        tasks = Task[]
+        for worker in 1:8
+            task = Threads.@spawn begin
+                try
+                    for round in 1:5
+                        id = "job-c$(worker)-$(round)"
+                        try
+                            create_job!(store; job_id=id, tenant_id="tenant-w$(worker)",
+                                subject_id="alice", idempotency_key="key-$(worker)-$(round)",
+                                config_sha256=repeat("f", 64), config_storage_key="k$id",
+                                output_prefix="p$id", resource_profile="small",
+                                concurrency_weight=1, artifact_bytes=1024,
+                                release_sha="rel", image_digest="d")
+                        catch e
+                            e isa RuntimeError && e.code == "QUOTA_EXCEEDED" || rethrow()
+                        end
+                        claim = claim_next_job!(store; worker_id="w$(worker)")
+                        if claim !== nothing
+                            finalize_job!(store; job_id=claim.job.id, worker_id="w$(worker)",
+                                fencing_token=claim.fencing_token, terminal_state="succeeded")
+                        end
+                        try
+                            request_cancel!(store, "tenant-w$(worker)", "job-c$(worker)-$(round)")
+                        catch e
+                            e isa RuntimeError || rethrow()
+                        end
+                    end
+                catch e
+                    put!(errors, e)
+                end
+            end
+            push!(tasks, task)
+        end
+        foreach(wait, tasks)
+        close(errors)
+        collected = collect(errors)
+        # no SQLite "cannot start a transaction within a transaction" or any
+        # other interleaving error may escape the serialized store
+        @test collected == []
+        # every reservation row still corresponds to exactly one job row
+        orphan = SatelliteSimPlatformRuntime._row(store, """
+            SELECT count(*) AS c FROM quota_reservations q
+            WHERE NOT EXISTS (SELECT 1 FROM jobs j WHERE j.id = q.job_id)
+        """)
+        @test Int(orphan["c"]) == 0
+        # no non-terminal job may hold a released reservation or vice versa
+        inconsistent = SatelliteSimPlatformRuntime._row(store, """
+            SELECT count(*) AS c FROM jobs j JOIN quota_reservations q ON q.job_id = j.id
+            WHERE (j.state IN ('queued','running') AND q.state != 'active')
+               OR (j.state IN ('succeeded','failed','cancelled') AND q.state != 'released')
+        """)
+        @test Int(inconsistent["c"]) == 0
+    end
+
+    @testset "rejected submissions leak neither quota nor storage objects" begin
+        service = make_service()
+        # fill the tenant cap (2 x small)
+        submit_experiment(service, submitter(), raw_config(); idempotency_key="leak-1")
+        submit_experiment(service, submitter(), raw_config(); idempotency_key="leak-2")
+        objects_before = length(SatelliteSimPlatformRuntime.list_objects(service.storage; prefix=""))
+
+        err = try
+            submit_experiment(service, submitter(), raw_config(); idempotency_key="leak-3")
+            nothing
+        catch e
+            e
+        end
+        @test err isa RuntimeError && err.code == "QUOTA_EXCEEDED"
+
+        conflicting = raw_config()
+        conflicting["alpha"] = 0.9
+        err2 = try
+            submit_experiment(service, submitter(), conflicting; idempotency_key="leak-1")
+            nothing
+        catch e
+            e
+        end
+        @test err2 isa RuntimeError && err2.code == "IDEMPOTENCY_CONFLICT"
+
+        # neither rejection created a job row, a reservation or a storage object
+        @test length(SatelliteSimPlatformRuntime.list_objects(service.storage; prefix="")) == objects_before
+        rows = SatelliteSimPlatformRuntime._row(service.store, "SELECT count(*) AS c FROM jobs")
+        @test Int(rows["c"]) == 2
+        active = SatelliteSimPlatformRuntime._row(service.store,
+            "SELECT count(*) AS c FROM quota_reservations WHERE state = 'active'")
+        @test Int(active["c"]) == 2
+        # both jobs share one content-addressed config object
+        @test objects_before == 1
+    end
+
     @testset "terminal state, quota release and audit are one transaction" begin
         store = RuntimeJobStore()
         create_job!(store; job_id="job-final", tenant_id="tenant-a", subject_id="alice",

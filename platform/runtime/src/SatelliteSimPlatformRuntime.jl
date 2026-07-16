@@ -39,22 +39,22 @@ export PUBLIC_STATES, TERMINAL_STATES, INTERNAL_PHASES,
 
 # admission / profiles
 export ResourceProfile, RESOURCE_PROFILES, DEFAULT_RESOURCE_PROFILE,
-    resource_profile, to_k8s_resources, enforce_admission, admission_estimate_data,
-    AdmissionEstimate
+    resource_profile, RuntimeResources, to_resources, enforce_admission,
+    admission_estimate_data, AdmissionEstimate
 
 # durable store
 export RuntimeJobStore, RuntimeJob, ClaimedJob, SCHEMA_VERSION, close!,
     migrate!, transaction, record_audit!, audit_events, next_fencing_token!
 
 # job lifecycle operations
-export create_job!, get_job, list_jobs, claim_next_job!, heartbeat!,
+export create_job!, precheck_quota, get_job, list_jobs, claim_next_job!, heartbeat!,
     finalize_job!, request_cancel!, recover_expired_leases!
 
 # execution backend
 export AbstractExecutionBackend, ExecutionSpec, ExecutionStatus, ExecutionResult,
     DeterministicTestBackend, backend_start, backend_status, backend_wait_result,
     backend_cancel!, backend_probe, write_runner_artifacts, verify_artifact_contract,
-    RUNNER_ARTIFACT_NAMES, ARTIFACT_INDEX_NAME
+    attempt_output_prefix, RUNNER_ARTIFACT_NAMES, ARTIFACT_INDEX_NAME
 
 # application service (the ten runtime operations) + worker driver
 export RuntimeApplicationService, runtime_health, runtime_capabilities,

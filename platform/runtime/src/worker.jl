@@ -33,19 +33,25 @@ function process_next_job!(service::RuntimeApplicationService;
     workdir = mktempdir()
     claim_handle = Ref{Any}(nothing)
 
+    # Losing the lease (failed heartbeat or fenced-out finalize) must stop the
+    # backend execution immediately: a fenced worker may not keep running.
+    lease_lost() = begin
+        claim_handle[] === nothing || backend_cancel!(service.backend, claim_handle[])
+        (status=:lease_lost, job_id=job.id)
+    end
     hb(phase) = heartbeat!(store; job_id=job.id, worker_id=worker_id, fencing_token=token,
         lease_seconds=lease_seconds, phase=phase, now_utc=service.clock())
     fail(code, message) = begin
         ok = finalize_job!(store; job_id=job.id, worker_id=worker_id, fencing_token=token,
             terminal_state="failed", error_code=code, error_message=message,
             now_utc=service.clock())
-        ok ? (status=:failed, job_id=job.id, code=code) : (status=:lease_lost, job_id=job.id)
+        ok ? (status=:failed, job_id=job.id, code=code) : lease_lost()
     end
     cancel_now() = begin
         backend_cancel!(service.backend, claim_handle[])
         ok = finalize_job!(store; job_id=job.id, worker_id=worker_id, fencing_token=token,
             terminal_state="cancelled", now_utc=service.clock())
-        ok ? (status=:cancelled, job_id=job.id) : (status=:lease_lost, job_id=job.id)
+        ok ? (status=:cancelled, job_id=job.id) : lease_lost()
     end
 
     try
@@ -55,16 +61,16 @@ function process_next_job!(service::RuntimeApplicationService;
         open(joinpath(input_dir, "config.json"), "w") do io
             write(io, JSON.json(normalized))
         end
-        hb("materializing_input") || return (status=:lease_lost, job_id=job.id)
+        hb("materializing_input") || return lease_lost()
         profile = resource_profile(job.resource_profile)
         output_dir = joinpath(workdir, "output")
         mkpath(output_dir)
         spec = ExecutionSpec(job.id, job.tenant_id, job.release_sha, job.image_digest,
             Dict{String,Any}(normalized), input_dir, output_dir,
             profile.cpu_millicores, profile.memory_mib, profile.timeout_seconds)
-        hb("starting_runner") || return (status=:lease_lost, job_id=job.id)
+        hb("starting_runner") || return lease_lost()
         claim_handle[] = backend_start(service.backend, spec)
-        hb("simulating") || return (status=:lease_lost, job_id=job.id)
+        hb("simulating") || return lease_lost()
         on_running === nothing || on_running(job)
 
         polls = 0
@@ -87,22 +93,25 @@ function process_next_job!(service::RuntimeApplicationService;
                 backend_cancel!(service.backend, claim_handle[])
                 return fail("EXECUTION_TIMEOUT", "execution exceeded timeout of $(profile.timeout_seconds)s")
             end
-            hb("simulating") || return (status=:lease_lost, job_id=job.id)
+            hb("simulating") || return lease_lost()
             poll_interval > 0 && sleep(poll_interval)
         end
 
-        hb("uploading_artifacts") || return (status=:lease_lost, job_id=job.id)
+        hb("uploading_artifacts") || return lease_lost()
         result = backend_wait_result(service.backend, claim_handle[])
         result.exit_status == :succeeded ||
             return fail("EXECUTION_FAILED", something(result.error_message, "runner did not succeed"))
-        # Recoverable commit: publish artifacts to durable storage first, verify
-        # the contract, then commit the terminal state under the fencing guard.
-        upload_directory!(service.storage, job.output_prefix, result.artifact_dir)
-        artifact_keys = verify_artifact_contract(service.storage, job.output_prefix)
+        # Recoverable commit: each attempt publishes into its own fencing-token
+        # prefix, never the job's canonical prefix, and the prefix only becomes
+        # readable when finalize registers it atomically under the fencing guard.
+        attempt_prefix = attempt_output_prefix(job.output_prefix, token)
+        upload_directory!(service.storage, attempt_prefix, result.artifact_dir)
+        artifact_keys = verify_artifact_contract(service.storage, attempt_prefix)
         ok = finalize_job!(store; job_id=job.id, worker_id=worker_id, fencing_token=token,
-            terminal_state="succeeded", artifact_keys=artifact_keys, now_utc=service.clock())
+            terminal_state="succeeded", artifact_keys=artifact_keys,
+            artifact_prefix=attempt_prefix, now_utc=service.clock())
         return ok ? (status=:succeeded, job_id=job.id, artifact_keys=artifact_keys) :
-            (status=:lease_lost, job_id=job.id)
+            lease_lost()
     catch error
         error isa RuntimeError && return fail(error.code, error.message)
         return fail("EXECUTION_FAILED", "internal execution error")

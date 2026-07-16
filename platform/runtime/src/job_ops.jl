@@ -5,6 +5,28 @@
 # ---- creation / idempotency -------------------------------------------------
 
 """
+    precheck_quota(store, tenant_id, concurrency_weight; concurrency_cap)
+
+Reject a submission that cannot fit the tenant's active-job weight cap before
+any side effect (e.g. a storage write) happens. `create_job!` re-checks the
+same invariant atomically inside its transaction; this precheck only prevents
+avoidable work, it is not the enforcement point.
+"""
+function precheck_quota(store::RuntimeJobStore, tenant_id::AbstractString,
+                        concurrency_weight::Integer;
+                        concurrency_cap::Integer=TENANT_CONCURRENCY_CAP)
+    active = _row(store,
+        "SELECT COALESCE(SUM(concurrency_weight), 0) AS w FROM jobs WHERE tenant_id = ? AND state IN ('queued','running')",
+        (String(tenant_id),))
+    used = Int(active["w"])
+    if used + Int(concurrency_weight) > Int(concurrency_cap)
+        throw(RuntimeError("QUOTA_EXCEEDED",
+            "tenant active-job capacity exceeded (weight $(used + Int(concurrency_weight)) > cap $(Int(concurrency_cap)))"))
+    end
+    return nothing
+end
+
+"""
     create_job!(store; ...) -> (job::RuntimeJob, created::Bool)
 
 Atomically enforce `(tenant_id, idempotency_key)` idempotency and the tenant
@@ -145,7 +167,13 @@ function claim_next_job!(store::RuntimeJobStore;
     return nothing
 end
 
-"""Renew a lease (and optionally advance the internal phase) under fencing guard."""
+"""
+Renew a lease (and optionally advance the internal phase) under fencing guard.
+
+An already-expired lease can never be renewed: expiry is decided against the
+control-plane clock passed in `now_utc`, the same time source used by claim
+and recovery, so a stale worker cannot resurrect its lease by heartbeating.
+"""
 function heartbeat!(store::RuntimeJobStore;
                     job_id::AbstractString, worker_id::AbstractString,
                     fencing_token::Integer, lease_seconds::Integer=30,
@@ -154,21 +182,25 @@ function heartbeat!(store::RuntimeJobStore;
     phase === nothing || assert_phase(phase)
     expires = _ts(now_utc + Second(Int(lease_seconds)))
     affected = String[]
-    if phase === nothing
-        for row in DBInterface.execute(store.db, """
-                UPDATE jobs SET lease_expires_at = ?, heartbeat_at = ?
-                WHERE id = ? AND lease_owner = ? AND lease_fencing_token = ? AND state = 'running'
-                RETURNING id
-            """, (expires, _ts(now_utc), String(job_id), String(worker_id), Int(fencing_token)))
-            push!(affected, string(row[:id]))
-        end
-    else
-        for row in DBInterface.execute(store.db, """
-                UPDATE jobs SET lease_expires_at = ?, heartbeat_at = ?, phase = ?
-                WHERE id = ? AND lease_owner = ? AND lease_fencing_token = ? AND state = 'running'
-                RETURNING id
-            """, (expires, _ts(now_utc), String(phase), String(job_id), String(worker_id), Int(fencing_token)))
-            push!(affected, string(row[:id]))
+    Base.lock(store.lock) do
+        if phase === nothing
+            for row in DBInterface.execute(store.db, """
+                    UPDATE jobs SET lease_expires_at = ?, heartbeat_at = ?
+                    WHERE id = ? AND lease_owner = ? AND lease_fencing_token = ? AND state = 'running'
+                        AND lease_expires_at IS NOT NULL AND lease_expires_at > ?
+                    RETURNING id
+                """, (expires, _ts(now_utc), String(job_id), String(worker_id), Int(fencing_token), _ts(now_utc)))
+                push!(affected, string(row[:id]))
+            end
+        else
+            for row in DBInterface.execute(store.db, """
+                    UPDATE jobs SET lease_expires_at = ?, heartbeat_at = ?, phase = ?
+                    WHERE id = ? AND lease_owner = ? AND lease_fencing_token = ? AND state = 'running'
+                        AND lease_expires_at IS NOT NULL AND lease_expires_at > ?
+                    RETURNING id
+                """, (expires, _ts(now_utc), String(phase), String(job_id), String(worker_id), Int(fencing_token), _ts(now_utc)))
+                push!(affected, string(row[:id]))
+            end
         end
     end
     return !isempty(affected)
@@ -178,14 +210,17 @@ end
     finalize_job!(store; ...) -> Bool
 
 Commit a terminal state, release the quota reservation and write the terminal
-audit event in a single transaction, but only if the caller still holds the
-lease (matching owner and fencing token). A worker that lost its lease gets
-`false` and must publish nothing.
+audit event in a single transaction, but only if the caller still holds a
+live lease (matching owner and fencing token, not expired against the
+control-plane clock). A worker that lost its lease gets `false` and must
+publish nothing. A succeeded finalize atomically registers `artifact_prefix`,
+which is the only path by which an attempt's output becomes readable.
 """
 function finalize_job!(store::RuntimeJobStore;
                        job_id::AbstractString, worker_id::AbstractString,
                        fencing_token::Integer, terminal_state::AbstractString,
                        artifact_keys::Vector{String}=String[],
+                       artifact_prefix::Union{Nothing,AbstractString}=nothing,
                        error_code::Union{Nothing,AbstractString}=nothing,
                        error_message::Union{Nothing,AbstractString}=nothing,
                        request_id::Union{Nothing,AbstractString}=nothing,
@@ -197,13 +232,16 @@ function finalize_job!(store::RuntimeJobStore;
         current === nothing && return false
         (current.state == "running" && current.lease_owner == String(worker_id) &&
             current.lease_fencing_token == Int(fencing_token)) || return false
+        (current.lease_expires_at !== nothing && current.lease_expires_at > now_utc) || return false
         assert_transition("running", terminal_state)
         DBInterface.execute(store.db, """
             UPDATE jobs SET state = ?, phase = NULL, finished_at = ?, lease_owner = NULL,
-                lease_expires_at = NULL, artifact_keys = ?, error_code = ?, error_message = ?
+                lease_expires_at = NULL, artifact_keys = ?, artifact_prefix = ?,
+                error_code = ?, error_message = ?
             WHERE id = ?
         """, (
             String(terminal_state), _ts(now_utc), JSON.json(artifact_keys),
+            artifact_prefix === nothing ? missing : String(artifact_prefix),
             error_code === nothing ? missing : String(error_code),
             error_message === nothing ? missing : String(error_message),
             String(job_id),

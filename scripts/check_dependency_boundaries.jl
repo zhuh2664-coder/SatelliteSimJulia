@@ -14,6 +14,7 @@ const LOCAL_PACKAGES = Set([
     "SatelliteSimGPU",
     "PlatformRunner", "SatelliteSimPlatformStorage", "SatelliteSimPlatformScheduler",
     "SatelliteSimPlatformKubernetes", "SatelliteSimPlatformControl", "SatelliteSimPlatformBenchmarks",
+    "SatelliteSimPlatformRuntime",
 ])
 
 const PACKAGE_PROJECTS = Dict(
@@ -38,6 +39,7 @@ const PACKAGE_PROJECTS = Dict(
     "SatelliteSimPlatformKubernetes" => "platform/kubernetes",
     "SatelliteSimPlatformControl" => "platform/control",
     "SatelliteSimPlatformBenchmarks" => "platform/benchmarks/constellation-optimization-v1",
+    "SatelliteSimPlatformRuntime" => "platform/runtime",
 )
 
 const ALLOWED_LOCAL_DEPS = Dict(
@@ -75,6 +77,10 @@ const ALLOWED_LOCAL_DEPS = Dict(
         "PlatformRunner", "SatelliteSimPlatformStorage", "SatelliteSimPlatformKubernetes",
     ]),
     "SatelliteSimPlatformBenchmarks" => Set(["SatelliteSimOpt"]),
+    "SatelliteSimPlatformRuntime" => Set([
+        "PlatformRunner", "SatelliteSimPlatformStorage", "SatelliteSimPlatformControl",
+        "SatelliteSimCore",
+    ]),
 )
 
 function dependency_sections(project::AbstractDict, dependency::String)

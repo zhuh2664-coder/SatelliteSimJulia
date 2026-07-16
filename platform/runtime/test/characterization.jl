@@ -1,12 +1,12 @@
 # Characterization tests pinning the existing behavior of the platform packages
 # the runtime reuses. These guard against silent changes in packages we did not
-# modify (PlatformRunner, Control, Storage, Kubernetes) that the runtime relies on.
+# modify (PlatformRunner, Control, Storage, Core catalog) that the runtime relies on.
 
 using SatelliteSimPlatformStorage: LocalFilesystemStorage, put_json!, get_json,
     has_object, list_objects, object_metadata
 using SatelliteSimPlatformControl: AuthenticatedPrincipal, AuthorizationError,
     authorize_submission!
-using SatelliteSimPlatformKubernetes: KubernetesResources
+using SatelliteSimCore: resolve_constellation, WalkerConstellationConfig
 using PlatformRunner: validate_experiment_config, PlatformConfigError,
     EXPERIMENT_SCHEMA_VERSION
 
@@ -38,11 +38,17 @@ using PlatformRunner: validate_experiment_config, PlatformConfigError,
         @test any(o -> o.key == "tenants/tenant-a/x.json", list_objects(storage; prefix="tenants"))
     end
 
-    @testset "Kubernetes resource units are unchanged" begin
-        resources = KubernetesResources(2_000, 8_192)
+    @testset "generic resource DTO carries profile units" begin
+        resources = to_resources(resource_profile("small"))
+        @test resources isa RuntimeResources
         @test resources.cpu_millicores == 2_000
         @test resources.memory_mib == 8_192
-        # runtime maps a profile onto the same shared resource unit
-        @test to_k8s_resources(resource_profile("small")) == KubernetesResources(2_000, 8_192)
+    end
+
+    @testset "Core constellation catalog resolution is unchanged" begin
+        config = resolve_constellation(:walker24)
+        @test config isa WalkerConstellationConfig
+        @test config.T == 24
+        @test_throws Exception resolve_constellation(:does_not_exist)
     end
 end

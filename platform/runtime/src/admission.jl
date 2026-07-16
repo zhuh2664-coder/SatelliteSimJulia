@@ -3,7 +3,7 @@
 # job is ever persisted, so oversize or out-of-policy work never reaches a store
 # or a worker.
 
-using SatelliteSimPlatformKubernetes: KubernetesResources
+using SatelliteSimCore: resolve_constellation, WalkerConstellationConfig
 
 """A named, CPU-only resource profile with a hard wall-clock timeout."""
 struct ResourceProfile
@@ -38,10 +38,16 @@ const TENANT_CONCURRENCY_CAP = 2
 """Deterministic, bounded summary of an admission decision for one config."""
 struct AdmissionEstimate
     steps::Int
-    satellites::Union{Nothing,Int}
+    satellites::Int
     horizon_seconds::Float64
     normalized_config_bytes::Int
     profile::String
+end
+
+"""A scheduler-agnostic resource request derived from a profile (no Kubernetes types)."""
+struct RuntimeResources
+    cpu_millicores::Int
+    memory_mib::Int
 end
 
 """Resolve a profile name to its definition or reject it."""
@@ -54,15 +60,35 @@ function resource_profile(name::AbstractString)::ResourceProfile
     return profile
 end
 
-"""Map a profile onto the shared, validated scheduler resource units."""
-to_k8s_resources(profile::ResourceProfile) =
-    KubernetesResources(profile.cpu_millicores, profile.memory_mib)
+"""Map a profile onto a generic resource request DTO."""
+to_resources(profile::ResourceProfile) =
+    RuntimeResources(profile.cpu_millicores, profile.memory_mib)
 
-function _satellite_count(normalized::AbstractDict)::Union{Nothing,Int}
+"""
+Resolve the real satellite count of a config's constellation. An explicit
+constellation object carries `T` directly; a named constellation is resolved
+through the shared catalog, and unknown names or catalog entries without a
+static satellite count (e.g. TLE-file constellations) are rejected.
+"""
+function _satellite_count(normalized::AbstractDict)::Int
     constellation = get(normalized, "constellation", nothing)
-    constellation isa AbstractDict || return nothing
-    value = get(constellation, "T", nothing)
-    value isa Integer ? Int(value) : nothing
+    if constellation isa AbstractDict
+        value = get(constellation, "T", nothing)
+        value isa Integer || throw(RuntimeError("RUNTIME_POLICY_REJECTED",
+            "constellation object does not declare an integer satellite count T"))
+        return Int(value)
+    end
+    constellation isa AbstractString || throw(RuntimeError("RUNTIME_POLICY_REJECTED",
+        "constellation must be a named catalog entry or an explicit Walker object"))
+    config = try
+        resolve_constellation(Symbol(String(constellation)))
+    catch
+        throw(RuntimeError("RUNTIME_POLICY_REJECTED",
+            "unknown named constellation '$(String(constellation))'"))
+    end
+    config isa WalkerConstellationConfig || throw(RuntimeError("RUNTIME_POLICY_REJECTED",
+        "named constellation '$(String(constellation))' has no static satellite count and cannot be admitted"))
+    return config.T
 end
 
 function _horizon_seconds(normalized::AbstractDict)::Float64
@@ -74,9 +100,9 @@ end
 """
     enforce_admission(normalized, profile) -> AdmissionEstimate
 
-Apply every runtime limit that can be decided from a normalized config. Limits
-that depend on an explicit satellite count are skipped for named constellations
-whose satellite count is not expressed in the document.
+Apply every runtime limit to a normalized config. The satellite count is
+always resolved to a real value first (explicit `T` or catalog lookup), so
+satellite-dependent limits are never skipped.
 """
 function enforce_admission(normalized::AbstractDict, profile::ResourceProfile)::AdmissionEstimate
     config_bytes = ncodeunits(JSON.json(normalized))
@@ -95,16 +121,14 @@ function enforce_admission(normalized::AbstractDict, profile::ResourceProfile)::
         "simulation horizon is $(horizon) s; limit is $MAX_HORIZON_SECONDS s",
     ))
     satellites = _satellite_count(normalized)
-    if satellites !== nothing
-        satellites <= MAX_SATELLITES || throw(RuntimeError(
-            "RUNTIME_POLICY_REJECTED",
-            "constellation has $satellites satellites; limit is $MAX_SATELLITES",
-        ))
-        satellites * steps <= MAX_T_TIMES_STEPS || throw(RuntimeError(
-            "RUNTIME_POLICY_REJECTED",
-            "satellites * steps is $(satellites * steps); limit is $MAX_T_TIMES_STEPS",
-        ))
-    end
+    satellites <= MAX_SATELLITES || throw(RuntimeError(
+        "RUNTIME_POLICY_REJECTED",
+        "constellation has $satellites satellites; limit is $MAX_SATELLITES",
+    ))
+    satellites * steps <= MAX_T_TIMES_STEPS || throw(RuntimeError(
+        "RUNTIME_POLICY_REJECTED",
+        "satellites * steps is $(satellites * steps); limit is $MAX_T_TIMES_STEPS",
+    ))
     return AdmissionEstimate(steps, satellites, horizon, config_bytes, profile.name)
 end
 

@@ -16,6 +16,14 @@ using SatelliteSimPlatformStorage: AbstractExperimentStorage, get_json,
 const RUNNER_ARTIFACT_NAMES = ["config.snapshot.json", "result.json", "run_metadata.json"]
 const ARTIFACT_INDEX_NAME = "artifacts.index.json"
 
+"""
+The storage prefix a single execution attempt writes into. Attempts are keyed
+by fencing token, so a stale attempt can never collide with (or overwrite) the
+prefix registered by the attempt that finalizes successfully.
+"""
+attempt_output_prefix(output_prefix::AbstractString, fencing_token::Integer) =
+    string(strip(String(output_prefix), '/'), "/attempt/", Int(fencing_token))
+
 """An immutable, network-free description of one job's execution."""
 struct ExecutionSpec
     job_id::String

@@ -38,6 +38,7 @@ struct RuntimeJob
     finished_at::Union{Nothing,DateTime}
     parent_job_id::Union{Nothing,String}
     artifact_keys::Vector{String}
+    artifact_prefix::Union{Nothing,String}
     error_code::Union{Nothing,String}
     error_message::Union{Nothing,String}
 end
@@ -51,6 +52,7 @@ end
 mutable struct RuntimeJobStore
     db::SQLite.DB
     path::String
+    lock::ReentrantLock
 end
 
 function RuntimeJobStore(path::AbstractString=":memory:")
@@ -61,7 +63,7 @@ function RuntimeJobStore(path::AbstractString=":memory:")
     end
     DBInterface.execute(db, "PRAGMA foreign_keys=ON;")
     DBInterface.execute(db, "PRAGMA busy_timeout=5000;")
-    store = RuntimeJobStore(db, String(path))
+    store = RuntimeJobStore(db, String(path), ReentrantLock())
     migrate!(store)
     return store
 end
@@ -71,15 +73,17 @@ close!(store::RuntimeJobStore) = DBInterface.close!(store.db)
 # ---- low-level helpers ------------------------------------------------------
 
 function _rows(store::RuntimeJobStore, sql::AbstractString, params=())
-    result = Dict{String,Any}[]
-    for row in DBInterface.execute(store.db, sql, params)
-        entry = Dict{String,Any}()
-        for name in propertynames(row)
-            entry[String(name)] = getproperty(row, name)
+    return Base.lock(store.lock) do
+        result = Dict{String,Any}[]
+        for row in DBInterface.execute(store.db, sql, params)
+            entry = Dict{String,Any}()
+            for name in propertynames(row)
+                entry[String(name)] = getproperty(row, name)
+            end
+            push!(result, entry)
         end
-        push!(result, entry)
+        result
     end
-    return result
 end
 
 function _row(store::RuntimeJobStore, sql::AbstractString, params=())
@@ -88,23 +92,31 @@ function _row(store::RuntimeJobStore, sql::AbstractString, params=())
 end
 
 _exec(store::RuntimeJobStore, sql::AbstractString, params=()) =
-    DBInterface.execute(store.db, sql, params)
+    Base.lock(() -> DBInterface.execute(store.db, sql, params), store.lock)
 
-"""Run `f` inside a `BEGIN IMMEDIATE` transaction, rolling back on any error."""
+"""
+Run `f` inside a `BEGIN IMMEDIATE` transaction, rolling back on any error.
+
+All writers share one SQLite connection, so the whole transaction is
+serialized on the store's reentrant lock: concurrent tasks can never
+interleave statements or observe a nested `BEGIN`.
+"""
 function transaction(f, store::RuntimeJobStore)
-    DBInterface.execute(store.db, "BEGIN IMMEDIATE;")
-    local value
-    try
-        value = f()
-        DBInterface.execute(store.db, "COMMIT;")
-    catch
+    return Base.lock(store.lock) do
+        DBInterface.execute(store.db, "BEGIN IMMEDIATE;")
+        local value
         try
-            DBInterface.execute(store.db, "ROLLBACK;")
+            value = f()
+            DBInterface.execute(store.db, "COMMIT;")
         catch
+            try
+                DBInterface.execute(store.db, "ROLLBACK;")
+            catch
+            end
+            rethrow()
         end
-        rethrow()
+        value
     end
-    return value
 end
 
 const _ISO_FMT = dateformat"yyyy-mm-ddTHH:MM:SS.sss"
@@ -173,6 +185,7 @@ function _apply_migration_v1(store::RuntimeJobStore)
             finished_at TEXT,
             parent_job_id TEXT,
             artifact_keys TEXT,
+            artifact_prefix TEXT,
             error_code TEXT,
             error_message TEXT,
             UNIQUE(tenant_id, idempotency_key)
@@ -239,6 +252,7 @@ function _job(row::Dict{String,Any})
         _opt_dt(row["finished_at"]),
         _opt_s(row["parent_job_id"]),
         _opt_keys(row["artifact_keys"]),
+        _opt_s(row["artifact_prefix"]),
         _opt_s(row["error_code"]),
         _opt_s(row["error_message"]),
     )
@@ -249,7 +263,7 @@ const _JOB_COLUMNS = "id, tenant_id, subject_id, idempotency_key, config_sha256,
     "release_sha, image_digest, state, phase, attempts, max_attempts, lease_owner, " *
     "lease_fencing_token, lease_expires_at, heartbeat_at, cancel_requested_at, " *
     "submitted_at, started_at, finished_at, parent_job_id, artifact_keys, " *
-    "error_code, error_message"
+    "artifact_prefix, error_code, error_message"
 
 function _fetch_job(store::RuntimeJobStore, id::AbstractString)
     row = _row(store, "SELECT $_JOB_COLUMNS FROM jobs WHERE id = ?", (String(id),))

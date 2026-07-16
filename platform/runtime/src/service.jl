@@ -48,8 +48,11 @@ function _canonical_json(value)
 end
 _config_sha(normalized) = bytes2hex(sha256(_canonical_json(normalized)))
 _new_job_id() = "job-" * replace(string(uuid4()), "-" => "")
-_config_key(tenant::AbstractString, job_id::AbstractString) =
-    "tenants/$(tenant)/jobs/$(job_id)/config.normalized.json"
+# Config objects are content-addressed by tenant and config hash: writes are
+# idempotent, identical submissions share one object, and an object written
+# before a rejected or crashed submit is a reusable cache entry, not a leak.
+_config_key(tenant::AbstractString, config_sha::AbstractString) =
+    "tenants/$(tenant)/configs/$(config_sha).json"
 _output_prefix(tenant::AbstractString, job_id::AbstractString) =
     "tenants/$(tenant)/jobs/$(job_id)/artifacts"
 
@@ -215,12 +218,17 @@ function _submit_normalized(service::RuntimeApplicationService, principal::Authe
         data["idempotent"] = true
         return data
     end
+    # Recoverable submit: quota is prechecked before any storage write, the
+    # config object is content-addressed (idempotent, shared, reconcilable),
+    # and the job row plus its quota reservation commit in one DB transaction.
+    # A crash at any point leaves either nothing or a reusable config object;
+    # no quota is ever held without a job row.
+    precheck_quota(service.store, principal.tenant_id, profile.concurrency_weight)
     job_id = _new_job_id()
-    config_key = _config_key(principal.tenant_id, job_id)
+    config_key = _config_key(principal.tenant_id, config_sha)
     output_prefix = _output_prefix(principal.tenant_id, job_id)
-    # Recoverable submit: durable config object first, then the durable job row.
     try
-        put_json!(service.storage, config_key, normalized)
+        has_object(service.storage, config_key) || put_json!(service.storage, config_key, normalized)
     catch
         throw(RuntimeError("STORAGE_UNAVAILABLE", "failed to persist normalized config object"))
     end
@@ -282,13 +290,17 @@ function get_artifacts(service::RuntimeApplicationService, principal::Authentica
     job === nothing && throw(RuntimeError("JOB_NOT_FOUND", "job '$(String(job_id))' was not found"))
     job.state == "succeeded" || throw(RuntimeError("ARTIFACT_NOT_READY",
         "job '$(job.id)' is $(job.state); artifacts are available only for succeeded jobs"))
-    index_key = "$(job.output_prefix)/$(ARTIFACT_INDEX_NAME)"
+    # Only the prefix registered atomically at finalize is readable; a stale
+    # attempt's uploads are unreachable through the public surface.
+    job.artifact_prefix === nothing && throw(RuntimeError("ARTIFACT_NOT_FOUND",
+        "no registered artifact prefix for job '$(job.id)'"))
+    index_key = "$(job.artifact_prefix)/$(ARTIFACT_INDEX_NAME)"
     has_object(service.storage, index_key) || throw(RuntimeError("ARTIFACT_NOT_FOUND",
         "artifact index for job '$(job.id)' was not found"))
     index = get_json(service.storage, index_key)
     return Dict{String,Any}(
         "job_id" => job.id,
-        "output_prefix" => job.output_prefix,
+        "output_prefix" => job.artifact_prefix,
         "artifact_keys" => job.artifact_keys,
         "artifacts" => get(index, "artifacts", Any[]),
     )
@@ -303,7 +315,9 @@ function read_result(service::RuntimeApplicationService, principal::Authenticate
     job === nothing && throw(RuntimeError("JOB_NOT_FOUND", "job '$(String(job_id))' was not found"))
     job.state == "succeeded" || throw(RuntimeError("ARTIFACT_NOT_READY",
         "job '$(job.id)' is $(job.state); results are available only for succeeded jobs"))
-    result_key = "$(job.output_prefix)/result.json"
+    job.artifact_prefix === nothing && throw(RuntimeError("ARTIFACT_NOT_FOUND",
+        "no registered artifact prefix for job '$(job.id)'"))
+    result_key = "$(job.artifact_prefix)/result.json"
     has_object(service.storage, result_key) || throw(RuntimeError("ARTIFACT_NOT_FOUND",
         "result.json for job '$(job.id)' was not found"))
     bytes = get_bytes(service.storage, result_key)
@@ -336,6 +350,12 @@ function reproduce_job(service::RuntimeApplicationService, principal::Authentica
     normalized = get_json(service.storage, source.config_storage_key)
     profile_name = resource_profile === nothing ? source.resource_profile : String(resource_profile)
     profile = SatelliteSimPlatformRuntime.resource_profile(profile_name)
+    original = SatelliteSimPlatformRuntime.resource_profile(source.resource_profile)
+    (profile.cpu_millicores >= original.cpu_millicores &&
+     profile.memory_mib >= original.memory_mib &&
+     profile.timeout_seconds >= original.timeout_seconds) || throw(RuntimeError(
+        "RUNTIME_POLICY_REJECTED",
+        "reproduce_job may not lower the source job's resource profile ('$(original.name)' -> '$(profile.name)')"))
     enforce_admission(normalized, profile)
     return _submit_normalized(service, principal, normalized, profile;
         idempotency_key=idempotency_key, request_id=request_id, parent_job_id=source.id)
