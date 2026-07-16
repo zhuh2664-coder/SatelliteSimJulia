@@ -208,6 +208,20 @@ function _apply_migration_v1(store::RuntimeJobStore)
         );
     """)
     DBInterface.execute(store.db, """
+        CREATE TABLE submission_intents (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            config_storage_key TEXT NOT NULL,
+            config_sha256 TEXT NOT NULL,
+            state TEXT NOT NULL,
+            job_id TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+    """)
+    DBInterface.execute(store.db,
+        "CREATE INDEX idx_submission_intents_state ON submission_intents(state, created_at);")
+    DBInterface.execute(store.db, """
         CREATE TABLE audit_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             at TEXT NOT NULL,
@@ -276,7 +290,7 @@ function record_audit!(store::RuntimeJobStore; action::AbstractString,
                        request_id=nothing, tenant_id=nothing, subject_id=nothing,
                        job_id=nothing, result_code=nothing, metadata=nothing,
                        now_utc::DateTime=now(UTC))
-    DBInterface.execute(store.db, """
+    _exec(store, """
         INSERT INTO audit_events(at, request_id, tenant_id, subject_id, action, job_id, result_code, metadata)
         VALUES(?, ?, ?, ?, ?, ?, ?, ?)
     """, (

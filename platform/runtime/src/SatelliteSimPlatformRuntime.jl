@@ -48,7 +48,9 @@ export RuntimeJobStore, RuntimeJob, ClaimedJob, SCHEMA_VERSION, close!,
 
 # job lifecycle operations
 export create_job!, precheck_quota, get_job, list_jobs, claim_next_job!, heartbeat!,
-    finalize_job!, request_cancel!, recover_expired_leases!
+    finalize_job!, request_cancel!, recover_expired_leases!,
+    register_submission_intent!, commit_submission_intent!, resolve_submission_intent!,
+    reconcile_submission_intents!, reconcile_submissions!
 
 # execution backend
 export AbstractExecutionBackend, ExecutionSpec, ExecutionStatus, ExecutionResult,

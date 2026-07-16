@@ -218,33 +218,50 @@ function _submit_normalized(service::RuntimeApplicationService, principal::Authe
         data["idempotent"] = true
         return data
     end
-    # Recoverable submit: quota is prechecked before any storage write, the
-    # config object is content-addressed (idempotent, shared, reconcilable),
-    # and the job row plus its quota reservation commit in one DB transaction.
-    # A crash at any point leaves either nothing or a reusable config object;
-    # no quota is ever held without a job row.
+    # Recoverable submit: quota is prechecked before any storage write, a
+    # submission intent is registered before the config object is written
+    # (so the object is never unreferenced), and the job row plus its quota
+    # reservation commit in one DB transaction. Any rejection or crash leaves
+    # the intent to be resolved: the object is reclaimed when nothing else
+    # references it, with an audit trail either way.
     precheck_quota(service.store, principal.tenant_id, profile.concurrency_weight)
     job_id = _new_job_id()
     config_key = _config_key(principal.tenant_id, config_sha)
     output_prefix = _output_prefix(principal.tenant_id, job_id)
+    intent_id = "intent-" * replace(string(uuid4()), "-" => "")
+    register_submission_intent!(service.store; intent_id=intent_id,
+        tenant_id=principal.tenant_id, config_storage_key=config_key,
+        config_sha256=config_sha, now_utc=service.clock())
     try
-        has_object(service.storage, config_key) || put_json!(service.storage, config_key, normalized)
+        try
+            has_object(service.storage, config_key) || put_json!(service.storage, config_key, normalized)
+        catch
+            throw(RuntimeError("STORAGE_UNAVAILABLE", "failed to persist normalized config object"))
+        end
+        now_utc = service.clock()
+        job, created = create_job!(service.store;
+            job_id=job_id, tenant_id=principal.tenant_id, subject_id=principal.subject,
+            idempotency_key=idempotency_key, config_sha256=config_sha,
+            config_storage_key=config_key, output_prefix=output_prefix,
+            resource_profile=profile.name, concurrency_weight=profile.concurrency_weight,
+            artifact_bytes=MAX_ARTIFACT_RESERVATION_BYTES, release_sha=service.release_sha,
+            image_digest=service.image_digest, parent_job_id=parent_job_id,
+            request_id=request_id, now_utc=now_utc)
+        commit_submission_intent!(service.store, intent_id, job.id; now_utc=now_utc)
+        data = _public_job_view(job)
+        data["idempotent"] = !created
+        return data
     catch
-        throw(RuntimeError("STORAGE_UNAVAILABLE", "failed to persist normalized config object"))
+        resolve_submission_intent!(service.store, service.storage, intent_id;
+            now_utc=service.clock())
+        rethrow()
     end
-    now_utc = service.clock()
-    job, created = create_job!(service.store;
-        job_id=job_id, tenant_id=principal.tenant_id, subject_id=principal.subject,
-        idempotency_key=idempotency_key, config_sha256=config_sha,
-        config_storage_key=config_key, output_prefix=output_prefix,
-        resource_profile=profile.name, concurrency_weight=profile.concurrency_weight,
-        artifact_bytes=MAX_ARTIFACT_RESERVATION_BYTES, release_sha=service.release_sha,
-        image_digest=service.image_digest, parent_job_id=parent_job_id,
-        request_id=request_id, now_utc=now_utc)
-    data = _public_job_view(job)
-    data["idempotent"] = !created
-    return data
 end
+
+"""Auditable reconciliation entry point for stranded submission intents."""
+reconcile_submissions!(service::RuntimeApplicationService; older_than_seconds::Integer=3600) =
+    reconcile_submission_intents!(service.store, service.storage;
+        older_than_seconds=older_than_seconds, now_utc=service.clock())
 
 # ---- 5. get_job -------------------------------------------------------------
 

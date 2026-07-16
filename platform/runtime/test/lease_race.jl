@@ -4,6 +4,10 @@
 
 using Dates
 
+_attempt_keys(prefix) = vcat(
+    ["$(prefix)/$(name)" for name in SatelliteSimPlatformRuntime.RUNNER_ARTIFACT_NAMES],
+    ["$(prefix)/$(SatelliteSimPlatformRuntime.ARTIFACT_INDEX_NAME)"])
+
 function _seed_queued_job(store; job_id, key, max_attempts=2)
     create_job!(store; job_id=job_id, tenant_id="tenant-a", subject_id="alice",
         idempotency_key=key, config_sha256=repeat("a", 64),
@@ -59,8 +63,10 @@ end
         # Only the current lease holder B can renew and finalize
         @test heartbeat!(store; job_id="job-1", worker_id="B",
             fencing_token=claim_b.fencing_token, now_utc=t0 + Second(123)) == true
+        prefix_b = attempt_output_prefix(claim_b.job.output_prefix, claim_b.fencing_token)
         @test finalize_job!(store; job_id="job-1", worker_id="B",
             fencing_token=claim_b.fencing_token, terminal_state="succeeded",
+            artifact_keys=_attempt_keys(prefix_b), artifact_prefix=prefix_b,
             now_utc=t0 + Second(124)) == true
         @test get_job(store, "tenant-a", "job-1").state == "succeeded"
         SatelliteSimPlatformRuntime.close!(store)

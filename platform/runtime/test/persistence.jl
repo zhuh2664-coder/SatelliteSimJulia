@@ -100,7 +100,8 @@
                         claim = claim_next_job!(store; worker_id="w$(worker)")
                         if claim !== nothing
                             finalize_job!(store; job_id=claim.job.id, worker_id="w$(worker)",
-                                fencing_token=claim.fencing_token, terminal_state="succeeded")
+                                fencing_token=claim.fencing_token, terminal_state="failed",
+                                error_code="EXECUTION_FAILED")
                         end
                         try
                             request_cancel!(store, "tenant-w$(worker)", "job-c$(worker)-$(round)")
@@ -171,6 +172,112 @@
         @test objects_before == 1
     end
 
+    @testset "concurrent submissions leave no orphaned config objects" begin
+        service = make_service()
+        # one slot is taken up-front so exactly one of the two racing
+        # submissions below can win the remaining capacity
+        submit_experiment(service, submitter(), raw_config(); idempotency_key="race-base")
+
+        variant(a) = (c = raw_config(); c["alpha"] = a; c)
+        results = Vector{Any}(undef, 2)
+        submit_one(i) = try
+            results[i] = submit_experiment(service, submitter(), variant(0.1 * i);
+                idempotency_key="race-$(i)")
+        catch e
+            results[i] = e
+        end
+        tasks = [Threads.@spawn(submit_one($i)) for i in 1:2]
+        foreach(wait, tasks)
+
+        accepted = count(r -> r isa Dict, results)
+        rejected = [r for r in results if !(r isa Dict)]
+        @test all(e -> e isa RuntimeError && e.code == "QUOTA_EXCEEDED", rejected)
+        @test accepted + length(rejected) == 2
+
+        # every stored config object is referenced by a job row; the rejected
+        # submission's distinct config was reclaimed through its intent
+        referenced = Set(String(row["config_storage_key"]) for row in
+            SatelliteSimPlatformRuntime._rows(service.store, "SELECT config_storage_key FROM jobs"))
+        stored = Set(o.key for o in
+            SatelliteSimPlatformRuntime.list_objects(service.storage; prefix="tenants/tenant-a/configs"))
+        @test stored == referenced
+
+        # no intent is left pending, and any reclaim was audited
+        pending = SatelliteSimPlatformRuntime._row(service.store,
+            "SELECT count(*) AS c FROM submission_intents WHERE state = 'pending'")
+        @test Int(pending["c"]) == 0
+        if accepted == 1
+            reclaimed = SatelliteSimPlatformRuntime._row(service.store,
+                "SELECT count(*) AS c FROM submission_intents WHERE state = 'reclaimed'")
+            @test Int(reclaimed["c"]) == 1
+            events = audit_events(service.store)
+            @test any(e -> String(e["action"]) == "submission_intent_resolved", events)
+        end
+    end
+
+    @testset "stranded pending intents are reconciled with an audit trail" begin
+        service = make_service()
+        submitted = submit_experiment(service, submitter(), raw_config(); idempotency_key="recon-1")
+        # simulate a crash: a pending intent whose submission never committed,
+        # plus its orphan-candidate object with a distinct config hash
+        orphan_key = "tenants/tenant-a/configs/$(repeat("9", 64)).json"
+        SatelliteSimPlatformRuntime.put_json!(service.storage, orphan_key, Dict("x" => 1))
+        register_submission_intent!(service.store; intent_id="intent-stranded",
+            tenant_id="tenant-a", config_storage_key=orphan_key,
+            config_sha256=repeat("9", 64), now_utc=service.clock() - Hour(2))
+
+        outcome = reconcile_submissions!(service; older_than_seconds=3600)
+        @test outcome == [(id="intent-stranded", action=:reclaimed)]
+        @test !SatelliteSimPlatformRuntime.has_object(service.storage, orphan_key)
+        # the committed submission's object is untouched
+        job = get_job(service.store, "tenant-a", submitted["job_id"])
+        @test SatelliteSimPlatformRuntime.has_object(service.storage, job.config_storage_key)
+    end
+
+    @testset "a succeeded finalize without a valid artifact registration is rejected" begin
+        store = RuntimeJobStore()
+        create_job!(store; job_id="job-strict", tenant_id="tenant-a", subject_id="alice",
+            idempotency_key="strict", config_sha256=repeat("3", 64), config_storage_key="k",
+            output_prefix="p", resource_profile="small", concurrency_weight=1,
+            artifact_bytes=1024, release_sha="rel", image_digest="d")
+        claim = claim_next_job!(store; worker_id="w1")
+        prefix = attempt_output_prefix("p", claim.fencing_token)
+        keys = vcat(
+            ["$(prefix)/$(name)" for name in SatelliteSimPlatformRuntime.RUNNER_ARTIFACT_NAMES],
+            ["$(prefix)/$(SatelliteSimPlatformRuntime.ARTIFACT_INDEX_NAME)"])
+
+        expect_internal(f) = begin
+            err = try; f(); nothing; catch e; e; end
+            @test err isa RuntimeError && err.code == "INTERNAL_ERROR"
+        end
+        # missing artifact_prefix
+        expect_internal(() -> finalize_job!(store; job_id="job-strict", worker_id="w1",
+            fencing_token=claim.fencing_token, terminal_state="succeeded", artifact_keys=keys))
+        # prefix of a different fencing token
+        expect_internal(() -> finalize_job!(store; job_id="job-strict", worker_id="w1",
+            fencing_token=claim.fencing_token, terminal_state="succeeded", artifact_keys=keys,
+            artifact_prefix=attempt_output_prefix("p", claim.fencing_token + 1)))
+        # incomplete artifact key set
+        expect_internal(() -> finalize_job!(store; job_id="job-strict", worker_id="w1",
+            fencing_token=claim.fencing_token, terminal_state="succeeded",
+            artifact_keys=["$(prefix)/result.json"], artifact_prefix=prefix))
+        # a non-succeeded finalize must not register a prefix
+        expect_internal(() -> finalize_job!(store; job_id="job-strict", worker_id="w1",
+            fencing_token=claim.fencing_token, terminal_state="failed",
+            error_code="EXECUTION_FAILED", artifact_prefix=prefix))
+
+        # the job is still running and untouched after every rejection
+        job = get_job(store, "tenant-a", "job-strict")
+        @test job.state == "running"
+        @test job.artifact_prefix === nothing
+
+        # the complete, token-matched registration still succeeds
+        @test finalize_job!(store; job_id="job-strict", worker_id="w1",
+            fencing_token=claim.fencing_token, terminal_state="succeeded",
+            artifact_keys=keys, artifact_prefix=prefix) == true
+        @test get_job(store, "tenant-a", "job-strict").state == "succeeded"
+    end
+
     @testset "terminal state, quota release and audit are one transaction" begin
         store = RuntimeJobStore()
         create_job!(store; job_id="job-final", tenant_id="tenant-a", subject_id="alice",
@@ -179,9 +286,13 @@
             artifact_bytes=1024, release_sha="rel", image_digest="d")
         claim = claim_next_job!(store; worker_id="w1")
         @test claim.job.id == "job-final"
+        prefix = attempt_output_prefix("p", claim.fencing_token)
+        keys = vcat(
+            ["$(prefix)/$(name)" for name in SatelliteSimPlatformRuntime.RUNNER_ARTIFACT_NAMES],
+            ["$(prefix)/$(SatelliteSimPlatformRuntime.ARTIFACT_INDEX_NAME)"])
         ok = finalize_job!(store; job_id="job-final", worker_id="w1",
             fencing_token=claim.fencing_token, terminal_state="succeeded",
-            artifact_keys=["p/result.json"])
+            artifact_keys=keys, artifact_prefix=prefix)
         @test ok == true
 
         job = get_job(store, "tenant-a", "job-final")

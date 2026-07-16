@@ -167,6 +167,99 @@ function claim_next_job!(store::RuntimeJobStore;
     return nothing
 end
 
+# ---- submission intents ------------------------------------------------------
+
+"""
+    register_submission_intent!(store; ...) -> intent_id
+
+Record, before any storage side effect, that a submission is about to write a
+config object. Every config object is therefore always referenced: either by a
+job row, or by an intent row that an abort or reconciliation pass resolves.
+"""
+function register_submission_intent!(store::RuntimeJobStore;
+                                     intent_id::AbstractString,
+                                     tenant_id::AbstractString,
+                                     config_storage_key::AbstractString,
+                                     config_sha256::AbstractString,
+                                     now_utc::DateTime=now(UTC))
+    _exec(store, """
+        INSERT INTO submission_intents(id, tenant_id, config_storage_key, config_sha256,
+            state, job_id, created_at, updated_at)
+        VALUES(?, ?, ?, ?, 'pending', NULL, ?, ?)
+    """, (String(intent_id), String(tenant_id), String(config_storage_key),
+          String(config_sha256), _ts(now_utc), _ts(now_utc)))
+    return String(intent_id)
+end
+
+"""Mark a submission intent as committed to the job that now references its object."""
+function commit_submission_intent!(store::RuntimeJobStore, intent_id::AbstractString,
+                                   job_id::AbstractString; now_utc::DateTime=now(UTC))
+    _exec(store,
+        "UPDATE submission_intents SET state = 'committed', job_id = ?, updated_at = ? WHERE id = ?",
+        (String(job_id), _ts(now_utc), String(intent_id)))
+    return nothing
+end
+
+"""
+    resolve_submission_intent!(store, storage, intent_id; now_utc) -> Symbol
+
+Resolve a pending intent whose submission did not commit (quota/idempotency
+rejection or crash recovery). In one transaction the intent's config object is
+checked for other references (a job row, or another live intent); if it is
+unreferenced the intent is audited as `:reclaimed` and its object deleted from
+storage, otherwise the shared object stays and the intent is `:aborted`.
+"""
+function resolve_submission_intent!(store::RuntimeJobStore, storage, intent_id::AbstractString;
+                                    now_utc::DateTime=now(UTC))::Symbol
+    # The whole decision, including the storage delete, runs under the store's
+    # lock: a concurrent submission can only register its intent (and rewrite
+    # the object) strictly before or strictly after this resolution, so a
+    # reclaim can never delete an object another live submission relies on.
+    return transaction(store) do
+        row = _row(store,
+            "SELECT config_storage_key, state FROM submission_intents WHERE id = ?",
+            (String(intent_id),))
+        row === nothing && return :missing
+        row["state"] == "pending" || return Symbol(String(row["state"]))
+        config_key = String(row["config_storage_key"])
+        referenced_jobs = _row(store,
+            "SELECT count(*) AS c FROM jobs WHERE config_storage_key = ?", (config_key,))
+        referenced_intents = _row(store, """
+            SELECT count(*) AS c FROM submission_intents
+            WHERE config_storage_key = ? AND id != ? AND state IN ('pending', 'committed')
+        """, (config_key, String(intent_id)))
+        unreferenced = Int(referenced_jobs["c"]) == 0 && Int(referenced_intents["c"]) == 0
+        state = unreferenced ? "reclaimed" : "aborted"
+        DBInterface.execute(store.db,
+            "UPDATE submission_intents SET state = ?, updated_at = ? WHERE id = ?",
+            (state, _ts(now_utc), String(intent_id)))
+        record_audit!(store; action="submission_intent_resolved", result_code=state,
+            metadata=Dict("intent_id" => String(intent_id), "config_storage_key" => config_key),
+            now_utc=now_utc)
+        unreferenced && delete_object!(storage, config_key)
+        return unreferenced ? :reclaimed : :aborted
+    end
+end
+
+"""
+    reconcile_submission_intents!(store, storage; older_than_seconds, now_utc) -> Vector
+
+Auditable reconciliation pass for intents stranded in `pending` (e.g. a crash
+between the storage write and the job commit). Resolves every pending intent
+older than the cutoff exactly like an explicit abort.
+"""
+function reconcile_submission_intents!(store::RuntimeJobStore, storage;
+                                       older_than_seconds::Integer=3600,
+                                       now_utc::DateTime=now(UTC))
+    cutoff = _ts(now_utc - Second(Int(older_than_seconds)))
+    rows = _rows(store,
+        "SELECT id FROM submission_intents WHERE state = 'pending' AND created_at < ?",
+        (cutoff,))
+    return [(id=String(row["id"]),
+             action=resolve_submission_intent!(store, storage, String(row["id"]); now_utc=now_utc))
+            for row in rows]
+end
+
 """
 Renew a lease (and optionally advance the internal phase) under fencing guard.
 
@@ -233,6 +326,22 @@ function finalize_job!(store::RuntimeJobStore;
         (current.state == "running" && current.lease_owner == String(worker_id) &&
             current.lease_fencing_token == Int(fencing_token)) || return false
         (current.lease_expires_at !== nothing && current.lease_expires_at > now_utc) || return false
+        # A success commit must register exactly the verified attempt output of
+        # the fencing token it presents; anything else is a caller bug.
+        if String(terminal_state) == "succeeded"
+            expected_prefix = attempt_output_prefix(current.output_prefix, Int(fencing_token))
+            (artifact_prefix !== nothing && String(artifact_prefix) == expected_prefix) ||
+                throw(RuntimeError("INTERNAL_ERROR",
+                    "succeeded finalize requires the attempt artifact prefix '$(expected_prefix)'"))
+            required = Set{String}(vcat(
+                ["$(expected_prefix)/$(name)" for name in RUNNER_ARTIFACT_NAMES],
+                ["$(expected_prefix)/$(ARTIFACT_INDEX_NAME)"]))
+            Set{String}(artifact_keys) == required || throw(RuntimeError("INTERNAL_ERROR",
+                "succeeded finalize requires the complete verified artifact key set for '$(expected_prefix)'"))
+        else
+            artifact_prefix === nothing || throw(RuntimeError("INTERNAL_ERROR",
+                "only a succeeded finalize may register an artifact prefix"))
+        end
         assert_transition("running", terminal_state)
         DBInterface.execute(store.db, """
             UPDATE jobs SET state = ?, phase = NULL, finished_at = ?, lease_owner = NULL,

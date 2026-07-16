@@ -11,7 +11,7 @@ using Dates
 using JSON
 using SHA
 using SatelliteSimPlatformStorage: AbstractExperimentStorage, get_json,
-    object_metadata, list_objects, upload_directory!
+    object_metadata, list_objects, upload_directory!, delete_object!
 
 const RUNNER_ARTIFACT_NAMES = ["config.snapshot.json", "result.json", "run_metadata.json"]
 const ARTIFACT_INDEX_NAME = "artifacts.index.json"
