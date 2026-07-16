@@ -8,12 +8,116 @@
         store = RuntimeJobStore(path)
         version = SatelliteSimPlatformRuntime._row(store, "SELECT max(version) AS v FROM schema_migrations")
         @test Int(version["v"]) == SCHEMA_VERSION
+        # a fresh database applies every migration in order, one row each
+        versions = [Int(row["version"]) for row in SatelliteSimPlatformRuntime._rows(store,
+            "SELECT version FROM schema_migrations ORDER BY version")]
+        @test versions == collect(1:SCHEMA_VERSION)
         SatelliteSimPlatformRuntime.close!(store)
         # reopening runs migrate! again but must not reapply or duplicate rows
         store2 = RuntimeJobStore(path)
         count = SatelliteSimPlatformRuntime._row(store2, "SELECT count(*) AS c FROM schema_migrations")
-        @test Int(count["c"]) == 1
+        @test Int(count["c"]) == SCHEMA_VERSION
         SatelliteSimPlatformRuntime.close!(store2)
+    end
+
+    @testset "a real v1 database opens, migrates to v2, reads and writes" begin
+        dir = mktempdir()
+        path = joinpath(dir, "runtime-v1.db")
+        # Build a genuine v1 database by hand: the v1 schema (no
+        # jobs.artifact_prefix, no submission_intents) plus live v1 data.
+        db = SatelliteSimPlatformRuntime.SQLite.DB(path)
+        exec(sql, params=()) = SatelliteSimPlatformRuntime.DBInterface.execute(db, sql, params)
+        exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);")
+        exec("INSERT INTO schema_migrations(version, applied_at) VALUES(1, '2026-01-01T00:00:00.000')")
+        exec("CREATE TABLE runtime_meta (key TEXT PRIMARY KEY, value INTEGER NOT NULL);")
+        exec("INSERT INTO runtime_meta(key, value) VALUES('fencing_seq', 3)")
+        exec("""
+            CREATE TABLE jobs (
+                id TEXT PRIMARY KEY, tenant_id TEXT NOT NULL, subject_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL, config_sha256 TEXT NOT NULL,
+                config_storage_key TEXT NOT NULL, output_prefix TEXT NOT NULL,
+                resource_profile TEXT NOT NULL, concurrency_weight INTEGER NOT NULL,
+                release_sha TEXT NOT NULL, image_digest TEXT NOT NULL, state TEXT NOT NULL,
+                phase TEXT, attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL,
+                lease_owner TEXT, lease_fencing_token INTEGER, lease_expires_at TEXT,
+                heartbeat_at TEXT, cancel_requested_at TEXT, submitted_at TEXT NOT NULL,
+                started_at TEXT, finished_at TEXT, parent_job_id TEXT, artifact_keys TEXT,
+                error_code TEXT, error_message TEXT,
+                UNIQUE(tenant_id, idempotency_key)
+            );
+        """)
+        exec("CREATE INDEX idx_jobs_tenant_state ON jobs(tenant_id, state);")
+        exec("CREATE INDEX idx_jobs_state_queue ON jobs(state, submitted_at);")
+        exec("""
+            CREATE TABLE quota_reservations (
+                tenant_id TEXT NOT NULL, job_id TEXT NOT NULL, artifact_bytes INTEGER NOT NULL,
+                concurrency_weight INTEGER NOT NULL, state TEXT NOT NULL,
+                reserved_at TEXT NOT NULL, released_at TEXT, PRIMARY KEY(tenant_id, job_id)
+            );
+        """)
+        exec("""
+            CREATE TABLE audit_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, request_id TEXT,
+                tenant_id TEXT, subject_id TEXT, action TEXT NOT NULL, job_id TEXT,
+                result_code TEXT, metadata TEXT
+            );
+        """)
+        exec("""
+            INSERT INTO jobs(id, tenant_id, subject_id, idempotency_key, config_sha256,
+                config_storage_key, output_prefix, resource_profile, concurrency_weight,
+                release_sha, image_digest, state, phase, attempts, max_attempts,
+                submitted_at, artifact_keys)
+            VALUES('job-v1', 'tenant-a', 'alice', 'v1-key', ?, 'k-v1', 'p-v1', 'small', 1,
+                'rel', 'sha256:x', 'queued', 'waiting_for_worker', 0, 2,
+                '2026-01-01T00:00:00.000', '[]')
+        """, (repeat("a", 64),))
+        exec("""
+            INSERT INTO quota_reservations(tenant_id, job_id, artifact_bytes,
+                concurrency_weight, state, reserved_at)
+            VALUES('tenant-a', 'job-v1', 1024, 1, 'active', '2026-01-01T00:00:00.000')
+        """)
+        SatelliteSimPlatformRuntime.DBInterface.close!(db)
+
+        # opening the v1 file migrates it to v2
+        store = RuntimeJobStore(path)
+        versions = [Int(row["version"]) for row in SatelliteSimPlatformRuntime._rows(store,
+            "SELECT version FROM schema_migrations ORDER BY version")]
+        @test versions == [1, 2]
+
+        # v1 data reads back through the v2 row mapping
+        job = get_job(store, "tenant-a", "job-v1")
+        @test job !== nothing
+        @test job.state == "queued"
+        @test job.artifact_prefix === nothing
+        @test job.artifact_keys == String[]
+
+        # v2 writes work on the migrated database: fencing continues from v1
+        # state, a succeeded finalize registers its attempt prefix, and the
+        # submission-intent ledger is usable
+        claim = claim_next_job!(store; worker_id="w1")
+        @test claim.job.id == "job-v1"
+        @test claim.fencing_token == 4
+        prefix = attempt_output_prefix("p-v1", claim.fencing_token)
+        keys = vcat(
+            ["$(prefix)/$(name)" for name in SatelliteSimPlatformRuntime.RUNNER_ARTIFACT_NAMES],
+            ["$(prefix)/$(SatelliteSimPlatformRuntime.ARTIFACT_INDEX_NAME)"])
+        @test finalize_job!(store; job_id="job-v1", worker_id="w1",
+            fencing_token=claim.fencing_token, terminal_state="succeeded",
+            artifact_keys=keys, artifact_prefix=prefix) == true
+        @test get_job(store, "tenant-a", "job-v1").artifact_prefix == prefix
+        register_submission_intent!(store; intent_id="intent-v2", tenant_id="tenant-a",
+            config_storage_key="k-new", config_sha256=repeat("b", 64))
+        pending = SatelliteSimPlatformRuntime._row(store,
+            "SELECT count(*) AS c FROM submission_intents WHERE state = 'pending'")
+        @test Int(pending["c"]) == 1
+
+        # migration is durable: reopening applies nothing further
+        SatelliteSimPlatformRuntime.close!(store)
+        reopened = RuntimeJobStore(path)
+        count = SatelliteSimPlatformRuntime._row(reopened, "SELECT count(*) AS c FROM schema_migrations")
+        @test Int(count["c"]) == 2
+        @test get_job(reopened, "tenant-a", "job-v1").state == "succeeded"
+        SatelliteSimPlatformRuntime.close!(reopened)
     end
 
     @testset "jobs survive a store reopen" begin
@@ -173,10 +277,29 @@
     end
 
     @testset "concurrent submissions leave no orphaned config objects" begin
-        service = make_service()
+        # The service clock doubles as a deterministic barrier: submission
+        # registers its intent (the first clock call after the quota precheck),
+        # so holding both tasks there guarantees both prechecks passed before
+        # either writes its config object or commits a job row. With one slot
+        # left, exactly one submission wins and one is rejected by the
+        # transactional quota check - independent of thread scheduling.
+        barrier_enabled = Ref(false)
+        arrivals = Threads.Atomic{Int}(0)
+        release = Base.Event()
+        barrier_clock() = begin
+            if barrier_enabled[]
+                n = Threads.atomic_add!(arrivals, 1) + 1
+                n == 2 && notify(release)
+                n <= 2 && wait(release)
+            end
+            return now(UTC)
+        end
+        service = make_service(; clock=barrier_clock)
+
         # one slot is taken up-front so exactly one of the two racing
         # submissions below can win the remaining capacity
         submit_experiment(service, submitter(), raw_config(); idempotency_key="race-base")
+        barrier_enabled[] = true
 
         variant(a) = (c = raw_config(); c["alpha"] = a; c)
         results = Vector{Any}(undef, 2)
@@ -188,11 +311,14 @@
         end
         tasks = [Threads.@spawn(submit_one($i)) for i in 1:2]
         foreach(wait, tasks)
+        barrier_enabled[] = false
 
-        accepted = count(r -> r isa Dict, results)
+        # deterministically one success and one quota rejection
+        accepted = [r for r in results if r isa Dict]
         rejected = [r for r in results if !(r isa Dict)]
+        @test length(accepted) == 1
+        @test length(rejected) == 1
         @test all(e -> e isa RuntimeError && e.code == "QUOTA_EXCEEDED", rejected)
-        @test accepted + length(rejected) == 2
 
         # every stored config object is referenced by a job row; the rejected
         # submission's distinct config was reclaimed through its intent
@@ -202,17 +328,15 @@
             SatelliteSimPlatformRuntime.list_objects(service.storage; prefix="tenants/tenant-a/configs"))
         @test stored == referenced
 
-        # no intent is left pending, and any reclaim was audited
+        # no intent is left pending; the reclaim happened and was audited
         pending = SatelliteSimPlatformRuntime._row(service.store,
             "SELECT count(*) AS c FROM submission_intents WHERE state = 'pending'")
         @test Int(pending["c"]) == 0
-        if accepted == 1
-            reclaimed = SatelliteSimPlatformRuntime._row(service.store,
-                "SELECT count(*) AS c FROM submission_intents WHERE state = 'reclaimed'")
-            @test Int(reclaimed["c"]) == 1
-            events = audit_events(service.store)
-            @test any(e -> String(e["action"]) == "submission_intent_resolved", events)
-        end
+        reclaimed = SatelliteSimPlatformRuntime._row(service.store,
+            "SELECT count(*) AS c FROM submission_intents WHERE state = 'reclaimed'")
+        @test Int(reclaimed["c"]) == 1
+        events = audit_events(service.store)
+        @test any(e -> String(e["action"]) == "submission_intent_resolved", events)
     end
 
     @testset "stranded pending intents are reconciled with an audit trail" begin

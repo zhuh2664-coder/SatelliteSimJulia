@@ -8,7 +8,7 @@ using JSON
 import SQLite
 import DBInterface
 
-const SCHEMA_VERSION = 1
+const SCHEMA_VERSION = 2
 const _FENCING_KEY = "fencing_seq"
 
 """A durable job row materialized from the store."""
@@ -137,14 +137,14 @@ function migrate!(store::RuntimeJobStore)
     """)
     applied = _row(store, "SELECT max(version) AS v FROM schema_migrations")
     current = (applied === nothing || applied["v"] === missing) ? 0 : Int(applied["v"])
-    current >= SCHEMA_VERSION && return store
-    transaction(store) do
-        if current < 1
-            _apply_migration_v1(store)
+    for version in (current + 1):SCHEMA_VERSION
+        transaction(store) do
+            version == 1 && _apply_migration_v1(store)
+            version == 2 && _apply_migration_v2(store)
+            DBInterface.execute(store.db,
+                "INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)",
+                (version, _ts(now(UTC))))
         end
-        DBInterface.execute(store.db,
-            "INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)",
-            (SCHEMA_VERSION, _ts(now(UTC))))
     end
     return store
 end
@@ -185,7 +185,6 @@ function _apply_migration_v1(store::RuntimeJobStore)
             finished_at TEXT,
             parent_job_id TEXT,
             artifact_keys TEXT,
-            artifact_prefix TEXT,
             error_code TEXT,
             error_message TEXT,
             UNIQUE(tenant_id, idempotency_key)
@@ -208,6 +207,25 @@ function _apply_migration_v1(store::RuntimeJobStore)
         );
     """)
     DBInterface.execute(store.db, """
+        CREATE TABLE audit_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            at TEXT NOT NULL,
+            request_id TEXT,
+            tenant_id TEXT,
+            subject_id TEXT,
+            action TEXT NOT NULL,
+            job_id TEXT,
+            result_code TEXT,
+            metadata TEXT
+        );
+    """)
+    return nothing
+end
+
+# v2: fenced attempt artifact registration and the submission-intent ledger.
+function _apply_migration_v2(store::RuntimeJobStore)
+    DBInterface.execute(store.db, "ALTER TABLE jobs ADD COLUMN artifact_prefix TEXT;")
+    DBInterface.execute(store.db, """
         CREATE TABLE submission_intents (
             id TEXT PRIMARY KEY,
             tenant_id TEXT NOT NULL,
@@ -221,19 +239,6 @@ function _apply_migration_v1(store::RuntimeJobStore)
     """)
     DBInterface.execute(store.db,
         "CREATE INDEX idx_submission_intents_state ON submission_intents(state, created_at);")
-    DBInterface.execute(store.db, """
-        CREATE TABLE audit_events (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            at TEXT NOT NULL,
-            request_id TEXT,
-            tenant_id TEXT,
-            subject_id TEXT,
-            action TEXT NOT NULL,
-            job_id TEXT,
-            result_code TEXT,
-            metadata TEXT
-        );
-    """)
     return nothing
 end
 
